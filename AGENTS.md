@@ -4,9 +4,10 @@
 
 ## 常用命令
 
-- 测试：`python3 -m pytest tests/ -q`
-- 类型检查：`python3 -m mypy src/compound_memory/`
-- CLI 冒烟：`PYTHONPATH=src python3 -m compound_memory.cli stats`
+- 项目用 uv 管理（`pyproject.toml` + `uv.lock`）：首次克隆后 `uv sync --extra dev` 建 `.venv`，日常一律 `uv run`（uv 不在 PATH 时用 `~/.local/bin/uv`）。
+- 测试：`uv run pytest tests/ -q`
+- 类型检查：`uv run mypy src/compound_memory/`
+- CLI 冒烟：`uv run compound-memory stats`；MCP server 启动：`uv run compound-memory-server`（宿主配置见 `docs/agent-integration.md`）。
 - 记忆库根目录默认 `~/.agents/memory`，可用 `COMPOUND_MEMORY_ROOT` 覆盖。注意：MemoryStore 每次写入会在记忆库自身的 `.git` 里自动 commit——这是运行时行为，与本仓库的开发 git 无关。
 
 ## 架构边界

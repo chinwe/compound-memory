@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- LaunchAgent 模板：每天 09:00 跑一次蒸馏准备（占位符 __REPO__/__PYTHON__/__ROOT__ 经 sed 填充，见 README）。
+<!-- LaunchAgent 模板：每天 09:00 跑一次蒸馏准备（占位符 __REPO__/__UV__/__ROOT__ 经 sed 填充，见 README）。
      launchd 优于 cron：macOS 系统标准，睡眠错过的 StartCalendarInterval 唤醒后补跑。 -->
 <plist version="1.0">
 <dict>
@@ -13,8 +13,8 @@
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>CM_PYTHON</key>
-    <string>__PYTHON__</string>
+    <key>UV_BIN</key>
+    <string>__UV__</string>
     <key>COMPOUND_MEMORY_ROOT</key>
     <string>__ROOT__</string>
   </dict>

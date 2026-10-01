@@ -35,32 +35,34 @@ Agent (MCP 客户端 / CLI)
 {
   "mcpServers": {
     "compound-memory": {
-      "command": "python3",
-      "args": ["-m", "compound_memory.server"],
-      "env": { "PYTHONPATH": "<本目录>/src" }
+      "type": "stdio",
+      "command": "~/.local/bin/uv",
+      "args": ["run", "--directory", "<本目录>", "compound-memory-server"],
+      "env": { "COMPOUND_MEMORY_ROOT": "~/.agents/memory" }
     }
   }
 }
 ```
 
+各宿主配置若不展开 `~` 占位写法，替换为本机绝对路径即可。
+
 ## CLI
 
 ```bash
-PY=python3
-export PYTHONPATH=$(pwd)/src
+uv sync --extra dev              # 首次克隆后初始化 .venv（之后 uv run 自动使用）
 
-$PY -m compound_memory.cli init               # 初始化空库
-$PY -m compound_memory.cli write "Vercel Serverless 10s 超时" episode agent-workbuddy
-$PY -m compound_memory.cli search "Vercel 超时"     # 命中内嵌一度邻居（上限3，--no-neighbors 关闭）
-$PY -m compound_memory.cli feedback <id> agent-claude
-$PY -m compound_memory.cli decay          # cron 定时跑
-$PY -m compound_memory.cli revive <id>    # 复活归档记忆（CLI 唯一入口）
-$PY -m compound_memory.cli distill-plan   # 蒸馏候选清单：merge_with（同 key 强信号）+ possible_dup_of（BM25 弱信号）+ promotion_candidate（高活性 episode）
-$PY -m compound_memory.cli distill-apply "合并后的经验" insight agent-workbuddy --sources <id1>,<id2>  # 原子落库：产物(links 溯源, origin=distillation) + 源归档，一次 commit
-$PY -m compound_memory.cli stats            # 健康度：uses/confidence 固定桶 + 活性 + 蒸馏产出量
-$PY -m compound_memory.cli rebuild-index  # 索引可随时重建
-$PY -m compound_memory.cli review-queue   # 冲突队列（CLI 唯一入口）
-$PY -m compound_memory.cli git-log        # 审计轨迹
+uv run compound-memory init               # 初始化空库
+uv run compound-memory write "Vercel Serverless 10s 超时" episode agent-workbuddy
+uv run compound-memory search "Vercel 超时"     # 命中内嵌一度邻居（上限3，--no-neighbors 关闭）
+uv run compound-memory feedback <id> agent-claude
+uv run compound-memory decay          # cron 定时跑
+uv run compound-memory revive <id>    # 复活归档记忆（CLI 唯一入口）
+uv run compound-memory distill-plan   # 蒸馏候选清单：merge_with（同 key 强信号）+ possible_dup_of（BM25 弱信号）+ promotion_candidate（高活性 episode）
+uv run compound-memory distill-apply "合并后的经验" insight agent-workbuddy --sources <id1>,<id2>  # 原子落库：产物(links 溯源, origin=distillation) + 源归档，一次 commit
+uv run compound-memory stats            # 健康度：uses/confidence 固定桶 + 活性 + 蒸馏产出量
+uv run compound-memory rebuild-index  # 索引可随时重建
+uv run compound-memory review-queue   # 冲突队列（CLI 唯一入口）
+uv run compound-memory git-log        # 审计轨迹
 ```
 
 ## 定时蒸馏准备（launchd）
@@ -68,8 +70,8 @@ $PY -m compound_memory.cli git-log        # 审计轨迹
 ADR 0001：确定性准备定时跑，判断（摘要/合并）由 Agent 会话内按需完成。每天 09:00 把候选清单写到 `<root>/distill/last-plan.json`。调度选 launchd 而非 cron：macOS 系统标准，睡眠错过的计划唤醒后补跑。
 
 ```bash
-REPO=$(pwd); PY=$(which python3)   # 解释器须已安装 pyyaml
-sed -e "s|__REPO__|$REPO|g" -e "s|__PYTHON__|$PY|g" -e "s|__ROOT__|$HOME/.agents/memory|g" \
+REPO=$(pwd); UV="$HOME/.local/bin/uv"   # 项目环境由 uv 管理，脚本内经 UV_BIN 覆盖 launchd PATH
+sed -e "s|__REPO__|$REPO|g" -e "s|__UV__|$UV|g" -e "s|__ROOT__|$HOME/.agents/memory|g" \
   scripts/com.compound-memory.distill-prepare.plist.tmpl \
   > ~/Library/LaunchAgents/com.compound-memory.distill-prepare.plist
 launchctl load ~/Library/LaunchAgents/com.compound-memory.distill-prepare.plist
@@ -81,8 +83,8 @@ launchctl list | grep compound-memory   # 验证已加载；日志在 <root>/dis
 ## 开发
 
 ```bash
-$PY -m pytest tests/ -q     # 74 tests（MCP tool 边界 + 蒸馏 + 生命周期/索引/CLI）
-$PY -m mypy src/compound_memory/
+uv run pytest tests/ -q     # 85 tests（MCP tool 边界 + 蒸馏 + 生命周期/索引/CLI）
+uv run mypy src/compound_memory/
 ```
 
 测试缝：MCP tool 边界（`mcp.Client(server)` 内存直连，无子进程）+ 核心模块单测（scoring / index / store 运维面）。

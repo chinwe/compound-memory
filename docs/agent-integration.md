@@ -21,16 +21,15 @@ compound-memory 是本地多 Agent 共享记忆库（存储 `~/.agents/memory`�
 
 | 项 | 值 |
 |---|---|
-| 启动命令 | `<python> -m compound_memory.server` |
-| `PYTHONPATH` | `<仓库>/src` |
+| 启动命令 | `uv run --directory <仓库> compound-memory-server` |
 | `COMPOUND_MEMORY_ROOT` | `~/.agents/memory`（可省略，省略即此默认值） |
 
-**Python 解释器**：本机推荐 `~/.workbuddy/binaries/python/envs/default/bin/python`（已装 `mcp` 包；系统 `python3` 不一定有）。换解释器时确认 `mcp >= 2.x` 已安装。
+**运行环境（uv）**：项目由 uv 管理（`pyproject.toml` + `uv.lock`），uv 不在 PATH 时用 `~/.local/bin/uv`。宿主配置的 `command` 写 uv 绝对路径、`args` 带 `--directory <仓库>`，依赖环境由 `uv run` 自管——首次克隆先 `uv sync --extra dev` 建 `.venv`。启动走 console script `compound-memory-server`（uv 自身输出走 stderr，不污染 MCP 的 stdio 协议）。
 
 **首次使用**先初始化空库（已有库可跳过）：
 
 ```bash
-PYTHONPATH=<仓库>/src <python> -m compound_memory.cli init
+uv run --directory <仓库> compound-memory init
 ```
 
 **验证**：在宿主里让 Agent 调用 `memory_search`（如查询 "compound-memory"），能返回 `{"hits": [...]}` 即接入成功。
@@ -62,10 +61,9 @@ PYTHONPATH=<仓库>/src <python> -m compound_memory.cli init
   "mcpServers": {
     "compound-memory": {
       "type": "stdio",
-      "command": "~/.workbuddy/binaries/python/envs/default/bin/python",
-      "args": ["-m", "compound_memory.server"],
+      "command": "~/.local/bin/uv",
+      "args": ["run", "--directory", "<仓库>", "compound-memory-server"],
       "env": {
-        "PYTHONPATH": "<仓库>/src",
         "COMPOUND_MEMORY_ROOT": "~/.agents/memory"
       }
     }
@@ -87,10 +85,9 @@ PYTHONPATH=<仓库>/src <python> -m compound_memory.cli init
     "servers": {
       "compound-memory": {
         "type": "stdio",
-        "command": "~/.workbuddy/binaries/python/envs/default/bin/python",
-        "args": ["-m", "compound_memory.server"],
+        "command": "~/.local/bin/uv",
+        "args": ["run", "--directory", "<仓库>", "compound-memory-server"],
         "env": {
-          "PYTHONPATH": "<仓库>/src",
           "COMPOUND_MEMORY_ROOT": "~/.agents/memory"
         }
       }
@@ -134,9 +131,8 @@ hook 只做**召回**；**写入与 feedback** 仍靠 Agent 主动调用工具�
 
 ```bash
 claude mcp add compound-memory \
-  -e PYTHONPATH=<仓库>/src \
   -e COMPOUND_MEMORY_ROOT=$HOME/.agents/memory \
-  -- ~/.workbuddy/binaries/python/envs/default/bin/python -m compound_memory.server
+  -- ~/.local/bin/uv run --directory <仓库> compound-memory-server
 ```
 
 加 `-s user` 写入用户级（全局可用），不加则默认 local（仅当前项目）。
@@ -148,10 +144,9 @@ claude mcp add compound-memory \
   "mcpServers": {
     "compound-memory": {
       "type": "stdio",
-      "command": "~/.workbuddy/binaries/python/envs/default/bin/python",
-      "args": ["-m", "compound_memory.server"],
+      "command": "~/.local/bin/uv",
+      "args": ["run", "--directory", "<仓库>", "compound-memory-server"],
       "env": {
-        "PYTHONPATH": "<仓库>/src",
         "COMPOUND_MEMORY_ROOT": "~/.agents/memory"
       }
     }
@@ -174,10 +169,9 @@ dsh 通过 MCP client 插件 `@deepseek-ai/dsh-mcp-client` 接入，一个插件
     config:
       serverName: compound-memory
       transport: stdio
-      command: ~/.workbuddy/binaries/python/envs/default/bin/python
-      args: ['-m', 'compound_memory.server']
+      command: ~/.local/bin/uv
+      args: ['run', '--directory', '<仓库>', 'compound-memory-server']
       env:
-        PYTHONPATH: <仓库>/src
         COMPOUND_MEMORY_ROOT: ~/.agents/memory
       failOnStartupError: true
 ```
@@ -210,23 +204,20 @@ dsh 通过 MCP client 插件 `@deepseek-ai/dsh-mcp-client` 接入，一个插件
 ## 7. 运维与蒸馏（CLI，所有宿主共用）
 
 ```bash
-PY=~/.workbuddy/binaries/python/envs/default/bin/python
-export PYTHONPATH=$(pwd)/src
-
-$PY -m compound_memory.cli stats          # 健康度：uses/confidence 固定桶 + 活性 + 蒸馏产出量
-$PY -m compound_memory.cli decay          # 衰减归档（launchd/cron 定时跑；长期未用且少用才动）
-$PY -m compound_memory.cli revive <id>    # 复活归档记忆（CLI 唯一入口）
-$PY -m compound_memory.cli review-queue   # fact/insight 同 key 冲突队列（人工复核，CLI 唯一入口）
-$PY -m compound_memory.cli rebuild-index  # 手编已有文件内容后重建检索缓存
-$PY -m compound_memory.cli git-log        # 审计轨迹（每次写入自动 commit）
+uv run compound-memory stats          # 健康度：uses/confidence 固定桶 + 活性 + 蒸馏产出量
+uv run compound-memory decay          # 衰减归档（launchd/cron 定时跑；长期未用且少用才动）
+uv run compound-memory revive <id>    # 复活归档记忆（CLI 唯一入口）
+uv run compound-memory review-queue   # fact/insight 同 key 冲突队列（人工复核，CLI 唯一入口）
+uv run compound-memory rebuild-index  # 手编已有文件内容后重建检索缓存
+uv run compound-memory git-log        # 审计轨迹（每次写入自动 commit）
 ```
 
 **蒸馏**（把一批旧记忆沉淀为更高密度产物，判断归调用方 Agent）：
 
 ```bash
-$PY -m compound_memory.cli distill-plan   # 确定性候选：merge_with / possible_dup_of / promotion_candidate
+uv run compound-memory distill-plan   # 确定性候选：merge_with / possible_dup_of / promotion_candidate
 # Agent 阅读 last-plan.json 做取舍、拟合并文案（判断段）
-$PY -m compound_memory.cli distill-apply "合并后的经验" insight agent-zcode \
+uv run compound-memory distill-apply "合并后的经验" insight agent-zcode \
   --sources <id1>,<id2>                    # 原子落库：产物 links 溯源 + 源归档（可复活）
 ```
 
@@ -236,7 +227,7 @@ launchd 每天 09:00 自动把候选清单写到 `<root>/distill/last-plan.json`
 
 | 症状 | 处置 |
 |---|---|
-| 宿主里看不到 5 个 memory_* 工具 | 先手动跑启动命令看报错：`PYTHONPATH=<仓库>/src <python> -m compound_memory.server`；多为解释器没装 `mcp` 或 `PYTHONPATH` 路径漂移（仓库移动后要同步改各宿主配置） |
+| 宿主里看不到 5 个 memory_* 工具 | 先手动跑启动命令看报错：`uv run --directory <仓库> compound-memory-server`；多为 uv 不在预期路径（`command` 要写绝对路径）或 `--directory` 指向的仓库位置漂移（仓库移动后要同步改各宿主配置） |
 | 搜索结果为空 / 召回不全 | `stats` 看记忆量；怀疑索引损坏时 `rebuild-index`（缓存可随时重建，检索永远降级不报错） |
 | 手工编辑过记忆文件内容 | 活性检测只覆盖新增/删除，**内容**修改需显式 `rebuild-index` |
 | SessionStart 没注入 | hook 任何异常都静默退出；手动跑 `~/.agents/memory/hooks/session_start.py` 检查输出是否为合法 `{"additionalContext": ...}` JSON |

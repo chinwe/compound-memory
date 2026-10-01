@@ -8,13 +8,14 @@ set -eu
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="${COMPOUND_MEMORY_ROOT:-$HOME/.agents/memory}"
-CM_PYTHON="${CM_PYTHON:-python3}"
+# launchd 的 PATH 不含 ~/.local/bin：UV_BIN 允许外部覆盖，其次 PATH，最后默认安装位置
+UV_BIN="${UV_BIN:-$(command -v uv || echo "$HOME/.local/bin/uv")}"
 
 # last-plan.json 是运行时产物（与 index/ 同类），不进记忆库 git——缺行则补
 # （先跑 CLI 让 store 初始化出 .gitignore，再补 distill/ 行）
 mkdir -p "$ROOT/distill"
 echo "[$(date '+%Y-%m-%dT%H:%M:%S')] distill-prepare: plan -> $ROOT/distill/last-plan.json"
-PYTHONPATH="$REPO_DIR/src" "$CM_PYTHON" -m compound_memory.cli \
+"$UV_BIN" run --project "$REPO_DIR" compound-memory \
   --root "$ROOT" distill-plan > "$ROOT/distill/last-plan.json"
 if grep -q '^distill/$' "$ROOT/.gitignore" 2>/dev/null; then :; else
   echo "distill/" >> "$ROOT/.gitignore"
