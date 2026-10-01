@@ -1,6 +1,9 @@
 """Scoring: tokenization, lexical similarity (BM25), recency decay, final score.
 
 检索得分 = 0.45·相似度 + 0.25·置信度 + 0.20·新近度(e^(-Δt/τ)) + 0.10·类型权重
+
+rank 是排序管线的单一定义点：调用方传入原始 query 与候选记忆，
+tokenize → BM25 → 归一化 → 新近 → 合分 → 排序 → 结果形状全部在实现内。
 """
 
 from __future__ import annotations
@@ -8,11 +11,15 @@ from __future__ import annotations
 import datetime as dt
 import math
 import re
+from typing import Any
+
+from .model import TYPE_SPEC, Memory
 
 TOKEN_RE = re.compile(r"[a-z0-9]+|[\u4e00-\u9fff]")
 
-TYPE_WEIGHT = {"skill": 1.0, "fact": 0.9, "insight": 0.7, "episode": 0.5}
-TAU_DAYS = {"episode": 30.0, "insight": 90.0, "fact": 365.0, "skill": 365.0}
+# 由 TYPE_SPEC 派生（加类型只改一张表）；.get 的兜底默认用于容错手工编辑出的未知类型
+TYPE_WEIGHT = {t: s.weight for t, s in TYPE_SPEC.items()}
+TAU_DAYS = {t: s.tau_days for t, s in TYPE_SPEC.items()}
 
 W_SIM = 0.45
 W_CONF = 0.25
@@ -43,9 +50,17 @@ def tokenize(text: str) -> list[str]:
     return tokens
 
 
-def doc_text(mem) -> str:
+def doc_text(mem: Memory) -> str:
     """The searchable text of a memory — single definition point (content + key)."""
     return mem.content + " " + (mem.key or "")
+
+
+def recency_ref(mem: Memory) -> str:
+    """新近基准（CONTEXT.md: recency reference）：last_used 优先，无则 created。
+
+    排序与衰减共用这一个定义点，不得各算各的。
+    """
+    return mem.last_used or mem.created
 
 
 def bm25_scores(
@@ -75,12 +90,11 @@ def bm25_scores(
     return scores
 
 
-def recency_score(last_used: str | None, created: str, mtype: str, now) -> float:
-    """Exponential recency e^(-Δdays/τ); τ by memory type."""
-    ref = last_used or created
-    tau = TAU_DAYS.get(mtype, 90.0)
+def recency_score(mem: Memory, now: dt.date) -> float:
+    """Exponential recency e^(-Δdays/τ); τ by memory type; bad dates ⇒ 0.0."""
+    tau = TAU_DAYS.get(mem.type, 90.0)
     try:
-        ref_date = dt.date.fromisoformat(ref)
+        ref_date = dt.date.fromisoformat(recency_ref(mem))
     except (ValueError, TypeError):
         return 0.0
     days = max(0.0, (now - ref_date).days)
@@ -96,3 +110,38 @@ def normalized_similarity(bm25: float, n_query_tokens: int) -> float:
 
 def final_score(sim: float, confidence: float, recency: float, mtype: str) -> float:
     return W_SIM * sim + W_CONF * confidence + W_RECENCY * recency + W_TYPE * TYPE_WEIGHT.get(mtype, 0.5)
+
+
+def rank(query: str, candidates: list[Memory], now: dt.date, top_k: int = 5) -> list[dict[str, Any]]:
+    """排序管线：query 与候选记忆进，最终搜索结果出。
+
+    结果 dict 的形状在这里一处定义（id / score / similarity / confidence /
+    uses / type / ns / source / content）；空 query 返回 []。
+    """
+    q_tokens = tokenize(query)
+    if not q_tokens:
+        return []
+    docs = [tokenize(doc_text(m)) for m in candidates]
+    rels = bm25_scores(q_tokens, docs)
+    hits: list[dict[str, Any]] = []
+    for mem, rel in zip(candidates, rels):
+        if rel <= 0:
+            continue
+        sim = normalized_similarity(rel, len(q_tokens))
+        rec = recency_score(mem, now)
+        score = final_score(sim, mem.confidence, rec, mem.type)
+        hits.append(
+            {
+                "id": mem.id,
+                "score": round(score, 4),
+                "similarity": round(sim, 4),
+                "confidence": mem.confidence,
+                "uses": mem.uses,
+                "type": mem.type,
+                "ns": mem.ns,
+                "source": mem.source,
+                "content": mem.content,
+            }
+        )
+    hits.sort(key=lambda h: -h["score"])
+    return hits[:top_k]

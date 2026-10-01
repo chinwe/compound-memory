@@ -1,0 +1,58 @@
+# compound-memory
+
+本地多 Agent 共享记忆系统：记忆以 Markdown 文件落盘，随使用增值（复利），长期不用则衰减归档、可复活。
+
+## Language
+
+### 记忆与存储
+
+**Memory（记忆）**：
+一条被记录的知识单元，带类型、来源、置信度与使用历史，落盘为带 frontmatter 的 Markdown。
+_Avoid_: 记录、entry、note
+
+**Memory type（记忆类型）**：
+四种之一——episode（经历）、fact（事实）、insight（洞察）、skill（技能）。类型决定检索权重、新近半衰期与归档 TTL，全系统只有一张类型规格表。
+_Avoid_: category、kind
+
+**Namespace（命名空间）**：
+记忆的可见范围：`_shared` 全体 Agent 共享；`agent-*` 仅属主 Agent 可写。
+_Avoid_: scope、bucket
+
+**Confidence（置信度）**：
+0~1 的数值，表示一条记忆被验证的程度；使用与跨 Agent 验证会提高它。
+_Avoid_: score、weight（weight 专指类型权重）
+
+**Compounding（复利）**：
+记忆系统随使用增值的机制：使用强化置信度、双向关联在 get 时带出邻居、跨 Agent 验证额外加分。
+_Avoid_: 加分、利息
+
+**Review queue（冲突队列）**：
+同 key 同类型的 fact/insight 内容冲突时，等待人工复核的队列。
+_Avoid_: conflict list
+
+### 生命周期
+
+**Decay（衰减）**：
+长期未用且少用的记忆移入 archive 的过程。判据是"长期未用"，不是创建时间。
+_Avoid_: 过期、expire
+
+**Archive（归档）**：
+衰减记忆的存放区。归档记忆不可检索、仍可 get，可复活——归档是可逆的。
+_Avoid_: 删除、trash
+
+**Revive（复活）**：
+把归档记忆移回活动区，恢复可检索性。
+
+**Recency reference（新近基准）**：
+判断一条记忆"多新"的时间基准：`last_used` 优先，无则 `created`。排序与衰减共用同一基准，不得各算各的。
+_Avoid_: 参考时间、基准日期
+
+### 检索
+
+**Index（检索缓存）**：
+token→路径的可重建缓存，只索引活动区记忆。不变量：活动记忆必被索引，归档记忆必不在索引；缓存丢失或损坏时自动重建，检索永远降级而不报错。
+_Avoid_: 缓存、tokens.json（那只是它的落盘形态）
+
+**Ranking（检索排序）**：
+对候选记忆按相似度、置信度、新近度、类型权重合成单一分数并排序，产出搜索结果。搜索结果长什么样，由这里一处定义。
+_Avoid_: score、search（search 是整个动作）

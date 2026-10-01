@@ -22,19 +22,9 @@ from typing import Any
 import yaml
 
 from .index import Index
-from .model import Memory
-from .scoring import (
-    TYPE_WEIGHT,
-    bm25_scores,
-    doc_text,
-    final_score,
-    normalized_similarity,
-    recency_score,
-    tokenize,
-)
+from .model import MEMORY_TYPES, TTL_DAYS, Memory
+from .scoring import rank, recency_ref, tokenize
 
-MEMORY_TYPES = ("episode", "fact", "insight", "skill")
-TTL_DAYS: dict[str, int | None] = {"episode": 90, "fact": None, "insight": 180, "skill": None}
 ARCHIVE_USES_THRESHOLD = 3
 CONF_USE_BUMP = 0.1
 CONF_CROSS_AGENT_BUMP = 0.15
@@ -64,7 +54,7 @@ class MemoryStore:
         self.root = Path(root)
         self.ns_root = self.root / "namespaces"
         self.archive_root = self.root / "archive"
-        self.index = Index(self.root)
+        self.index = Index(self.root, scan_pairs=self._scan_pairs)
         self.review_queue_path = self.root / "review-queue.md"
         self.git_enabled = git and shutil.which("git") is not None
         self._ensure_layout()
@@ -72,11 +62,6 @@ class MemoryStore:
             self._git("init", "-q", check=False)
             self._git("add", "-A", check=False)
             self._git("commit", "-qm", "init compound-memory store", check=False)
-
-    @property
-    def index_file(self) -> Path:
-        """Physical cache file (anchored by one store-seam test)."""
-        return self.index.file
 
     # ---------- layout / git ----------
 
@@ -191,7 +176,7 @@ class MemoryStore:
         self._save(mem)
         if conflict_with is not None:
             self._append_review(conflict_with, mem)
-        self._update_index_for(mem)
+        self.index.sync(mem, self._active_rel(mem))
         self._commit(f"write {mem.id} ({type}/{ns}) by {source}")
         result = self._to_dict(mem)
         result["conflict"] = conflict_with is not None
@@ -224,7 +209,7 @@ class MemoryStore:
         mem.confidence = round(min(1.0, mem.confidence + bump), 3)
         mem.last_used = _today()
         self._save(mem)
-        self._update_index_for(mem)
+        self.index.sync(mem, self._active_rel(mem))
         self._commit(f"feedback {mem.id} by {agent}: uses={mem.uses} conf={mem.confidence}")
         return self._to_dict(mem)
 
@@ -252,35 +237,12 @@ class MemoryStore:
         top_k: int = 5,
         now: dt.date | None = None,
     ) -> list[dict[str, Any]]:
+        """检索 = 选候选（store 的 layout 职责）+ 排序（scoring.rank 单一定义点）。"""
         now = now or dt.date.today()
         q_tokens = tokenize(query)
         if not q_tokens:
             return []
-        candidates = self._candidates(q_tokens, ns)
-        docs = [tokenize(doc_text(m)) for m in candidates]
-        rels = bm25_scores(q_tokens, docs)
-        hits: list[dict[str, Any]] = []
-        for mem, rel in zip(candidates, rels):
-            if rel <= 0:
-                continue
-            sim = normalized_similarity(rel, len(q_tokens))
-            rec = recency_score(mem.last_used, mem.created, mem.type, now)
-            score = final_score(sim, mem.confidence, rec, mem.type)
-            hits.append(
-                {
-                    "id": mem.id,
-                    "score": round(score, 4),
-                    "similarity": round(sim, 4),
-                    "confidence": mem.confidence,
-                    "uses": mem.uses,
-                    "type": mem.type,
-                    "ns": mem.ns,
-                    "source": mem.source,
-                    "content": mem.content,
-                }
-            )
-        hits.sort(key=lambda h: -h["score"])
-        return hits[:top_k]
+        return rank(query, self._candidates(q_tokens, ns), now=now, top_k=top_k)
 
     # ---------- decay / archive / revive ----------
 
@@ -291,7 +253,7 @@ class MemoryStore:
             mem = self.parse(path)
             if mem.ttl is None:
                 continue
-            age = (now - _as_date(mem.last_used or mem.created)).days
+            age = (now - _as_date(recency_ref(mem))).days
             if age > mem.ttl and mem.uses < ARCHIVE_USES_THRESHOLD:
                 self._archive(mem)
                 archived.append(mem.id)
@@ -315,45 +277,37 @@ class MemoryStore:
         mem.archived = True
         self._save(mem)
         _remove(src)
-        self.index.remove(old_rel)
-        self._update_index_for(mem)
+        self.index.sync(mem, old_rel)
 
     def _move_to_active(self, mem: Memory) -> None:
         src = self._archive_path(mem)
-        old_rel = str(src.relative_to(self.root))
         mem.archived = False
         self._save(mem)
         _remove(src)
-        self.index.remove(old_rel)
-        self._update_index_for(mem)
+        self.index.sync(mem, self._active_rel(mem))
 
     # ---------- index (rebuildable cache; mechanics live in index.Index) ----------
 
-    def _rel_path(self, mem: Memory) -> str:
-        path = self._archive_path(mem) if mem.archived else self._active_path(mem)
-        return str(path.relative_to(self.root))
+    def _active_rel(self, mem: Memory) -> str:
+        return str(self._active_path(mem).relative_to(self.root))
 
-    def _update_index_for(self, mem: Memory) -> None:
-        """Q1-A: writes keep the cache alive — first touch rebuilds if needed.
-        Archived memories are un-indexed (not searchable by design)."""
-        if not self.index.file.exists():
-            self.rebuild_index()
-            return
-        if mem.archived:
-            self.index.remove(self._rel_path(mem))
-        else:
-            self.index.upsert(mem, self._rel_path(mem))
-
-    def rebuild_index(self) -> dict[str, Any]:
-        pairs = [
+    def _scan_pairs(self) -> list[tuple[Memory, str]]:
+        """Scan the active tree for Index rebuilds (injected callback, invoked lazily)."""
+        return [
             (self.parse(path), str(path.relative_to(self.root)))
             for path in sorted(self.ns_root.rglob("*.md"))
         ]
-        return self.index.rebuild(pairs)
+
+    def rebuild_index(self) -> dict[str, Any]:
+        return self.index.rebuild(self._scan_pairs())
 
     def _candidates(self, q_tokens: list[str], ns: str) -> list[Memory]:
-        """Indexed lookup with a scan fallback (Q4-A): cache loss degrades to slow, never to error."""
-        rels = self.index.candidates(q_tokens) if self.index.file.exists() else []
+        """Indexed lookup with a scan fallback (Q4-A): cache loss degrades to slow, never to error.
+
+        命中路径仍逐一复查文件存在性与 ns/archived——防的是 store API 之外的
+        文件变动（手工编辑、git 操作），与缓存活性无关；活性自愈在 Index 内。
+        """
+        rels = self.index.candidates(q_tokens)
         if rels:
             out = []
             for rel in rels:

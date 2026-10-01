@@ -16,6 +16,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from compound_memory.storage import MemoryStore  # noqa: E402
+
 _TEST_TMP_BASE = Path(__file__).resolve().parents[1] / ".test-tmp"
 
 
@@ -45,3 +47,9 @@ def tmp_path_factory():
 @pytest.fixture
 def tmp_path(tmp_path_factory):
     return tmp_path_factory.mktemp("t")
+
+
+@pytest.fixture
+def store(tmp_path: Path) -> MemoryStore:
+    """共享的 MemoryStore fixture（原先在 test_lifecycle / test_index 各有一份）。"""
+    return MemoryStore(tmp_path / "memroot")

@@ -8,18 +8,12 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import os
 from pathlib import Path
 
 import pytest
 
 from compound_memory.cli import main as cli_main
 from compound_memory.storage import MemoryStore
-
-
-@pytest.fixture
-def store(tmp_path: Path) -> MemoryStore:
-    return MemoryStore(tmp_path / "memroot")
 
 
 def _days_ago(n: int) -> str:
@@ -76,21 +70,13 @@ class TestDecayAndArchive:
 
 
 class TestIndexCache:
-    def test_search_works_without_index_and_with_index(self, store: MemoryStore):
+    def test_rebuild_index_reports_counts_and_keeps_search(self, store: MemoryStore):
+        """显式重建动词（运维面）：报告计数，且重建后检索如常。"""
         a = store.write(content="Python GIL 基础知识", type="episode", source="agent-a")
         store.write(content="Go goroutine 并发知识", type="episode", source="agent-a")
-        scan_hits = store.search("Python GIL")
-        assert [h["id"] for h in scan_hits] == [a["id"]]
-        store.rebuild_index()
-        index_hits = store.search("Python GIL")
-        assert [h["id"] for h in index_hits] == [a["id"]]
-
-    def test_search_survives_index_deletion(self, store: MemoryStore):
-        mem = store.write(content="Docker 网络模式 bridge", type="episode", source="agent-a")
-        assert store.index_file.exists()
-        os.replace(store.index_file, store.index_file.with_name("tokens.json.deleted"))
-        hits = store.search("Docker bridge")
-        assert [h["id"] for h in hits] == [mem["id"]]
+        counts = store.rebuild_index()
+        assert counts["memories"] == 2
+        assert [h["id"] for h in store.search("Python GIL")] == [a["id"]]
 
 
 class TestGit:
