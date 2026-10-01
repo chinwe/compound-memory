@@ -8,7 +8,7 @@ compound-memory 是本地多 Agent 共享记忆库（存储 `~/.agents/memory`�
 
 | 宿主 | 状态 | MCP 配置位置 | 使用规则注入方式 |
 |---|---|---|---|
-| WorkBuddy | ✅ 已接入 | `~/.workbuddy/mcp.json` | SOUL.md / 用户指令补充规则 |
+| WorkBuddy | ✅ 已接入 | `~/.workbuddy/mcp.json` | `~/.workbuddy/MEMORY.md`（用户级记忆，每会话自动注入） |
 | ZCode | ✅ 已接入 | `~/.zcode/cli/config.json` | SessionStart hook 自动注入 + `~/.zcode/AGENTS.md` |
 | Claude Code | ⬜ 待接入 | `~/.claude.json` 或项目 `.mcp.json` | `CLAUDE.md` |
 | DeepSeek Harness (dsh) | ⬜ 待接入 | `~/.dsh/profiles/web/cordis.patch.yml` | agent 指令文件 |
@@ -71,7 +71,14 @@ uv run --directory <仓库> compound-memory init
 }
 ```
 
-修改后重启 WorkBuddy 生效。使用规则的注入：在 WorkBuddy 助理的系统文件（`~/.workbuddy/SOUL.md` 或用户级指令）中补充「共通使用规范」（见 §6）的行为要求即可。
+修改后重启 WorkBuddy 生效。
+
+**使用规则的注入**：把 §6 的「共通使用规范」写进用户级记忆文件 **`~/.workbuddy/MEMORY.md`**（已落地）。注意两个细节：
+
+- 每会话真正自动注入的是它的镜像 `~/.workbuddy/user-<uid>-personal/MEMORY.md`，**两份要同步改**，否则规则不生效；
+- WorkBuddy 没有 SessionStart 注入机制，规则里显式保留「任务开始先 `memory_search`」这一步——不像 ZCode 有 hook 兜底召回，这里不能省。
+
+验证：让 Agent 调一次 `memory_search`（如查询 "compound-memory"），返回 `{"hits": [...]}` 即工作正常；`memory_feedback` 的 `agent` 参数固定填 `agent-workbuddy`。
 
 ## 3. ZCode ✅
 
