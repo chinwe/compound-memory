@@ -1,0 +1,65 @@
+# compound-memory
+
+本地多 Agent 共享记忆系统——支持复利（越用越值钱）。Spec 见 `../specs/0001-compound-memory-spec.md`。
+
+## 架构
+
+```
+Agent (MCP 客户端 / CLI)
+  └─ memory_write | memory_search | memory_get | memory_link | memory_feedback
+       └─ MemoryStore (~/.agents/memory)
+            ├─ namespaces/_shared/{episode,fact,insight,skill}/*.md   共享区
+            ├─ namespaces/agent-*/...                                  私有区
+            ├─ archive/...                                             衰减归档（可复活）
+            ├─ index/tokens.json                                       可重建的检索缓存
+            ├─ review-queue.md                                         fact/insight 冲突队列
+            └─ .git/                                                   每次写入自动 commit
+```
+
+## 复利机制
+
+| 利息来源 | 实现 |
+|---|---|
+| ① 使用强化 | `memory_feedback`: uses+1, conf+0.1 |
+| ② 关联增值 | `memory_link` 双向关联；`memory_get` 带出一度邻居 |
+| ③ 蒸馏提纯 | 衰减归档 + 冲突去重（蒸馏任务规划中，P2） |
+| ④ 跨 Agent 验证 | 与 source 不同的 agent 反馈时 conf 额外 +0.15 |
+
+评分公式：`0.45·相似度 + 0.25·置信度 + 0.20·新近度(e^(-Δt/τ)) + 0.10·类型权重`
+
+## MCP 接入
+
+```json
+{
+  "mcpServers": {
+    "compound-memory": {
+      "command": "python3",
+      "args": ["-m", "compound_memory.server"],
+      "env": { "PYTHONPATH": "<本目录>/src" }
+    }
+  }
+}
+```
+
+## CLI
+
+```bash
+PY=python3
+export PYTHONPATH=$(pwd)/src
+
+$PY -m compound_memory.cli write "Vercel Serverless 10s 超时" episode agent-tars
+$PY -m compound_memory.cli search "Vercel 超时"
+$PY -m compound_memory.cli feedback <id> agent-claude
+$PY -m compound_memory.cli decay          # cron 定时跑
+$PY -m compound_memory.cli stats
+$PY -m compound_memory.cli rebuild-index  # 索引可随时重建
+```
+
+## 开发
+
+```bash
+$PY -m pytest tests/ -q     # 24 tests（MCP tool 边界 + 生命周期/CLI）
+$PY -m mypy src/compound_memory/
+```
+
+测试缝：MCP tool 边界（`mcp.Client(server)` 内存直连，无子进程）。
