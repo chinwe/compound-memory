@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 import re
+from collections.abc import Callable
 from typing import Any
 
 from .model import TYPE_SPEC, Memory
@@ -25,6 +26,10 @@ W_SIM = 0.45
 W_CONF = 0.25
 W_RECENCY = 0.20
 W_TYPE = 0.10
+# 邻居召回（CONTEXT.md: 关联增值）：hit 内嵌精简邻居的形状上限——
+# 数据由调用方经 neighbor_lookup 提供（store 只供活动记忆），截断/上限/去环在此单点收口
+MAX_NEIGHBORS = 3
+NEIGHBOR_CONTENT_CHARS = 80
 
 
 def _cjk_bigrams(run: list[str]) -> list[str]:
@@ -116,11 +121,18 @@ def final_score(sim: float, confidence: float, recency: float, mtype: str) -> fl
     return W_SIM * sim + W_CONF * confidence + W_RECENCY * recency + W_TYPE * TYPE_WEIGHT.get(mtype, 0.5)
 
 
-def rank(query: str, candidates: list[Memory], now: dt.date, top_k: int = 5) -> list[dict[str, Any]]:
+def rank(
+    query: str,
+    candidates: list[Memory],
+    now: dt.date,
+    top_k: int = 5,
+    neighbor_lookup: Callable[[str], list[Memory]] | None = None,
+) -> list[dict[str, Any]]:
     """排序管线：query 与候选记忆进，最终搜索结果出。
 
     结果 dict 的形状在这里一处定义（id / score / similarity / confidence /
-    uses / type / ns / source / content）；空 query 返回 []。
+    uses / type / ns / source / content；提供 neighbor_lookup 时每 hit 内嵌
+    neighbors）。邻居只"带出"不"提分"——公式与排序不受影响（#7）。
     """
     q_tokens = tokenize(query)
     if not q_tokens:
@@ -148,4 +160,17 @@ def rank(query: str, candidates: list[Memory], now: dt.date, top_k: int = 5) -> 
             }
         )
     hits.sort(key=lambda h: -h["score"])
-    return hits[:top_k]
+    top = hits[:top_k]
+    if neighbor_lookup is not None:
+        for hit in top:
+            hit["neighbors"] = [
+                {
+                    "id": n.id,
+                    "content": n.content[:NEIGHBOR_CONTENT_CHARS] + ("…" if len(n.content) > NEIGHBOR_CONTENT_CHARS else ""),
+                    "type": n.type,
+                    "ns": n.ns,
+                }
+                for n in neighbor_lookup(hit["id"])
+                if n.id != hit["id"]  # 去环：双向 link 不把 hit 自己带回来
+            ][:MAX_NEIGHBORS]
+    return top

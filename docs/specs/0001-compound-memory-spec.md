@@ -54,7 +54,7 @@
   检索得分 = 0.45·相似度（BM25 词面）+ 0.25·置信度 + 0.20·新近度(e^(−Δt/τ)) + 0.10·类型权重
   置信度   = min(1, conf₀ + 0.1·uses + 0.15·跨Agent验证次数)
   ```
-- **复利四来源**：① 使用强化（feedback 回写 uses+1、conf+0.1）② 关联增值（links 双向关联，memory_get 时带出一度邻居；search 命中自动召回邻居为 roadmap）③ 蒸馏提纯（`distill-plan` 确定性扫描产出带信号标注的候选清单 → 调用方 Agent 判断取舍/摘要 → `distill-apply` 原子落库，条数减少密度上升）④ 跨 Agent 验证（与 source 不同的 agent feedback 时，conf+0.15）。
+- **复利四来源**：① 使用强化（feedback 回写 uses+1、conf+0.1）② 关联增值（links 双向关联，memory_get 时带出一度邻居；search 命中自动内嵌精简邻居——每 hit 上限 3、一度、去环、只召回活动记忆，邻居不参与排序分，include_neighbors/--no-neighbors 可关）③ 蒸馏提纯（`distill-plan` 确定性扫描产出带信号标注的候选清单 → 调用方 Agent 判断取舍/摘要 → `distill-apply` 原子落库，条数减少密度上升）④ 跨 Agent 验证（与 source 不同的 agent feedback 时，conf+0.15）。
 - **防通胀**：新近度指数衰减 + 长期未用且少用（uses < 3）的记忆归档（不物理删除）+ 蒸馏时双信号去重标注（key 强信号 + BM25 弱信号，只标注不合并，合并与否由判断段裁决）。
 - **冲突解决**：episodes append-only 天然无冲突；facts/insights 同 key 不同值时保留双版本并生成 review 队列，由主治 Agent 或人裁决；一切写入带 source + 时间戳。
 - **生命周期状态机**：类型终身不变（episode/fact/insight/skill 原地不迁移，改类型 = 蒸馏新写 + 源归档）；强化由 uses/confidence 表达（不设 reinforced/principle 中间类型）；晋升 = 蒸馏产物（高活性 episode 在 distill-plan 标 promotion-candidate，判断后置给 Agent 蒸馏为更高密度新记忆）；任意记忆可经衰减进入 archive，archive 命中可复活并按新证据重算 conf。

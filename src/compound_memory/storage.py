@@ -286,6 +286,7 @@ class MemoryStore:
         ns: str = "_shared",
         top_k: int = 5,
         now: dt.date | None = None,
+        include_neighbors: bool = True,
     ) -> list[dict[str, Any]]:
         """检索 = 选候选（store 的 layout 职责）+ 排序（scoring.rank 单一定义点）。"""
         self._check_ns(ns)
@@ -293,7 +294,25 @@ class MemoryStore:
         q_tokens = tokenize(query)
         if not q_tokens:
             return []
-        return rank(query, self._candidates(q_tokens, ns), now=now, top_k=top_k)
+        return rank(
+            query,
+            self._candidates(q_tokens, ns),
+            now=now,
+            top_k=top_k,
+            neighbor_lookup=self._active_neighbors if include_neighbors else None,
+        )
+
+    def _active_neighbors(self, mem_id: str) -> list[Memory]:
+        """邻居召回的数据源：hit 的一度 links，归档邻居不召回（截断/上限/去环归 rank）。"""
+        mem = self.find(mem_id)
+        if mem is None:
+            return []
+        out: list[Memory] = []
+        for link_id in mem.links:
+            neighbor = self.find(link_id)
+            if neighbor is not None and not neighbor.archived:
+                out.append(neighbor)
+        return out
 
     # ---------- 衰减 / 归档 / 复活 ----------
 

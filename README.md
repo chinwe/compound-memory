@@ -21,7 +21,7 @@ Agent (MCP 客户端 / CLI)
 | 利息来源 | 实现 |
 |---|---|
 | ① 使用强化 | `memory_feedback`: uses+1, conf+0.1 |
-| ② 关联增值 | `memory_link` 双向关联；`memory_get` 带出一度邻居 |
+| ② 关联增值 | `memory_link` 双向关联；`memory_get` 带出一度邻居；`search` 命中自动内嵌精简邻居（上限 3、只召回活动记忆，`--no-neighbors` 可关） |
 | ③ 蒸馏提纯 | `distill-plan`（CLI，确定性候选+双信号去重标注）→ Agent 判断 → `distill-apply` 原子落库（产物 links 溯源，源归档可复活） |
 | ④ 跨 Agent 验证 | 与 source 不同的 agent 反馈时 conf 额外 +0.15 |
 
@@ -49,7 +49,7 @@ export PYTHONPATH=$(pwd)/src
 
 $PY -m compound_memory.cli init               # 初始化空库
 $PY -m compound_memory.cli write "Vercel Serverless 10s 超时" episode agent-tars
-$PY -m compound_memory.cli search "Vercel 超时"
+$PY -m compound_memory.cli search "Vercel 超时"     # 命中内嵌一度邻居（上限3，--no-neighbors 关闭）
 $PY -m compound_memory.cli feedback <id> agent-claude
 $PY -m compound_memory.cli decay          # cron 定时跑
 $PY -m compound_memory.cli revive <id>    # 复活归档记忆（CLI 唯一入口）

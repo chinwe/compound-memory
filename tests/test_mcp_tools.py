@@ -151,6 +151,83 @@ class TestCompounding:
             assert call(await client.call_tool("memory_link", {"id_a": "nope", "id_b": "alsono"}))["found"] is False
 
 
+class TestNeighborRecall:
+    async def test_search_embeds_one_hop_neighbors(self, memroot):
+        """利息②的 search 侧：命中自动带出一度邻居（带出而非提分——邻居不影响排序分）。
+        单 hit + 嵌套数组场景同时验证 mcp 2.x unwrap 不破坏 {'hits': [...]} 信封。"""
+        async with make_client(memroot) as client:
+            a = call(await client.call_tool("memory_write", {
+                "content": "sqlite-vec 向量检索", "type": "insight", "source": "agent-a",
+            }))
+            b = call(await client.call_tool("memory_write", {
+                "content": "ripgrep 关键词检索", "type": "insight", "source": "agent-b",
+            }))
+            call(await client.call_tool("memory_link", {"id_a": a["id"], "id_b": b["id"]}))
+            out = call(await client.call_tool("memory_search", {"query": "sqlite-vec 向量"}))
+            assert out["count"] == 1 and isinstance(out["hits"], list)
+            hit = out["hits"][0]
+            assert hit["id"] == a["id"]
+            neighbors = hit["neighbors"]
+            assert [n["id"] for n in neighbors] == [b["id"]]
+            assert hit["id"] not in [n["id"] for n in neighbors]  # 去环：双向 link 不带回自己
+            assert neighbors[0]["type"] == "insight" and neighbors[0]["ns"] == "_shared"
+            assert neighbors[0]["content"] == "ripgrep 关键词检索"
+
+    async def test_neighbor_content_truncated_to_80_chars(self, memroot):
+        async with make_client(memroot) as client:
+            anchor = call(await client.call_tool("memory_write", {
+                "content": "主题词锚点记忆", "type": "episode", "source": "agent-a",
+            }))
+            long_neighbor = call(await client.call_tool("memory_write", {
+                "content": "长" * 120, "type": "episode", "source": "agent-a",
+            }))
+            call(await client.call_tool("memory_link", {"id_a": anchor["id"], "id_b": long_neighbor["id"]}))
+            out = call(await client.call_tool("memory_search", {"query": "主题词锚点"}))
+            trimmed = out["hits"][0]["neighbors"][0]["content"]
+            assert len(trimmed) == 81 and trimmed.endswith("…")
+
+    async def test_neighbor_cap_three_per_hit(self, memroot):
+        async with make_client(memroot) as client:
+            anchor = call(await client.call_tool("memory_write", {
+                "content": "上限测试锚点", "type": "episode", "source": "agent-a",
+            }))
+            for i in range(4):
+                side = call(await client.call_tool("memory_write", {
+                    "content": f"外围节点{i}号", "type": "episode", "source": "agent-a",
+                }))
+                call(await client.call_tool("memory_link", {"id_a": anchor["id"], "id_b": side["id"]}))
+            out = call(await client.call_tool("memory_search", {"query": "上限测试锚点"}))
+            assert len(out["hits"][0]["neighbors"]) == 3
+
+    async def test_archived_neighbor_not_recalled(self, memroot):
+        """归档邻居不召回——邻居只来自活动区（decay 不经 MCP 暴露，直接走 store 归档）。"""
+        async with make_client(memroot) as client:
+            anchor = call(await client.call_tool("memory_write", {
+                "content": "活性锚点记忆", "type": "fact", "source": "agent-a", "key": "anchor",
+            }))
+            stale = call(await client.call_tool("memory_write", {
+                "content": "陈旧的关联邻居", "type": "episode", "source": "agent-a",
+            }))
+            call(await client.call_tool("memory_link", {"id_a": anchor["id"], "id_b": stale["id"]}))
+            store = cm_server._store_or_configure()
+            store._archive(store.find(stale["id"]))  # type: ignore[arg-type]
+            out = call(await client.call_tool("memory_search", {"query": "活性锚点"}))
+            assert out["hits"][0]["neighbors"] == []
+
+    async def test_include_neighbors_false_omits_key(self, memroot):
+        async with make_client(memroot) as client:
+            a = call(await client.call_tool("memory_write", {
+                "content": "关闭邻居的锚点", "type": "episode", "source": "agent-a",
+            }))
+            b = call(await client.call_tool("memory_write", {
+                "content": "毫不相干的外围内容", "type": "episode", "source": "agent-a",
+            }))
+            call(await client.call_tool("memory_link", {"id_a": a["id"], "id_b": b["id"]}))
+            out = call(await client.call_tool("memory_search", {"query": "关闭邻居的锚点", "include_neighbors": False}))
+            assert [h["id"] for h in out["hits"]] == [a["id"]]
+            assert "neighbors" not in out["hits"][0]
+
+
 class TestConflicts:
     async def test_conflicting_fact_goes_to_review_queue(self, memroot):
         async with make_client(memroot) as client:

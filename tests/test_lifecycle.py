@@ -170,3 +170,21 @@ class TestCli:
         assert cli_main(["--root", str(tmp_path / "l"), "link", "nope", "alsono"]) == 0
         out = json.loads(capsys.readouterr().out)
         assert out == {"found": False, "missing": ["nope", "alsono"]}
+
+    def test_cli_search_neighbors_toggle(self, tmp_path: Path, capsys):
+        """search 默认内嵌邻居；--no-neighbors 关闭（hits 不带 neighbors 键）。"""
+        root = str(tmp_path / "sroot")
+        assert cli_main(["--root", root, "write", "锚点记忆内容", "episode", "agent-cli"]) == 0
+        anchor = json.loads(capsys.readouterr().out)["id"]
+        assert cli_main(["--root", root, "write", "外围邻居内容", "episode", "agent-cli"]) == 0
+        side = json.loads(capsys.readouterr().out)["id"]
+        assert cli_main(["--root", root, "link", anchor, side]) == 0
+        capsys.readouterr()
+
+        assert cli_main(["--root", root, "search", "锚点记忆"]) == 0
+        hit = json.loads(capsys.readouterr().out)[0]
+        assert [n["id"] for n in hit["neighbors"]] == [side]
+
+        assert cli_main(["--root", root, "search", "锚点记忆", "--no-neighbors"]) == 0
+        hit = json.loads(capsys.readouterr().out)[0]
+        assert "neighbors" not in hit

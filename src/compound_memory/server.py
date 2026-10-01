@@ -51,9 +51,9 @@ def memory_write(
 
 
 @mcp.tool()
-def memory_search(query: str, ns: str = "_shared", top_k: int = 5) -> dict[str, Any]:
-    """Search memories (lexical similarity + confidence + recency + type weight). Default namespace is _shared. Returns {'hits': [...]} sorted by score."""
-    hits = _store_or_configure().search(query=query, ns=ns, top_k=top_k)
+def memory_search(query: str, ns: str = "_shared", top_k: int = 5, include_neighbors: bool = True) -> dict[str, Any]:
+    """Search memories (lexical similarity + confidence + recency + type weight). Default namespace is _shared. Each hit embeds up to 3 trimmed one-hop neighbors (active only) unless include_neighbors=False. Returns {'hits': [...]} sorted by score."""
+    hits = _store_or_configure().search(query=query, ns=ns, top_k=top_k, include_neighbors=include_neighbors)
     return {"hits": hits, "count": len(hits)}
 
 

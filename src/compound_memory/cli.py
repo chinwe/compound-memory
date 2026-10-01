@@ -31,7 +31,11 @@ def cmd_write(args: argparse.Namespace) -> None:
 
 
 def cmd_search(args: argparse.Namespace) -> None:
-    _emit(_open_store(args).search(query=args.query, ns=args.ns, top_k=args.top_k))
+    _emit(
+        _open_store(args).search(
+            query=args.query, ns=args.ns, top_k=args.top_k, include_neighbors=args.include_neighbors
+        )
+    )
 
 
 def cmd_get(args: argparse.Namespace) -> None:
@@ -111,6 +115,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("search")
     p.add_argument("query"); p.add_argument("--ns", default="_shared"); p.add_argument("--top-k", type=int, default=5)
+    p.add_argument("--no-neighbors", dest="include_neighbors", action="store_false",
+                   help="omit embedded one-hop neighbors from hits")
     p.set_defaults(func=cmd_search)
 
     p = sub.add_parser("get"); p.add_argument("id"); p.set_defaults(func=cmd_get)
