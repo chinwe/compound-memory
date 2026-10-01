@@ -29,6 +29,8 @@ Agent (MCP 客户端 / CLI)
 
 ## MCP 接入
 
+各宿主（WorkBuddy / ZCode / Claude Code / DeepSeek Harness）的完整接入配置与统一使用规范见 `docs/agent-integration.md`。
+
 ```json
 {
   "mcpServers": {
@@ -48,13 +50,13 @@ PY=python3
 export PYTHONPATH=$(pwd)/src
 
 $PY -m compound_memory.cli init               # 初始化空库
-$PY -m compound_memory.cli write "Vercel Serverless 10s 超时" episode agent-tars
+$PY -m compound_memory.cli write "Vercel Serverless 10s 超时" episode agent-workbuddy
 $PY -m compound_memory.cli search "Vercel 超时"     # 命中内嵌一度邻居（上限3，--no-neighbors 关闭）
 $PY -m compound_memory.cli feedback <id> agent-claude
 $PY -m compound_memory.cli decay          # cron 定时跑
 $PY -m compound_memory.cli revive <id>    # 复活归档记忆（CLI 唯一入口）
 $PY -m compound_memory.cli distill-plan   # 蒸馏候选清单：merge_with（同 key 强信号）+ possible_dup_of（BM25 弱信号）+ promotion_candidate（高活性 episode）
-$PY -m compound_memory.cli distill-apply "合并后的经验" insight agent-tars --sources <id1>,<id2>  # 原子落库：产物(links 溯源, origin=distillation) + 源归档，一次 commit
+$PY -m compound_memory.cli distill-apply "合并后的经验" insight agent-workbuddy --sources <id1>,<id2>  # 原子落库：产物(links 溯源, origin=distillation) + 源归档，一次 commit
 $PY -m compound_memory.cli stats            # 健康度：uses/confidence 固定桶 + 活性 + 蒸馏产出量
 $PY -m compound_memory.cli rebuild-index  # 索引可随时重建
 $PY -m compound_memory.cli review-queue   # 冲突队列（CLI 唯一入口）
