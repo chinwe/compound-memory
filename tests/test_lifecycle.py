@@ -87,10 +87,8 @@ class TestIndexCache:
 
     def test_search_survives_index_deletion(self, store: MemoryStore):
         mem = store.write(content="Docker 网络模式 bridge", type="episode", source="agent-a")
-        store.rebuild_index()
-        index_file = store.index_dir / "tokens.json"
-        assert index_file.exists()
-        os.replace(index_file, store.index_dir / "tokens.json.deleted")
+        assert store.index_file.exists()
+        os.replace(store.index_file, store.index_file.with_name("tokens.json.deleted"))
         hits = store.search("Docker bridge")
         assert [h["id"] for h in hits] == [mem["id"]]
 

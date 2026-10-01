@@ -8,7 +8,6 @@ from __future__ import annotations
 import datetime as dt
 import math
 import re
-from dataclasses import dataclass
 
 TOKEN_RE = re.compile(r"[a-z0-9]+|[\u4e00-\u9fff]")
 
@@ -44,6 +43,11 @@ def tokenize(text: str) -> list[str]:
     return tokens
 
 
+def doc_text(mem) -> str:
+    """The searchable text of a memory — single definition point (content + key)."""
+    return mem.content + " " + (mem.key or "")
+
+
 def bm25_scores(
     query_tokens: list[str],
     docs_tokens: list[list[str]],
@@ -69,15 +73,6 @@ def bm25_scores(
             rel += idf * freq * (k1 + 1) / (freq + k1 * (1 - b + b * dl / avgdl))
         scores.append(rel)
     return scores
-
-
-@dataclass(frozen=True)
-class ScoredHit:
-    id: str
-    score: float
-    similarity: float
-    confidence: float
-    recency: float
 
 
 def recency_score(last_used: str | None, created: str, mtype: str, now) -> float:

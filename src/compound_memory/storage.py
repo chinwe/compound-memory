@@ -11,20 +11,22 @@ from __future__ import annotations
 
 import datetime as dt
 import dataclasses
-import json
 import os
 import shutil
 import subprocess
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from .index import Index
+from .model import Memory
 from .scoring import (
     TYPE_WEIGHT,
     bm25_scores,
+    doc_text,
     final_score,
     normalized_similarity,
     recency_score,
@@ -57,30 +59,12 @@ def new_id() -> str:
     return f"{dt.date.today().strftime('%Y%m%d')}_{uuid.uuid4().hex[:6]}"
 
 
-@dataclass
-class Memory:
-    id: str
-    ns: str
-    type: str
-    source: str
-    created: str
-    content: str
-    confidence: float = 0.5
-    uses: int = 0
-    last_used: str | None = None
-    links: list[str] = field(default_factory=list)
-    ttl: int | None = None
-    key: str | None = None
-    validated_by: list[str] = field(default_factory=list)
-    archived: bool = False
-
-
 class MemoryStore:
     def __init__(self, root: Path | str, git: bool = True) -> None:
         self.root = Path(root)
         self.ns_root = self.root / "namespaces"
         self.archive_root = self.root / "archive"
-        self.index_dir = self.root / "index"
+        self.index = Index(self.root)
         self.review_queue_path = self.root / "review-queue.md"
         self.git_enabled = git and shutil.which("git") is not None
         self._ensure_layout()
@@ -89,6 +73,11 @@ class MemoryStore:
             self._git("add", "-A", check=False)
             self._git("commit", "-qm", "init compound-memory store", check=False)
 
+    @property
+    def index_file(self) -> Path:
+        """Physical cache file (anchored by one store-seam test)."""
+        return self.index.file
+
     # ---------- layout / git ----------
 
     def _ensure_layout(self) -> None:
@@ -96,7 +85,6 @@ class MemoryStore:
         for t in MEMORY_TYPES:
             (shared / t).mkdir(parents=True, exist_ok=True)
         self.archive_root.mkdir(parents=True, exist_ok=True)
-        self.index_dir.mkdir(parents=True, exist_ok=True)
         gitignore = self.root / ".gitignore"
         if not gitignore.exists():
             gitignore.write_text("index/\n", encoding="utf-8")
@@ -269,7 +257,7 @@ class MemoryStore:
         if not q_tokens:
             return []
         candidates = self._candidates(q_tokens, ns)
-        docs = [tokenize(m.content + " " + (m.key or "")) for m in candidates]
+        docs = [tokenize(doc_text(m)) for m in candidates]
         rels = bm25_scores(q_tokens, docs)
         hits: list[dict[str, Any]] = []
         for mem, rel in zip(candidates, rels):
@@ -323,82 +311,59 @@ class MemoryStore:
 
     def _archive(self, mem: Memory) -> None:
         src = self._active_path(mem)
+        old_rel = str(src.relative_to(self.root))
         mem.archived = True
         self._save(mem)
         _remove(src)
+        self.index.remove(old_rel)
         self._update_index_for(mem)
 
     def _move_to_active(self, mem: Memory) -> None:
         src = self._archive_path(mem)
+        old_rel = str(src.relative_to(self.root))
         mem.archived = False
         self._save(mem)
         _remove(src)
+        self.index.remove(old_rel)
         self._update_index_for(mem)
 
-    # ---------- index (rebuildable cache) ----------
+    # ---------- index (rebuildable cache; mechanics live in index.Index) ----------
 
-    def _index_path(self) -> Path:
-        return self.index_dir / "tokens.json"
-
-    def _load_index(self) -> dict[str, list[str]] | None:
-        path = self._index_path()
-        if not path.exists():
-            return None
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return None
-
-    def _save_index(self, index: dict[str, list[str]]) -> None:
-        tmp = self._index_path().with_suffix(".tmp")
-        tmp.write_text(json.dumps(index, ensure_ascii=False, sort_keys=True), encoding="utf-8")
-        tmp.replace(self._index_path())
-
-    @staticmethod
-    def _index_tokens(mem: Memory) -> set[str]:
-        return set(tokenize(mem.content + " " + (mem.key or "")))
+    def _rel_path(self, mem: Memory) -> str:
+        path = self._archive_path(mem) if mem.archived else self._active_path(mem)
+        return str(path.relative_to(self.root))
 
     def _update_index_for(self, mem: Memory) -> None:
-        index = self._load_index()
-        if index is None:
+        """Q1-A: writes keep the cache alive — first touch rebuilds if needed.
+        Archived memories are un-indexed (not searchable by design)."""
+        if not self.index.file.exists():
+            self.rebuild_index()
             return
-        rel = str((self._archive_path(mem) if mem.archived else self._active_path(mem)).relative_to(self.root))
-        for tok in list(index):
-            if rel in index[tok]:
-                index[tok].remove(rel)
-                if not index[tok]:
-                    del index[tok]
-        for tok in self._index_tokens(mem):
-            index.setdefault(tok, []).append(rel)
-        self._save_index(index)
+        if mem.archived:
+            self.index.remove(self._rel_path(mem))
+        else:
+            self.index.upsert(mem, self._rel_path(mem))
 
     def rebuild_index(self) -> dict[str, Any]:
-        index: dict[str, list[str]] = {}
-        count = 0
-        for base in (self.ns_root, self.archive_root):
-            for path in base.rglob("*.md"):
-                mem = self.parse(path)
-                count += 1
-                rel = str(path.relative_to(self.root))
-                for tok in self._index_tokens(mem):
-                    index.setdefault(tok, []).append(rel)
-        self._save_index(index)
-        return {"memories": count, "tokens": len(index)}
+        pairs = [
+            (self.parse(path), str(path.relative_to(self.root)))
+            for path in sorted(self.ns_root.rglob("*.md"))
+        ]
+        return self.index.rebuild(pairs)
 
     def _candidates(self, q_tokens: list[str], ns: str) -> list[Memory]:
-        index = self._load_index()
-        if index is not None:
-            rels: set[str] = set()
-            for tok in q_tokens:
-                rels.update(index.get(tok, []))
+        """Indexed lookup with a scan fallback (Q4-A): cache loss degrades to slow, never to error."""
+        rels = self.index.candidates(q_tokens) if self.index.file.exists() else []
+        if rels:
             out = []
-            for rel in sorted(rels):
+            for rel in rels:
                 path = self.root / rel
                 if path.exists():
                     mem = self.parse(path)
-                    if mem.ns == ns:
+                    if mem.ns == ns and not mem.archived:
                         out.append(mem)
-            return out
+            if out:
+                return out
         base = self.ns_root / ns
         if not base.exists():
             return []
