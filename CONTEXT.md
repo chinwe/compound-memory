@@ -18,6 +18,10 @@ _Avoid_: category、kind
 记忆的可见范围：`_shared` 全体 Agent 共享；`agent-*` 仅属主 Agent 可写。
 _Avoid_: scope、bucket
 
+**Local-first（本地优先）**：
+约束对象是记忆系统服务（存储 / 检索 / 蒸馏的确定性部分）：不外发数据、不依赖外部服务。记忆内容流入调用方 Agent 的模型上下文是 Agent 侧既有的使用契约，不受此约束。
+_Avoid_: 数据不出机（字面绝对化会连 search 动线一起禁掉）
+
 **Confidence（置信度）**：
 0~1 的数值，表示一条记忆被验证的程度；使用与跨 Agent 验证会提高它。
 _Avoid_: score、weight（weight 专指类型权重）
