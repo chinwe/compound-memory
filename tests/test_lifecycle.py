@@ -177,6 +177,69 @@ class TestStats:
         ]
 
 
+class TestReviewResolve:
+    def _conflict(self, store: MemoryStore, key: str) -> tuple[str, str]:
+        """制造一对同 key fact 冲突（内容不同才触发队列），返回 (old_id, new_id)。"""
+        old = store.write(content=f"甲版本事实 {key}", type="fact", source="agent-a", key=key)
+        new = store.write(content=f"乙版本事实 {key}", type="fact", source="agent-a", key=key)
+        return old["id"], new["id"]
+
+    def test_resolve_removes_matching_line_and_updates_stats(self, store: MemoryStore):
+        """#14 验收：命中行清除 + stats.review_queue_entries 同步归零。"""
+        old, _ = self._conflict(store, "k1")
+        assert len(store.review_queue()) == 1
+        out = store.review_resolve([old])
+        assert out == {"resolved": 1, "remaining": 0}
+        assert store.review_queue() == []
+        assert store.stats()["review_queue_entries"] == 0
+
+    def test_resolve_keeps_unmatched_lines(self, store: MemoryStore):
+        """多行队列只清命中行：new id 与 old id 任一命中均算涉及。"""
+        old1, _ = self._conflict(store, "k1")
+        _, new2 = self._conflict(store, "k2")
+        out = store.review_resolve([old1, new2])
+        assert out == {"resolved": 2, "remaining": 0}
+
+        self._conflict(store, "k3")
+        _, new4 = self._conflict(store, "k4")
+        out = store.review_resolve([new4])
+        assert out == {"resolved": 1, "remaining": 1}
+
+    def test_resolve_atomic_on_unknown_id(self, store: MemoryStore):
+        """任一 id 未命中 ⇒ 整体拒绝、队列原样保留：登记是原子动作，不做半清。"""
+        old, _ = self._conflict(store, "k1")
+        with pytest.raises(ValueError, match="nope"):
+            store.review_resolve([old, "nope"])
+        assert len(store.review_queue()) == 1
+
+    def test_resolve_requires_ids_or_all_exclusively(self, store: MemoryStore):
+        with pytest.raises(ValueError, match="ids or --all"):
+            store.review_resolve([])
+        with pytest.raises(ValueError, match="either"):
+            store.review_resolve(["x"], all=True)
+
+    def test_resolve_all_clears_and_is_idempotent(self, store: MemoryStore):
+        self._conflict(store, "k1")
+        self._conflict(store, "k2")
+        assert store.review_resolve(all=True) == {"resolved": 2, "remaining": 0}
+        assert store.review_queue() == []
+        assert store.review_resolve(all=True) == {"resolved": 0, "remaining": 0}
+
+    def test_resolve_without_queue_file(self, store: MemoryStore):
+        """队列文件尚不存在（无冲突史）：--all 幂等空转；按 id 是未命中错误。"""
+        assert store.review_resolve(all=True) == {"resolved": 0, "remaining": 0}
+        with pytest.raises(ValueError, match="not found"):
+            store.review_resolve(["nope"])
+
+    def test_resolve_creates_git_commit(self, store: MemoryStore):
+        old, _ = self._conflict(store, "k1")
+        before = store.git_log(50)
+        store.review_resolve([old])
+        after = store.git_log(50)
+        assert len(after) > len(before)
+        assert any("review resolve 1 entries" in line for line in after)
+
+
 class TestCli:
     def test_cli_write_search_feedback_roundtrip(self, tmp_path: Path, capsys):
         root = tmp_path / "cliroot"
@@ -211,6 +274,25 @@ class TestCli:
         assert cli_main(["--root", str(tmp_path / "l"), "link", "nope", "alsono"]) == 0
         out = json.loads(capsys.readouterr().out)
         assert out == {"found": False, "missing": ["nope", "alsono"]}
+
+    def test_cli_review_resolve_roundtrip(self, tmp_path: Path, capsys):
+        """CLI 缝：制造同 key 冲突 → 按旧 id resolve → 返回清除计数。"""
+        root = str(tmp_path / "rr")
+        assert cli_main(["--root", root, "write", "甲版本事实", "fact", "agent-cli", "--key", "rk"]) == 0
+        old = json.loads(capsys.readouterr().out)["id"]
+        assert cli_main(["--root", root, "write", "乙版本事实不同内容", "fact", "agent-cli", "--key", "rk"]) == 0
+        capsys.readouterr()
+
+        assert cli_main(["--root", root, "review-resolve", old]) == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out == {"resolved": 1, "remaining": 0}
+
+    def test_cli_review_resolve_unknown_id_returns_exit_2(self, tmp_path: Path, capsys):
+        """接口错误约定的 CLI 侧翻译：未命中 id ⇒ stderr JSON + exit 2，不裸栈。"""
+        code = cli_main(["--root", str(tmp_path / "rr2"), "review-resolve", "nope"])
+        assert code == 2
+        err = json.loads(capsys.readouterr().err)
+        assert "not found" in err["error"]
 
     def test_cli_search_neighbors_toggle(self, tmp_path: Path, capsys):
         """search 默认内嵌邻居；--no-neighbors 关闭（hits 不带 neighbors 键）。"""
