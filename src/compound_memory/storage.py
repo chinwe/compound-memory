@@ -32,12 +32,49 @@ GIT_IDENTITY = ("-c", "user.name=compound-memory", "-c", "user.email=memory@loca
 # 疑似重复 = normalized_similarity(BM25/n_query_tokens) 达到该值；晋升建议 = episode 高活性门槛
 DISTILL_DUP_SIM_THRESHOLD = 0.5
 PROMOTION_USES_THRESHOLD = 5
+# stats 健康度桶（#8：固定边界保证跨期可比，恒输出全桶）——
+# uses 桶按复利语义划线：0=死本金、3=归档存活线（ARCHIVE_USES_THRESHOLD）、10+=高价值；
+# confidence 桶：<0.3 低信、0.3-0.6 写入默认带、0.6-0.8 已验证、0.8+ 高置信
+USES_HISTOGRAM_BUCKETS = ("0", "1-2", "3-5", "6-9", "10+")
+CONFIDENCE_HISTOGRAM_BUCKETS = ("<0.3", "0.3-0.6", "0.6-0.8", "0.8-1.0")
+RECENT_WINDOW_DAYS = 7
 
 
 def _unlink_file(path: Path) -> None:
     """默认删除 adapter（测试侧经 conftest 注入沙箱安全版本）。"""
     if path.exists():
         path.unlink()
+
+
+def _uses_bucket(uses: int) -> str:
+    if uses >= 10:
+        return "10+"
+    if uses >= 6:
+        return "6-9"
+    if uses >= 3:
+        return "3-5"
+    if uses >= 1:
+        return "1-2"
+    return "0"
+
+
+def _conf_bucket(conf: float) -> str:
+    if conf < 0.3:
+        return "<0.3"
+    if conf < 0.6:
+        return "0.3-0.6"
+    if conf < 0.8:
+        return "0.6-0.8"
+    return "0.8-1.0"
+
+
+def _within_days(date_str: str, days: int, now: dt.date) -> bool:
+    """ISO 日期落在 [now-days, now] 内；坏日期/未来日期一律 False（坏数据不冒充活性）。"""
+    try:
+        age = (now - dt.date.fromisoformat(date_str)).days
+    except (ValueError, TypeError):
+        return False
+    return 0 <= age <= days
 
 
 class MemoryStore:
@@ -517,7 +554,6 @@ class MemoryStore:
         )
         with self.review_queue_path.open("a", encoding="utf-8") as fh:
             fh.write(line)
-
     def review_queue(self) -> list[str]:
         if not self.review_queue_path.exists():
             return []
@@ -530,7 +566,12 @@ class MemoryStore:
     def stats(self) -> dict[str, Any]:
         by_type: dict[str, int] = {}
         by_ns: dict[str, int] = {}
+        uses_hist = {bucket: 0 for bucket in USES_HISTOGRAM_BUCKETS}
+        conf_hist = {bucket: 0 for bucket in CONFIDENCE_HISTOGRAM_BUCKETS}
         total, archived, conf_sum = 0, 0, 0.0
+        recent_feedback, cross_validated = 0, 0
+        distilled_total, distilled_recent = 0, 0
+        now = self._clock()
         for base, is_archive in ((self.ns_root, False), (self.archive_root, True)):
             for path in base.rglob("*.md"):
                 mem = self.parse(path)
@@ -540,6 +581,16 @@ class MemoryStore:
                 by_type[mem.type] = by_type.get(mem.type, 0) + 1
                 by_ns[mem.ns] = by_ns.get(mem.ns, 0) + 1
                 conf_sum += mem.confidence
+                uses_hist[_uses_bucket(mem.uses)] += 1
+                conf_hist[_conf_bucket(mem.confidence)] += 1
+                if mem.last_used and _within_days(mem.last_used, RECENT_WINDOW_DAYS, now):
+                    recent_feedback += 1
+                if len(set(mem.validated_by)) >= 2:
+                    cross_validated += 1
+                if mem.origin == "distillation":
+                    distilled_total += 1
+                    if _within_days(mem.created, RECENT_WINDOW_DAYS, now):
+                        distilled_recent += 1
         return {
             "total": total,
             "archived": archived,
@@ -548,6 +599,12 @@ class MemoryStore:
             "by_type": by_type,
             "by_ns": by_ns,
             "review_queue_entries": len(self.review_queue()),
+            "uses_histogram": uses_hist,
+            "confidence_histogram": conf_hist,
+            "recent_feedback_7d": recent_feedback,
+            "cross_validated": cross_validated,
+            "distilled_total": distilled_total,
+            "distilled_recent_7d": distilled_recent,
         }
 
     def git_log(self, limit: int = 5) -> list[str]:

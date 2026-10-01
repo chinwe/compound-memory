@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from compound_memory.cli import main as cli_main
-from compound_memory.storage import MemoryStore
+from compound_memory.storage import MemoryStore, _conf_bucket, _uses_bucket
 from conftest import CLOCK_DATE
 
 
@@ -134,6 +134,47 @@ class TestStats:
         assert stats["by_type"]["episode"] == 2
         assert stats["by_ns"]["agent-tars"] == 1
         assert stats["review_queue_entries"] == 0
+
+    def test_stats_health_extension(self, store: MemoryStore):
+        """健康度扩展（story 20）：固定桶分布 + 复利活性两项 + 蒸馏产出量；
+        既有键不动，新键只增不改。"""
+        dead = store.write(content="死本金记忆", type="episode", source="agent-a")  # uses=0
+        used = store.write(content="单 Agent 用过", type="episode", source="agent-a")
+        store.feedback(used["id"], "agent-a")  # uses=1, conf=0.6
+        cross = store.write(content="跨 Agent 验证", type="episode", source="agent-a")
+        store.feedback(cross["id"], "agent-a")
+        store.feedback(cross["id"], "agent-b")  # uses=2, conf=0.85, validated_by 2 人
+        old_distilled = store.write(content="十天前的蒸馏产物", type="insight", source="agent-zcode",
+                                     origin="distillation", created=_days_ago(10))
+        fresh_distilled = store.write(content="今天的蒸馏产物", type="insight", source="agent-zcode",
+                                      origin="distillation")
+        stats = store.stats()
+        assert stats["uses_histogram"] == {"0": 3, "1-2": 2, "3-5": 0, "6-9": 0, "10+": 0}
+        assert stats["confidence_histogram"] == {"<0.3": 0, "0.3-0.6": 3, "0.6-0.8": 1, "0.8-1.0": 1}
+        assert stats["recent_feedback_7d"] == 2  # used/cross 今天被 feedback；dead 从未用过
+        assert stats["cross_validated"] == 1
+        assert stats["distilled_total"] == 2
+        assert stats["distilled_recent_7d"] == 1  # 老产物 created 超窗
+        # 既有键不受影响
+        assert stats["total"] == 5
+        assert stats["by_type"]["insight"] == 2
+
+    def test_stats_archived_distillation_still_counted(self, store: MemoryStore):
+        """产出量统计覆盖归档区——蒸馏产出是历史事实，不因源/产物归档而消失。"""
+        product = store.write(content="将被归档的产物", type="insight", source="agent-zcode", origin="distillation")
+        store._archive(store.find(product["id"]))  # type: ignore[arg-type]
+        stats = store.stats()
+        assert stats["distilled_total"] == 1
+        assert stats["distilled_recent_7d"] == 1
+
+    def test_stats_bucket_boundaries(self):
+        """桶边界单点验证：uses 以 3（归档存活线）分桶，confidence 以 0.3/0.6/0.8 分桶。"""
+        assert [_uses_bucket(u) for u in (0, 1, 2, 3, 5, 6, 9, 10, 99)] == [
+            "0", "1-2", "1-2", "3-5", "3-5", "6-9", "6-9", "10+", "10+"
+        ]
+        assert [_conf_bucket(c) for c in (0.0, 0.29, 0.3, 0.59, 0.6, 0.79, 0.8, 1.0)] == [
+            "<0.3", "<0.3", "0.3-0.6", "0.3-0.6", "0.6-0.8", "0.6-0.8", "0.8-1.0", "0.8-1.0"
+        ]
 
 
 class TestCli:

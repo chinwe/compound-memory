@@ -55,7 +55,7 @@ $PY -m compound_memory.cli decay          # cron 定时跑
 $PY -m compound_memory.cli revive <id>    # 复活归档记忆（CLI 唯一入口）
 $PY -m compound_memory.cli distill-plan   # 蒸馏候选清单：merge_with（同 key 强信号）+ possible_dup_of（BM25 弱信号）+ promotion_candidate（高活性 episode）
 $PY -m compound_memory.cli distill-apply "合并后的经验" insight agent-tars --sources <id1>,<id2>  # 原子落库：产物(links 溯源, origin=distillation) + 源归档，一次 commit
-$PY -m compound_memory.cli stats
+$PY -m compound_memory.cli stats            # 健康度：uses/confidence 固定桶 + 活性 + 蒸馏产出量
 $PY -m compound_memory.cli rebuild-index  # 索引可随时重建
 $PY -m compound_memory.cli review-queue   # 冲突队列（CLI 唯一入口）
 $PY -m compound_memory.cli git-log        # 审计轨迹
