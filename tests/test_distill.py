@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import plistlib
 import subprocess
 import sys
 from pathlib import Path
@@ -270,4 +271,5 @@ class TestDistillPrepareScript:
         )
         plist = tmp_path / "com.compound-memory.distill-prepare.plist"
         plist.write_text(filled, encoding="utf-8")
-        subprocess.run(["plutil", "-lint", str(plist)], check=True, capture_output=True)
+        # plistlib 跨平台校验语法；plutil 是 macOS 专属工具，CI 的 ubuntu runner 没有
+        plistlib.loads(filled.encode("utf-8"))
