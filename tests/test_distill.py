@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -237,3 +240,34 @@ class TestCli:
         )
         out = json.loads(capsys.readouterr().out)
         assert out == {"found": False, "missing": ["nope"]}
+
+
+class TestDistillPrepareScript:
+    """蒸馏调度安装物（#9）：脚本产出 plan、plist 模板语法合法——坏了全量测试就红。"""
+
+    def test_prepare_script_writes_plan_and_gitignores_output(self, tmp_path):
+        """脚本把 plan 落到 <root>/distill/last-plan.json，且产物目录被 gitignore
+        （运行时产物不污染记忆库 git——批处理 apply 才产生 commit）。"""
+        repo = Path(__file__).resolve().parents[1]
+        root = tmp_path / "script-root"
+        env = {**os.environ, "COMPOUND_MEMORY_ROOT": str(root), "CM_PYTHON": sys.executable}
+        env.pop("PYTHONPATH", None)  # 脚本自己拼 PYTHONPATH，排除测试进程环境干扰
+        proc = subprocess.run(
+            ["sh", str(repo / "scripts" / "distill-prepare.sh")], env=env, capture_output=True, text=True
+        )
+        assert proc.returncode == 0, proc.stderr
+        plan = json.loads((root / "distill" / "last-plan.json").read_text(encoding="utf-8"))
+        assert plan["candidates"] == []
+        assert "distill/" in (root / ".gitignore").read_text(encoding="utf-8")
+
+    def test_launchagent_plist_template_is_valid(self, tmp_path):
+        repo = Path(__file__).resolve().parents[1]
+        text = (repo / "scripts" / "com.compound-memory.distill-prepare.plist.tmpl").read_text(encoding="utf-8")
+        filled = (
+            text.replace("__REPO__", str(repo))
+            .replace("__PYTHON__", sys.executable)
+            .replace("__ROOT__", str(tmp_path / "r"))
+        )
+        plist = tmp_path / "com.compound-memory.distill-prepare.plist"
+        plist.write_text(filled, encoding="utf-8")
+        subprocess.run(["plutil", "-lint", str(plist)], check=True, capture_output=True)

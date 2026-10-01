@@ -61,6 +61,21 @@ $PY -m compound_memory.cli review-queue   # 冲突队列（CLI 唯一入口）
 $PY -m compound_memory.cli git-log        # 审计轨迹
 ```
 
+## 定时蒸馏准备（launchd）
+
+ADR 0001：确定性准备定时跑，判断（摘要/合并）由 Agent 会话内按需完成。每天 09:00 把候选清单写到 `<root>/distill/last-plan.json`。调度选 launchd 而非 cron：macOS 系统标准，睡眠错过的计划唤醒后补跑。
+
+```bash
+REPO=$(pwd); PY=$(which python3)   # 解释器须已安装 pyyaml
+sed -e "s|__REPO__|$REPO|g" -e "s|__PYTHON__|$PY|g" -e "s|__ROOT__|$HOME/.agents/memory|g" \
+  scripts/com.compound-memory.distill-prepare.plist.tmpl \
+  > ~/Library/LaunchAgents/com.compound-memory.distill-prepare.plist
+launchctl load ~/Library/LaunchAgents/com.compound-memory.distill-prepare.plist
+launchctl list | grep compound-memory   # 验证已加载；日志在 <root>/distill/prepare.log
+```
+
+失败要响亮：脚本 `set -eu`，任何一步失败以非 0 退出（`launchctl list` 可见退出码，日志落 distill/prepare.log）。`distill/` 是运行时产物目录（自动加入库 .gitignore），不产生 commit 噪声——只有 Agent 判断后跑 `distill-apply` 才落一次原子 commit。
+
 ## 开发
 
 ```bash

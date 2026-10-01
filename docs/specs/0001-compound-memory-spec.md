@@ -2,7 +2,7 @@
 
 标签：`ready-for-agent`
 状态：已定稿（基于 2026-10-01 设计讨论直接综合，未做追加访谈）
-实现状态：2026-10-01 全量审核后与代码同步；未实现条目以「roadmap」内联标注，其余描述与实现一致。
+实现状态：2026-10-01 与代码同步；唯一 deferred 项为向量索引（缓做 + 触发器，见「索引即缓存」），其余描述与实现一致。
 
 ---
 
@@ -60,7 +60,7 @@
 - **生命周期状态机**：类型终身不变（episode/fact/insight/skill 原地不迁移，改类型 = 蒸馏新写 + 源归档）；强化由 uses/confidence 表达（不设 reinforced/principle 中间类型）；晋升 = 蒸馏产物（高活性 episode 在 distill-plan 标 promotion-candidate，判断后置给 Agent 蒸馏为更高密度新记忆）；任意记忆可经衰减进入 archive，archive 命中可复活并按新证据重算 conf。
 - **索引即缓存**：记忆文件本身可直接 ripgrep；词法索引（token→路径缓存）可随时从源文件重建，SQLite 不作为主存储；向量索引（sqlite-vec）deferred——触发条件为活动记忆 ≥500 条或实际报告 search 召回缺口，届时重开；技术路线已验证（sqlite-vec wheel + BGE-small-zh ONNX int8 + onnxruntime 1.19.2 + RRF rank 融合）。
 - **Git 集成**：每次写入自动 commit；仓库仅留本地或推私有 remote。
-- **技术选型**：Python（managed runtime 3.13）实现 stdio MCP server；蒸馏任务由系统 cron 或宿主 automation 调度（未实现，roadmap）。
+- **技术选型**：Python（managed runtime 3.13）实现 stdio MCP server；蒸馏准备由 macOS launchd LaunchAgent（`scripts/` 安装物）或宿主 automation 定时调度，判断段由调用方 Agent 按需完成。
 - **落地节奏**：P0 纯文件约定 + ripgrep 检索脚本（半天）→ P1 MCP server + 向量索引（1–2 天）→ P2 复利引擎：feedback 闭环 + 定时蒸馏 + 衰减归档（2–3 天）。P2 之前只是"开户"，复利从 P2 开始。
 
 ## Testing Decisions
