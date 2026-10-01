@@ -1,3 +1,36 @@
+# compound-memory
+
+本地多 Agent 共享记忆系统（MCP server + CLI）：记忆落盘为带 YAML frontmatter 的 Markdown，复利引擎随使用增值（feedback 强化 / 关联带出 / 跨 Agent 验证 / 衰减归档可复活）。Spec：`docs/specs/0001-compound-memory-spec.md`。
+
+## 常用命令
+
+- 测试：`python3 -m pytest tests/ -q`
+- 类型检查：`python3 -m mypy src/compound_memory/`
+- CLI 冒烟：`PYTHONPATH=src python3 -m compound_memory.cli stats`
+- 记忆库根目录默认 `~/.agents/memory`，可用 `COMPOUND_MEMORY_ROOT` 覆盖。注意：MemoryStore 每次写入会在记忆库自身的 `.git` 里自动 commit——这是运行时行为，与本仓库的开发 git 无关。
+
+## 架构边界
+
+- `src/compound_memory/` 分层：`server.py`（唯一读写边界，恰好 5 个 MCP tool，勿增删）→ `storage.py`（MD+frontmatter 存储、命名空间、git、复利引擎）→ `index.py` + `scoring.py`；`model.py` 是共享领域模型（从 storage 拆出以打破循环依赖，勿再引入循环 import）。
+- 单一定义点，改这些领域前先读对应模块 docstring：
+  - `model.TYPE_SPEC`：记忆类型唯一知识源（权重/半衰期/归档 TTL），加类型只改这张表；
+  - `scoring.rank`：排序管线与搜索结果形状的唯一位置（权重 0.45 相似 + 0.25 置信 + 0.20 新近 + 0.10 类型）；
+  - `Index`：拥有"活动记忆必被索引、归档必不在索引"不变量，缓存损坏自动重建、检索降级不报错；
+  - `recency_ref`：新近基准（last_used 优先，created 兜底），排序与衰减共用，勿各算各的。
+- 术语遵循 `CONTEXT.md` glossary，注意每条的 Avoid 列表，不要用同义词漂移。
+
+## 测试与沙箱坑
+
+- 禁用 pytest 内置 `tmp_path`：WorkBuddy 沙箱对已存在目录 mkdir 报 EEXIST，批量 unlink 被 trash hook 拦截。conftest.py 自建 fixture 落到 `.test-tmp/`，新测试直接用现成 fixture。
+- asyncio 测试必须先收集（conftest 已排序）：anyio cancel scope 不能跨 task，`mcp.Client` 会话须与测试同一 task 内 `async with`（用 asynccontextmanager helper，勿用 fixture 开关 client）。
+- mcp 2.x 行为：`FastMCP` 已改名 `MCPServer`（`mcp.server.mcpserver`）；单元素 list 返回值会被 unwrap 成对象——批量结果要包一层 `{"hits": [...]}`；工具内异常默认返回 `is_error=True` 而非抛出。
+- 删除记忆文件用 `os.replace` 改名到 `.{name}.rm`（不以 `.md` 结尾，避免污染 rglob 扫描）。
+
+## 约定
+
+- 代码与日志内容用英文；代码注释与 docstring 用中文（与现有代码一致）。
+- 改检索、复利、类型生命周期等敏感区前，先读 `docs/specs/0001-compound-memory-spec.md` 与 `CONTEXT.md`。
+
 ## Agent skills
 
 ### Issue tracker
