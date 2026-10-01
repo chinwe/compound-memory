@@ -12,3 +12,6 @@ __pycache__/
 # ZCode
 .zcodeignore
 .venv/
+
+# WorkBuddy
+.workbuddy/
