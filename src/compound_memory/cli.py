@@ -71,6 +71,10 @@ def cmd_review_queue(args: argparse.Namespace) -> None:
     _emit(_open_store(args).review_queue())
 
 
+def cmd_review_resolve(args: argparse.Namespace) -> None:
+    _emit(_open_store(args).review_resolve(ids=args.ids, all=args.all))
+
+
 def cmd_distill_plan(args: argparse.Namespace) -> None:
     _emit(
         _open_store(args).distill_plan(
@@ -148,6 +152,17 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("stats"); p.set_defaults(func=cmd_stats)
     p = sub.add_parser("rebuild-index"); p.set_defaults(func=cmd_rebuild_index)
     p = sub.add_parser("review-queue"); p.set_defaults(func=cmd_review_queue)
+    p = sub.add_parser(
+        "review-resolve",
+        help="mark review-queue conflicts as resolved",
+        description="Clear review-queue entries after the caller has judged the conflict "
+        "(old/new trade-off stays with the calling agent or human). Pass memory ids to clear "
+        "matching rows (either the old or new id of a row counts), or --all to clear the queue. "
+        "Unknown ids are rejected atomically; the cleanup is auto-committed.",
+    )
+    p.add_argument("ids", nargs="*", metavar="ID")
+    p.add_argument("--all", action="store_true", help="clear the whole queue")
+    p.set_defaults(func=cmd_review_resolve)
     p = sub.add_parser("git-log"); p.add_argument("--limit", type=int, default=5); p.set_defaults(func=cmd_git_log)
     return parser
 
