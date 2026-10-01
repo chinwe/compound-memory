@@ -196,7 +196,9 @@ dsh 通过 MCP client 插件 `@deepseek-ai/dsh-mcp-client` 接入，一个插件
 
 ## 6. 共通使用规范（注入给各 Agent 的行为规则）
 
-以下即各宿主「使用规则注入」的标准内容，可直接复制：
+**规范源是 `skills/compound-memory/SKILL.md`**（随 skill 分发到各宿主，更新只改那一处）；本节保留为速览快照，两处不一致时以 skill 为准。新宿主接入优先分发该 skill，规则注入文件里只保留触发铁律（任务开始先 `memory_search`、采纳后 `memory_feedback`）加一行指向 skill 的指针。
+
+以下为速览内容，可直接复制：
 
 1. **任务开始**：接到非琐碎任务时，先按任务关键词 `memory_search` 查相关记忆（用户偏好、项目背景、环境坑）；命中且实际采纳后**必须**调 `memory_feedback`（`agent` 填自己的 source id）强化——这是复利闭环的核心动作，漏掉它记忆库就不增值。
 2. **任务结束**：会话中确认了稳定事实（新的用户偏好、项目约定、环境限制、踩坑结论），用 `memory_write` 沉淀。`type` 怎么选：
