@@ -1,0 +1,88 @@
+# Spec: 本地多 Agent 共享记忆系统（compound-memory）
+
+标签：`ready-for-agent`
+状态：已定稿（基于 2026-10-01 设计讨论直接综合，未做追加访谈）
+发布说明：当前工作区未配置 issue tracker（无 git 仓库 / gh CLI），暂以本地文件形式发布。
+
+---
+
+## Problem Statement
+
+我在本地同时使用多个 AI Agent（WorkBuddy/TARS、Claude Code、Cursor、各种脚本），每个 Agent 的记忆彼此隔离：TARS 学到的经验 Claude Code 用不上，Claude Code 踩过的坑 Cursor 还要再踩一遍。更糟的是，现有记忆大多是"写完就死"的一次性存储——没有使用反馈、没有强化、没有沉淀机制，记了等于白记。我需要一套本地优先的共享记忆系统，让所有 Agent 共用同一份记忆，并且这份记忆越用越值钱（复利），而不是越积越乱。
+
+## Solution
+
+一套本地多 Agent 共享记忆系统（compound-memory）：
+
+- **统一协议**：一个 Memory MCP Server 作为唯一读写入口，任何支持 MCP 的客户端（或通过 CLI）都能接入，存储层对 Agent 透明。
+- **文件即数据库**：纯 Markdown + YAML frontmatter + Git 存储，人可直接读改、可审计、可回滚；向量/关键词索引只是可重建的缓存。
+- **命名空间**：`_shared` 共享区（复利发生地）+ `agent-*` 私有区（草稿/偏好），写权限隔离。
+- **复利引擎**：记忆通过四个机制增值——使用强化、关联召回、周期蒸馏、跨 Agent 验证；同时用衰减 + 归档防通胀。核心信念：**复利 = 反馈闭环，没有 feedback 的记忆都是死本金。**
+
+## User Stories
+
+1. As an AI Agent, I want 将工作中学到的经验写入共享记忆, so that 下次会话不必从零开始。
+2. As an AI Agent, I want 按语义相关度检索历史记忆, so that 站在过去的经验上工作而不是重复劳动。
+3. As an AI Agent, I want 在采纳某条记忆后回写使用反馈, so that 被验证过的记忆变得更可信、排序更靠前。
+4. As an AI Agent, I want 在新记忆与旧记忆之间建立关联, so that 检索命中时能一并召回相关上下文。
+5. As an AI Agent, I want 读取共享区中其他 Agent 写入的记忆, so that 享受其他 Agent 经验带来的复利。
+6. As an AI Agent, I want 拥有私有命名空间存放未验证的草稿, so that 不污染共享区的信噪比。
+7. As an AI Agent, I want 知道每条记忆的写入者与置信度, so that 能评估该不该信任这条记忆。
+8. As an AI Agent, I want 通过 links 拉取一条记忆的关联邻居, so that 快速重建一个主题的完整上下文。
+9. As a 用户, I want 用任意 MCP 客户端挂载同一份记忆库, so that 不被任何单一工具锁定。
+10. As a 用户, I want 直接用编辑器打开并修改记忆文件, so that 人可以审计、纠错、手工整理。
+11. As a 用户, I want 每次写入都有 Git 提交记录, so that 误删误改可以回滚，多 Agent 写入有审计轨迹。
+12. As a 用户, I want 冲突的事实进入 review 队列而不是被静默覆盖, so that 我（或主治 Agent）能做最终裁决。
+13. As a 用户, I want 蒸馏任务（日摘要/周洞察/月固化）定时自动运行, so that 不需要我手工整理记忆。
+14. As a 用户, I want 长期未用且低置信的记忆自动衰减归档, so that 检索质量不被噪声稀释。
+15. As a 用户, I want 归档的记忆可以恢复、再次命中时按新证据重算置信度, so that 数据只归档不丢失。
+16. As a 用户, I want 索引目录可以随时删除重建, so that 索引损坏永远不会丢失真实数据。
+17. As a 用户, I want 记忆数据全部保存在本地, so that 隐私可控、不依赖外部服务。
+18. As a 维护者, I want 新 Agent 接入只需声明一个命名空间, so that 接入成本接近零。
+19. As a 维护者, I want 通过 CLI 脚本执行全部读写操作, so that 不支持 MCP 的工具也能参与。
+20. As a 维护者, I want 查看记忆库健康度统计（uses/confidence 分布、蒸馏产出量）, so that 评估复利引擎是否真的在运转。
+21. As a 维护者, I want 不同 Agent 独立复用同一事实时其置信度自动跳升, so that 跨 Agent 验证不需要人工标注。
+
+## Implementation Decisions
+
+- **总体架构四层**：Agent 层（任意 MCP 客户端/CLI）→ 协议层（Memory MCP Server，stdio）→ 存储层（Markdown + frontmatter + Git，位于 `~/.agents/memory`）→ 策略层（评分排序、使用强化、衰减淘汰、定时蒸馏）。
+- **协议契约**：MCP server 暴露且仅暴露 5 个 tool——`memory_write` / `memory_search` / `memory_get` / `memory_link` / `memory_feedback`。`memory_feedback` 是一等公民而非可选项，这是复利闭环的关键约束。
+- **命名空间模型**：`_shared` 全 Agent 可读写；`agent-<name>` 仅 owner 读写。写入必须带 `source`（写入者标识，用于跨 Agent 验证与审计）。
+- **数据模型**：每条记忆为一个 md 文件，frontmatter 字段：`id / ns / type / source / created / confidence / uses / last_used / links / ttl`。`type ∈ {episode, fact, insight, skill}`，type 决定写入策略（episode 为 append-only）、衰减窗口（episode 90d / insight 180d / fact 与 skill 不衰减）与蒸馏去向。
+- **评分与置信度公式**（来自设计讨论，已与用户对齐）：
+  ```text
+  检索得分 = 0.45·语义相似度 + 0.25·置信度 + 0.20·新近度(e^(−Δt/τ)) + 0.10·类型权重
+  置信度   = min(1, conf₀ + 0.1·uses + 0.15·跨Agent验证次数)
+  ```
+- **复利四来源**：① 使用强化（feedback 回写 uses+1、conf+0.1）② 关联增值（links 双向关联，命中时召回一度邻居）③ 蒸馏提纯（日摘要 → 周洞察 → 月固化，条数减少密度上升）④ 跨 Agent 验证（不同 source 命中同一事实，conf+0.15）。
+- **防通胀**：新近度指数衰减 + 低分长期未用记忆归档（不物理删除）+ 蒸馏时去重合并。
+- **冲突解决**：episodes append-only 天然无冲突；facts/insights 同 key 不同值时保留双版本并生成 review 队列，由主治 Agent 或人裁决；一切写入带 source + 时间戳。
+- **生命周期状态机**：episode → reinforced → insight → principle/skill；任意中间态可经衰减进入 archive，archive 命中可复活并按新证据重算 conf。
+- **索引即缓存**：关键词索引（ripgrep 可直接用）+ 向量索引（sqlite-vec）全部可从源文件重建，SQLite 不作为主存储。
+- **Git 集成**：每次写入自动 commit；仓库仅留本地或推私有 remote。
+- **技术选型**：Python（managed runtime 3.13）实现 stdio MCP server；蒸馏任务由系统 cron 或宿主 automation 调度。
+- **落地节奏**：P0 纯文件约定 + ripgrep 检索脚本（半天）→ P1 MCP server + 向量索引（1–2 天）→ P2 复利引擎：feedback 闭环 + 定时蒸馏 + 衰减归档（2–3 天）。P2 之前只是"开户"，复利从 P2 开始。
+
+## Testing Decisions
+
+- **唯一测试缝：MCP tool 边界**。所有测试通过 stdio 协议调用 5 个 tool，断言可观察的外部行为；不直接测试内部函数（评分公式不单测，而是通过 search 的排序结果间接断言）。
+- 好测试的标准：只验证"写入 → 检索 → 反馈"等外部可见行为闭环，例如：写入后 search 能召回；feedback 后同一查询的排序上升；get 能带出 links 邻居；fact 冲突后 review 队列出现双版本。
+- 存储与索引是实现细节，但"索引可重建"本身是一条验收测试：删除 index/ 目录后 search 仍正常工作。
+- 本项目为 greenfield，无可参考的既有测试；第一个测试需要建立 MCP 客户端测试 harness 的模式，供后续测试复用。
+
+## Out of Scope
+
+- 云同步、多机协作、远程访问（本地优先，本期只做单机）。
+- 端到端加密、密钥管理。
+- Web/GUI 管理界面。
+- 嵌入特定 Agent 内部的深度集成（只通过标准 MCP 协议交互）。
+- 用 LLM 自动裁决冲突事实（review 队列留给主治 Agent 或人）。
+- 写入时的语义去重（去重只发生在蒸馏阶段）。
+- 细粒度 ACL/角色权限（命名空间级隔离已够用）。
+
+## Further Notes
+
+- 核心风险：feedback 闭环若不成立（Agent 用完记忆不回写），系统退化为普通笔记库。因此协议设计上 feedback 是独立 tool，且建议接入方在系统提示中强制要求调用。
+- 复利的本质是每轮循环抬高"本金质量"（平均密度 + 平均置信度），而非单纯堆量；防通胀与增值同等重要。
+- 建议项目名：compound-memory。
+- 待 issue tracker 配置后（运行 /setup-matt-pocock-skills），本 spec 应迁移至 tracker 并附加 `ready-for-agent` 标签。

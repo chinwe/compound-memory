@@ -5,3 +5,6 @@ __pycache__/
 .pytest_cache/
 .test-tmp/
 .mypy_cache/
+
+# macOS
+.DS_Store
