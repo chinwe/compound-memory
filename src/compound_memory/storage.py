@@ -98,7 +98,9 @@ class MemoryStore:
         self._clock = clock
         self._remover = remover or _unlink_file
         self._ensure_layout()
-        if self.git_enabled:
+        if self.git_enabled and not (self.root / ".git").exists():
+            # init commit 仅限首次创建：__init__ 在每次 CLI/MCP 启动都会执行，
+            # 无条件 add -A + commit 会把带外手编的文件吞进误导性的 "init" 提交
             self._git("init", "-q", check=False)
             self._git("add", "-A", check=False)
             self._git("commit", "-qm", "init compound-memory store", check=False)
