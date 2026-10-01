@@ -2,7 +2,7 @@
 
 标签：`ready-for-agent`
 状态：已定稿（基于 2026-10-01 设计讨论直接综合，未做追加访谈）
-发布说明：当前工作区未配置 issue tracker（无 git 仓库 / gh CLI），暂以本地文件形式发布。
+实现状态：2026-10-01 全量审核后与代码同步；未实现条目以「roadmap」内联标注，其余描述与实现一致。
 
 ---
 
@@ -47,28 +47,27 @@
 
 - **总体架构四层**：Agent 层（任意 MCP 客户端/CLI）→ 协议层（Memory MCP Server，stdio）→ 存储层（Markdown + frontmatter + Git，位于 `~/.agents/memory`）→ 策略层（评分排序、使用强化、衰减淘汰、定时蒸馏）。
 - **协议契约**：MCP server 暴露且仅暴露 5 个 tool——`memory_write` / `memory_search` / `memory_get` / `memory_link` / `memory_feedback`。`memory_feedback` 是一等公民而非可选项，这是复利闭环的关键约束。
-- **命名空间模型**：`_shared` 全 Agent 可读写；`agent-<name>` 仅 owner 读写。写入必须带 `source`（写入者标识，用于跨 Agent 验证与审计）。
-- **数据模型**：每条记忆为一个 md 文件，frontmatter 字段：`id / ns / type / source / created / confidence / uses / last_used / links / ttl`。`type ∈ {episode, fact, insight, skill}`，type 决定写入策略（episode 为 append-only）、衰减窗口（episode 90d / insight 180d / fact 与 skill 不衰减）与蒸馏去向。
+- **命名空间模型**：`_shared` 全 Agent 可读写；`agent-<name>` 仅 owner 可写，读不隔离（本地单机可信环境，读写两侧均不校验读取者身份）。写入必须带 `source`（写入者标识，用于跨 Agent 验证与审计）。
+- **数据模型**：每条记忆为一个 md 文件，frontmatter 字段：`id / ns / type / source / created / confidence / uses / last_used / links / ttl / key / validated_by / archived`。`type ∈ {episode, fact, insight, skill}`，type 决定写入策略（episode 为 append-only）、衰减窗口（episode 90d / insight 180d / fact 与 skill 不衰减）与蒸馏去向。
 - **评分与置信度公式**（来自设计讨论，已与用户对齐）：
   ```text
-  检索得分 = 0.45·语义相似度 + 0.25·置信度 + 0.20·新近度(e^(−Δt/τ)) + 0.10·类型权重
+  检索得分 = 0.45·相似度（BM25 词面）+ 0.25·置信度 + 0.20·新近度(e^(−Δt/τ)) + 0.10·类型权重
   置信度   = min(1, conf₀ + 0.1·uses + 0.15·跨Agent验证次数)
   ```
-- **复利四来源**：① 使用强化（feedback 回写 uses+1、conf+0.1）② 关联增值（links 双向关联，命中时召回一度邻居）③ 蒸馏提纯（日摘要 → 周洞察 → 月固化，条数减少密度上升）④ 跨 Agent 验证（不同 source 命中同一事实，conf+0.15）。
-- **防通胀**：新近度指数衰减 + 低分长期未用记忆归档（不物理删除）+ 蒸馏时去重合并。
+- **复利四来源**：① 使用强化（feedback 回写 uses+1、conf+0.1）② 关联增值（links 双向关联，memory_get 时带出一度邻居；search 命中自动召回邻居为 roadmap）③ 蒸馏提纯（日摘要 → 周洞察 → 月固化，条数减少密度上升）（未实现，roadmap）④ 跨 Agent 验证（与 source 不同的 agent feedback 时，conf+0.15）。
+- **防通胀**：新近度指数衰减 + 长期未用且少用（uses < 3）的记忆归档（不物理删除）+ 蒸馏时去重合并（未实现，roadmap）。
 - **冲突解决**：episodes append-only 天然无冲突；facts/insights 同 key 不同值时保留双版本并生成 review 队列，由主治 Agent 或人裁决；一切写入带 source + 时间戳。
-- **生命周期状态机**：episode → reinforced → insight → principle/skill；任意中间态可经衰减进入 archive，archive 命中可复活并按新证据重算 conf。
-- **索引即缓存**：关键词索引（ripgrep 可直接用）+ 向量索引（sqlite-vec）全部可从源文件重建，SQLite 不作为主存储。
+- **生命周期状态机**：episode → reinforced → insight → principle/skill（类型间晋升未实现，roadmap）；任意中间态可经衰减进入 archive，archive 命中可复活并按新证据重算 conf（已实现）。
+- **索引即缓存**：记忆文件本身可直接 ripgrep；词法索引（token→路径缓存）可随时从源文件重建，SQLite 不作为主存储；向量索引（sqlite-vec）未实现（roadmap）。
 - **Git 集成**：每次写入自动 commit；仓库仅留本地或推私有 remote。
-- **技术选型**：Python（managed runtime 3.13）实现 stdio MCP server；蒸馏任务由系统 cron 或宿主 automation 调度。
+- **技术选型**：Python（managed runtime 3.13）实现 stdio MCP server；蒸馏任务由系统 cron 或宿主 automation 调度（未实现，roadmap）。
 - **落地节奏**：P0 纯文件约定 + ripgrep 检索脚本（半天）→ P1 MCP server + 向量索引（1–2 天）→ P2 复利引擎：feedback 闭环 + 定时蒸馏 + 衰减归档（2–3 天）。P2 之前只是"开户"，复利从 P2 开始。
 
 ## Testing Decisions
 
-- **唯一测试缝：MCP tool 边界**。所有测试通过 stdio 协议调用 5 个 tool，断言可观察的外部行为；不直接测试内部函数（评分公式不单测，而是通过 search 的排序结果间接断言）。
+- **测试缝两层**：MCP tool 边界（test_mcp_tools.py，`mcp.Client(server)` 内存直连、无 stdio 子进程——anyio 限制要求 client 会话与测试同 task）+ 核心模块单测（scoring / index / model / store 运维面）。评分公式在 MCP 边界经 search 排序间接断言，公式内部不单测。
 - 好测试的标准：只验证"写入 → 检索 → 反馈"等外部可见行为闭环，例如：写入后 search 能召回；feedback 后同一查询的排序上升；get 能带出 links 邻居；fact 冲突后 review 队列出现双版本。
 - 存储与索引是实现细节，但"索引可重建"本身是一条验收测试：删除 index/ 目录后 search 仍正常工作。
-- 本项目为 greenfield，无可参考的既有测试；第一个测试需要建立 MCP 客户端测试 harness 的模式，供后续测试复用。
 
 ## Out of Scope
 
@@ -85,4 +84,4 @@
 - 核心风险：feedback 闭环若不成立（Agent 用完记忆不回写），系统退化为普通笔记库。因此协议设计上 feedback 是独立 tool，且建议接入方在系统提示中强制要求调用。
 - 复利的本质是每轮循环抬高"本金质量"（平均密度 + 平均置信度），而非单纯堆量；防通胀与增值同等重要。
 - 建议项目名：compound-memory。
-- 待 issue tracker 配置后（运行 /setup-matt-pocock-skills），本 spec 应迁移至 tracker 并附加 `ready-for-agent` 标签。
+- 本 spec 已随仓库纳入版本管理；issue 跟踪走 GitHub Issues（见 docs/agents/issue-tracker.md）。

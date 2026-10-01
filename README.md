@@ -1,6 +1,6 @@
 # compound-memory
 
-本地多 Agent 共享记忆系统——支持复利（越用越值钱）。Spec 见 `../specs/0001-compound-memory-spec.md`。
+本地多 Agent 共享记忆系统——支持复利（越用越值钱）。Spec 见 `docs/specs/0001-compound-memory-spec.md`。
 
 ## 架构
 
@@ -47,19 +47,23 @@ Agent (MCP 客户端 / CLI)
 PY=python3
 export PYTHONPATH=$(pwd)/src
 
+$PY -m compound_memory.cli init               # 初始化空库
 $PY -m compound_memory.cli write "Vercel Serverless 10s 超时" episode agent-tars
 $PY -m compound_memory.cli search "Vercel 超时"
 $PY -m compound_memory.cli feedback <id> agent-claude
 $PY -m compound_memory.cli decay          # cron 定时跑
+$PY -m compound_memory.cli revive <id>    # 复活归档记忆（CLI 唯一入口）
 $PY -m compound_memory.cli stats
 $PY -m compound_memory.cli rebuild-index  # 索引可随时重建
+$PY -m compound_memory.cli review-queue   # 冲突队列（CLI 唯一入口）
+$PY -m compound_memory.cli git-log        # 审计轨迹
 ```
 
 ## 开发
 
 ```bash
-$PY -m pytest tests/ -q     # 24 tests（MCP tool 边界 + 生命周期/CLI）
+$PY -m pytest tests/ -q     # 58 tests（MCP tool 边界 + 生命周期/索引/CLI）
 $PY -m mypy src/compound_memory/
 ```
 
-测试缝：MCP tool 边界（`mcp.Client(server)` 内存直连，无子进程）。
+测试缝：MCP tool 边界（`mcp.Client(server)` 内存直连，无子进程）+ 核心模块单测（scoring / index / store 运维面）。
