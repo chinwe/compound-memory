@@ -170,6 +170,23 @@ class TestConflicts:
             assert again["conflict"] is False
 
 
+class TestNamespacePermissions:
+    async def test_private_ns_rejects_foreign_writer(self, memroot):
+        """spec: agent-<name> 仅 owner 读写."""
+        async with make_client(memroot) as client:
+            res = await client.call_tool("memory_write", {
+                "content": "x", "type": "episode", "source": "agent-a", "ns": "agent-tars",
+            })
+            assert res.is_error
+
+    async def test_private_ns_accepts_owner(self, memroot):
+        async with make_client(memroot) as client:
+            res = call(await client.call_tool("memory_write", {
+                "content": "自己的草稿", "type": "episode", "source": "agent-tars", "ns": "agent-tars",
+            }))
+            assert res["ns"] == "agent-tars"
+
+
 class TestWithoutGit:
     async def test_tools_work_without_git(self, memroot2):
         async with make_client(memroot2, patch_git_off=True) as client:

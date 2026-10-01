@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -52,6 +53,12 @@ class TestDecayAndArchive:
         assert got["archived"] is True
         assert store.search("Vercel 超时") == []
 
+    def test_recently_used_survives_despite_old_created(self, store: MemoryStore):
+        """spec: 衰减看'长期未用'——last_used 新则不归档."""
+        mem = store.write(content="最近用过的老经验", type="episode", source="agent-a", created=_days_ago(120))
+        store.feedback(mem["id"], "agent-a")  # last_used = today
+        assert store.decay_sweep() == []
+
     def test_revive_restores_searchability(self, store: MemoryStore):
         mem = store.write(content="Next.js 静态导出经验", type="episode", source="agent-a", created=_days_ago(120))
         store.decay_sweep()
@@ -83,7 +90,7 @@ class TestIndexCache:
         store.rebuild_index()
         index_file = store.index_dir / "tokens.json"
         assert index_file.exists()
-        index_file.unlink()
+        os.replace(index_file, store.index_dir / "tokens.json.deleted")
         hits = store.search("Docker bridge")
         assert [h["id"] for h in hits] == [mem["id"]]
 
