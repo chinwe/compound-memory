@@ -118,6 +118,20 @@ class TestSelfHealing:
         cache_file(tmp_path).write_text("{not json", encoding="utf-8")
         assert idx.candidates(tokenize("redis")) == [rel_of(mem_a)]
 
+    def test_second_instance_sees_first_instance_writes(self, tmp_path: Path):
+        """跨进程活性：缓存属于 store，不属于进程。
+
+        长驻进程 B 已加载缓存后，进程 A 的写入（更新 tokens.json）必须对 B 的
+        下一次检索可见——旧实现里 B 的内存态永不失效，A 写的记忆静默丢失。
+        """
+        pairs: list[tuple[Memory, str]] = []
+        a = Index(tmp_path, scan_pairs=lambda: list(pairs))
+        b = Index(tmp_path, scan_pairs=lambda: list(pairs))
+        assert b.candidates(tokenize("redis")) == []  # b 先加载并落盘空缓存（建立基线）
+        mem = make_mem(1, "redis queue depth")
+        a.sync(mem, rel_of(mem))  # a（另一进程）写入并更新缓存文件
+        assert b.candidates(tokenize("redis")) == [rel_of(mem)]  # b 检测 mtime 变化后重载
+
 
 class TestStoreSeam:
     """store 层只断言 README 记载的 layout 存在性与行为，不解析缓存内容。"""
@@ -129,16 +143,16 @@ class TestStoreSeam:
         store.write(content="索引激活测试 Vercel 部署", type="episode", source="agent-a")
         assert cache.exists()
 
-    def test_cache_loss_degrades_to_scan(self, store):
-        """缓存丢失降级到慢，绝不报错。"""
+    def test_cache_loss_degrades_to_rebuild(self, store):
+        """缓存目录整体丢失 ⇒ 下次检索经全量扫描自动重建，绝不报错。"""
         mem = store.write(content="Docker 网络模式 bridge", type="episode", source="agent-a")
         os.replace(store.root / "index", store.root / "index.deleted")
         hits = store.search("Docker bridge")
         assert [h["id"] for h in hits] == [mem["id"]]
 
-    def test_scan_fallback_finds_out_of_band_memory(self, store):
-        """绕过 store API 手工放置的记忆文件（模拟外部编辑/git 操作）仍可被检索：
-        索引不含其词条 ⇒ 候选为空 ⇒ 扫描兜底接管。"""
+    def test_out_of_band_new_file_is_auto_reindexed(self, store):
+        """绕过 store API 手工放置的新记忆文件（模拟外部编辑/git 操作）仍可被检索：
+        新增文件更新父目录 mtime ⇒ Index 检测缓存落后 ⇒ 全量重建。"""
         store.write(content="redis cache eviction policy", type="episode", source="agent-a")
         hand = store.ns_root / "_shared" / "fact" / "20260101_handmade.md"
         hand.write_text(
@@ -148,3 +162,16 @@ class TestStoreSeam:
         )
         hits = store.search("zabbix queue")
         assert [h["id"] for h in hits] == ["20260101_handmade"]
+
+    def test_out_of_band_overlapping_token_no_longer_blind(self, store):
+        """旧实现的盲区（回归钉）：带外记忆与已索引记忆共享任一 token 时，
+        "索引部分命中即短路"曾让它永久隐形——活性自愈后中间态不复存在。"""
+        store.write(content="redis cache eviction policy", type="episode", source="agent-a")
+        hand = store.ns_root / "_shared" / "fact" / "20260101_overlap.md"
+        hand.write_text(
+            "---\nid: 20260101_overlap\nns: _shared\ntype: fact\n"
+            "source: agent-x\ncreated: 2026-01-01\n---\n\nredis queue depth alerts\n",
+            encoding="utf-8",
+        )
+        hits = store.search("redis queue")
+        assert "20260101_overlap" in [h["id"] for h in hits]

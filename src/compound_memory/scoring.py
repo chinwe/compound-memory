@@ -55,12 +55,18 @@ def doc_text(mem: Memory) -> str:
     return mem.content + " " + (mem.key or "")
 
 
-def recency_ref(mem: Memory) -> str:
+def recency_age(mem: Memory, now: dt.date) -> int | None:
     """新近基准（CONTEXT.md: recency reference）：last_used 优先，无则 created。
 
-    排序与衰减共用这一个定义点，不得各算各的。
+    返回基准距 now 的天数（负数 = 基准在未来，交由消费方定夺）；
+    坏/缺日期返回 None。选基准与解析只在这一处，消费方只决定 None 的业务动作
+    （rank ⇒ 新近项记 0 分；decay ⇒ 跳过该条）。
     """
-    return mem.last_used or mem.created
+    ref = mem.last_used or mem.created
+    try:
+        return (now - dt.date.fromisoformat(ref)).days
+    except (ValueError, TypeError):
+        return None
 
 
 def bm25_scores(
@@ -93,12 +99,10 @@ def bm25_scores(
 def recency_score(mem: Memory, now: dt.date) -> float:
     """Exponential recency e^(-Δdays/τ); τ by memory type; bad dates ⇒ 0.0."""
     tau = TAU_DAYS.get(mem.type, 90.0)
-    try:
-        ref_date = dt.date.fromisoformat(recency_ref(mem))
-    except (ValueError, TypeError):
+    age = recency_age(mem, now)
+    if age is None:
         return 0.0
-    days = max(0.0, (now - ref_date).days)
-    return math.exp(-days / tau)
+    return math.exp(-max(0, age) / tau)
 
 
 def normalized_similarity(bm25: float, n_query_tokens: int) -> float:

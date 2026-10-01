@@ -6,8 +6,17 @@ hook. Our fixtures create fresh project-local dirs instead.
 
 The asyncio-first ordering keeps mcp.Client sessions away from tests that
 monkeypatch shutil.which (anyio cancel-scope runs in a different task otherwise).
+
+Seam adapters injected by the shared store fixture:
+- clock: fixed date, so decay/rank assertions never depend on the wall clock
+  (midnight-crossing flakes).
+- remover: rename instead of unlink, so archive/revive during tests stay
+  sandbox-safe (production uses plain Path.unlink — single-file unlink is fine,
+  only bulk deletes get blocked).
 """
 
+import datetime as dt
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -19,6 +28,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from compound_memory.storage import MemoryStore  # noqa: E402
 
 _TEST_TMP_BASE = Path(__file__).resolve().parents[1] / ".test-tmp"
+
+# 测试用的固定"今天"：store fixture 的 clock 与各测试文件的日期推算都相对它
+CLOCK_DATE = dt.date(2026, 10, 1)
+
+
+def sandbox_safe_remove(path: Path) -> None:
+    """Removal adapter for the sandbox: rename out of the way instead of unlink."""
+    if path.exists():
+        os.replace(path, path.with_name(f".{path.name}.rm"))
 
 
 def pytest_configure(config):
@@ -51,5 +69,8 @@ def tmp_path(tmp_path_factory):
 
 @pytest.fixture
 def store(tmp_path: Path) -> MemoryStore:
-    """共享的 MemoryStore fixture（原先在 test_lifecycle / test_index 各有一份）。"""
-    return MemoryStore(tmp_path / "memroot")
+    """共享的 MemoryStore fixture（原先在 test_lifecycle / test_index 各有一份）。
+
+    注入固定 clock 与沙箱安全 remover——两条 seam adapter 都只在测试侧存在。
+    """
+    return MemoryStore(tmp_path / "memroot", clock=lambda: CLOCK_DATE, remover=sandbox_safe_remove)

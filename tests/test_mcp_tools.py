@@ -141,7 +141,7 @@ class TestCompounding:
         async with make_client(memroot) as client:
             assert call(await client.call_tool("memory_get", {"mem_id": "nope"}))["found"] is False
             assert call(await client.call_tool("memory_feedback", {"mem_id": "nope", "agent": "x"}))["found"] is False
-            assert call(await client.call_tool("memory_link", {"id_a": "nope", "id_b": "alsono"}))["ok"] is False
+            assert call(await client.call_tool("memory_link", {"id_a": "nope", "id_b": "alsono"}))["found"] is False
 
 
 class TestConflicts:

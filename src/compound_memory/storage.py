@@ -11,19 +11,18 @@ from __future__ import annotations
 
 import datetime as dt
 import dataclasses
-import os
 import shutil
 import subprocess
 import uuid
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
 from .index import Index
 from .model import MEMORY_TYPES, TTL_DAYS, Memory
-from .scoring import rank, recency_ref, tokenize
+from .scoring import rank, recency_age, tokenize
 
 ARCHIVE_USES_THRESHOLD = 3
 CONF_USE_BUMP = 0.1
@@ -31,37 +30,39 @@ CONF_CROSS_AGENT_BUMP = 0.15
 GIT_IDENTITY = ("-c", "user.name=compound-memory", "-c", "user.email=memory@local")
 
 
-def _today() -> str:
-    return dt.date.today().isoformat()
-
-
-def _as_date(value: str) -> dt.date:
-    return dt.date.fromisoformat(value)
-
-
-def _remove(path: Path) -> None:
-    """Move a file out of the way without unlink (sandbox trash hooks block bulk deletes in tests)."""
+def _unlink_file(path: Path) -> None:
+    """Default removal adapter (tests inject a sandbox-safe one via conftest)."""
     if path.exists():
-        os.replace(path, path.with_name(f".{path.name}.rm"))
-
-
-def new_id() -> str:
-    return f"{dt.date.today().strftime('%Y%m%d')}_{uuid.uuid4().hex[:6]}"
+        path.unlink()
 
 
 class MemoryStore:
-    def __init__(self, root: Path | str, git: bool = True) -> None:
+    def __init__(
+        self,
+        root: Path | str,
+        git: bool = True,
+        clock: Callable[[], dt.date] = dt.date.today,
+        remover: Callable[[Path], None] | None = None,
+    ) -> None:
         self.root = Path(root)
         self.ns_root = self.root / "namespaces"
         self.archive_root = self.root / "archive"
         self.index = Index(self.root, scan_pairs=self._scan_pairs)
         self.review_queue_path = self.root / "review-queue.md"
         self.git_enabled = git and shutil.which("git") is not None
+        self._clock = clock
+        self._remover = remover or _unlink_file
         self._ensure_layout()
         if self.git_enabled:
             self._git("init", "-q", check=False)
             self._git("add", "-A", check=False)
             self._git("commit", "-qm", "init compound-memory store", check=False)
+
+    def _today(self) -> str:
+        return self._clock().isoformat()
+
+    def _new_id(self) -> str:
+        return f"{self._clock().strftime('%Y%m%d')}_{uuid.uuid4().hex[:6]}"
 
     # ---------- layout / git ----------
 
@@ -140,6 +141,10 @@ class MemoryStore:
         return asdict(mem)
 
     # ---------- public API ----------
+    #
+    # 接口错误约定（单一定义，adapter 各翻译一次）：
+    # - 调用方错误（参数非法 / 越权写命名空间 / 自链接）⇒ 抛 ValueError / PermissionError；
+    # - 目标记忆不存在 ⇒ 正常返回 {"found": False}——所有按 id 的动词恒含 found 键。
 
     def write(
         self,
@@ -162,11 +167,11 @@ class MemoryStore:
         if key and type in ("fact", "insight"):
             conflict_with = self._find_by_key(ns, type, key, exclude_content=content)
         mem = Memory(
-            id=new_id(),
+            id=self._new_id(),
             ns=ns,
             type=type,
             source=source,
-            created=created or _today(),
+            created=created or self._today(),
             content=content,
             confidence=0.5 if confidence is None else confidence,
             links=list(links or []),
@@ -189,6 +194,7 @@ class MemoryStore:
         if mem is None:
             return {"found": False}
         result = self._to_dict(mem)
+        result["found"] = True
         if include_neighbors and mem.links:
             neighbors = [self._to_dict(n) for n in (self.find(l) for l in mem.links) if n is not None]
             result["neighbors"] = neighbors
@@ -207,11 +213,13 @@ class MemoryStore:
                 bump += CONF_CROSS_AGENT_BUMP
             mem.validated_by.append(agent)
         mem.confidence = round(min(1.0, mem.confidence + bump), 3)
-        mem.last_used = _today()
+        mem.last_used = self._today()
         self._save(mem)
         self.index.sync(mem, self._active_rel(mem))
         self._commit(f"feedback {mem.id} by {agent}: uses={mem.uses} conf={mem.confidence}")
-        return self._to_dict(mem)
+        result = self._to_dict(mem)
+        result["found"] = True
+        return result
 
     def link(self, id_a: str, id_b: str) -> dict[str, Any]:
         if id_a == id_b:
@@ -219,7 +227,7 @@ class MemoryStore:
         mem_a, mem_b = self.find(id_a), self.find(id_b)
         missing = [mid for mid, m in ((id_a, mem_a), (id_b, mem_b)) if m is None]
         if missing:
-            return {"ok": False, "missing": missing}
+            return {"found": False, "missing": missing}
         assert mem_a is not None and mem_b is not None
         if id_b not in mem_a.links:
             mem_a.links.append(id_b)
@@ -228,7 +236,7 @@ class MemoryStore:
         self._save(mem_a)
         self._save(mem_b)
         self._commit(f"link {id_a} <-> {id_b}")
-        return {"ok": True, "a": id_a, "b": id_b, "links": mem_a.links}
+        return {"found": True, "a": id_a, "b": id_b, "links": mem_a.links}
 
     def search(
         self,
@@ -238,7 +246,7 @@ class MemoryStore:
         now: dt.date | None = None,
     ) -> list[dict[str, Any]]:
         """检索 = 选候选（store 的 layout 职责）+ 排序（scoring.rank 单一定义点）。"""
-        now = now or dt.date.today()
+        now = now or self._clock()
         q_tokens = tokenize(query)
         if not q_tokens:
             return []
@@ -247,13 +255,15 @@ class MemoryStore:
     # ---------- decay / archive / revive ----------
 
     def decay_sweep(self, now: dt.date | None = None) -> list[str]:
-        now = now or dt.date.today()
+        now = now or self._clock()
         archived: list[str] = []
         for path in sorted(self.ns_root.rglob("*.md")):
             mem = self.parse(path)
             if mem.ttl is None:
                 continue
-            age = (now - _as_date(recency_ref(mem))).days
+            age = recency_age(mem, now)
+            if age is None:
+                continue  # 坏/缺日期：跳过该条而非崩掉整场扫描（宁可不归档，不因坏数据丢记忆）
             if age > mem.ttl and mem.uses < ARCHIVE_USES_THRESHOLD:
                 self._archive(mem)
                 archived.append(mem.id)
@@ -269,21 +279,23 @@ class MemoryStore:
             self._move_to_active(mem)
             self._save(mem)
             self._commit(f"revive {mem_id}")
-        return self._to_dict(mem)
+        result = self._to_dict(mem)
+        result["found"] = True
+        return result
 
     def _archive(self, mem: Memory) -> None:
         src = self._active_path(mem)
         old_rel = str(src.relative_to(self.root))
         mem.archived = True
         self._save(mem)
-        _remove(src)
+        self._remover(src)
         self.index.sync(mem, old_rel)
 
     def _move_to_active(self, mem: Memory) -> None:
         src = self._archive_path(mem)
         mem.archived = False
         self._save(mem)
-        _remove(src)
+        self._remover(src)
         self.index.sync(mem, self._active_rel(mem))
 
     # ---------- index (rebuildable cache; mechanics live in index.Index) ----------
@@ -302,26 +314,18 @@ class MemoryStore:
         return self.index.rebuild(self._scan_pairs())
 
     def _candidates(self, q_tokens: list[str], ns: str) -> list[Memory]:
-        """Indexed lookup with a scan fallback (Q4-A): cache loss degrades to slow, never to error.
-
-        命中路径仍逐一复查文件存在性与 ns/archived——防的是 store API 之外的
-        文件变动（手工编辑、git 操作），与缓存活性无关；活性自愈在 Index 内。
+        """Indexed lookup: 索引活性（跨进程重载/带外重建）由 Index 在内部自愈，
+        这里全信索引命中，只逐一复查文件存在性与 ns/archived——防的是索引
+        词条与手编文件内容的漂移（改内容不改目录 mtime，那条路走显式 rebuild）。
         """
-        rels = self.index.candidates(q_tokens)
-        if rels:
-            out = []
-            for rel in rels:
-                path = self.root / rel
-                if path.exists():
-                    mem = self.parse(path)
-                    if mem.ns == ns and not mem.archived:
-                        out.append(mem)
-            if out:
-                return out
-        base = self.ns_root / ns
-        if not base.exists():
-            return []
-        return [self.parse(p) for p in sorted(base.rglob("*.md"))]
+        out: list[Memory] = []
+        for rel in self.index.candidates(q_tokens):
+            path = self.root / rel
+            if path.exists():
+                mem = self.parse(path)
+                if mem.ns == ns and not mem.archived:
+                    out.append(mem)
+        return out
 
     # ---------- conflicts / stats ----------
 
@@ -337,7 +341,7 @@ class MemoryStore:
 
     def _append_review(self, old: Memory, new: Memory) -> None:
         line = (
-            f"- {_today()} conflict `{new.ns}/{new.type}/{new.key}`: "
+            f"- {self._today()} conflict `{new.ns}/{new.type}/{new.key}`: "
             f"{old.id} ({old.source}: {old.content[:40]}) vs {new.id} ({new.source}: {new.content[:40]})\n"
         )
         with self.review_queue_path.open("a", encoding="utf-8") as fh:

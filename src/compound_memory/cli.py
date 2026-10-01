@@ -112,7 +112,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args.func(args)
         return 0
-    except ValueError as exc:
+    except (ValueError, PermissionError) as exc:
+        # store 接口的调用方错误统一在这里翻译成 JSON（MCP 侧由框架转 is_error）
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
 

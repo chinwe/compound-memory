@@ -12,11 +12,14 @@ import datetime as dt
 import pytest
 
 from compound_memory.model import Memory
-from compound_memory.scoring import W_CONF, W_SIM, W_TYPE, TYPE_WEIGHT, rank, recency_ref
+from compound_memory.scoring import W_CONF, W_SIM, W_TYPE, TYPE_WEIGHT, rank, recency_age
+
+
+TODAY = dt.date(2026, 10, 1)
 
 
 def _days_ago(n: int) -> str:
-    return (dt.date.today() - dt.timedelta(days=n)).isoformat()
+    return (TODAY - dt.timedelta(days=n)).isoformat()
 
 
 def make_mem(
@@ -42,7 +45,7 @@ def make_mem(
     )
 
 
-NOW = dt.date.today()
+NOW = TODAY
 
 
 class TestRankPipeline:
@@ -109,11 +112,16 @@ class TestDegradedDates:
         )
 
 
-class TestRecencyRef:
+class TestRecencyAge:
     def test_last_used_wins_over_created(self):
         mem = make_mem(1, "x", created="2020-01-01", last_used="2026-09-30")
-        assert recency_ref(mem) == "2026-09-30"
+        assert recency_age(mem, dt.date(2026, 10, 1)) == 1
 
     def test_falls_back_to_created(self):
-        mem = make_mem(1, "x", created="2020-01-01")
-        assert recency_ref(mem) == "2020-01-01"
+        mem = make_mem(1, "x", created="2026-09-21")
+        assert recency_age(mem, dt.date(2026, 10, 1)) == 10
+
+    def test_bad_date_returns_none(self):
+        """坏日期交出 None（决策在消费方：rank 记 0 分、decay 跳过），绝不在缝上崩。"""
+        mem = make_mem(1, "x", last_used="not-a-date")
+        assert recency_age(mem, dt.date(2026, 10, 1)) is None

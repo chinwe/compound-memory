@@ -14,10 +14,12 @@ import pytest
 
 from compound_memory.cli import main as cli_main
 from compound_memory.storage import MemoryStore
+from conftest import CLOCK_DATE
 
 
 def _days_ago(n: int) -> str:
-    return (dt.date.today() - dt.timedelta(days=n)).isoformat()
+    """相对测试固定"今天"（CLOCK_DATE）推算——store 的 clock 已注入同一日期。"""
+    return (CLOCK_DATE - dt.timedelta(days=n)).isoformat()
 
 
 class TestDecayAndArchive:
@@ -43,7 +45,7 @@ class TestDecayAndArchive:
         mem = store.write(content="Vercel 超时限制是 10 秒", type="episode", source="agent-a", created=_days_ago(120))
         store.decay_sweep()
         got = store.get(mem["id"])
-        assert got["found"] if "found" in got else got["archived"] is True
+        assert got["found"] is True
         assert got["archived"] is True
         assert store.search("Vercel 超时") == []
 
@@ -69,6 +71,19 @@ class TestDecayAndArchive:
         assert result["uses"] == 1
 
 
+    def test_bad_last_used_date_skipped_not_fatal(self, store: MemoryStore):
+        """手编坏日期（spec story 10 鼓励直接编辑文件）不得杀掉整场 decay 扫描：
+        坏日期的记忆跳过（宁可不归档，不因坏数据丢记忆），其余记忆照常处理。"""
+        bad = store.write(content="被手编坏日期的记忆", type="episode", source="agent-a", created=_days_ago(120))
+        path = store.ns_root / "_shared" / "episode" / f"{bad['id']}.md"
+        text = path.read_text(encoding="utf-8").replace("created:", "last_used: not-a-date\ncreated:", 1)
+        path.write_text(text, encoding="utf-8")
+        good = store.write(content="正常的陈旧记忆", type="episode", source="agent-a", created=_days_ago(120))
+        archived = store.decay_sweep()
+        assert bad["id"] not in archived
+        assert good["id"] in archived
+
+
 class TestIndexCache:
     def test_rebuild_index_reports_counts_and_keeps_search(self, store: MemoryStore):
         """显式重建动词（运维面）：报告计数，且重建后检索如常。"""
@@ -77,6 +92,18 @@ class TestIndexCache:
         counts = store.rebuild_index()
         assert counts["memories"] == 2
         assert [h["id"] for h in store.search("Python GIL")] == [a["id"]]
+
+
+class TestRemovalAdapter:
+    def test_default_remover_unlinks_in_production(self, tmp_path: Path):
+        """生产默认 adapter 是真删除：单文件 unlink 不受沙箱批量守卫影响，
+        归档/复活不在生产库留 .rm 尸体（改名式 remover 只存在于测试侧）。"""
+        store = MemoryStore(tmp_path / "prodroot")
+        mem = store.write(content="将被归档的记忆", type="episode", source="agent-a", created=_days_ago(120))
+        store.decay_sweep()
+        active_dir = store.ns_root / "_shared" / "episode"
+        assert not (active_dir / f"{mem['id']}.md").exists()
+        assert not list(active_dir.glob("*.rm"))
 
 
 class TestGit:
@@ -129,3 +156,17 @@ class TestCli:
         with pytest.raises(SystemExit) as exc:
             cli_main(["--root", str(tmp_path / "r"), "write", "x", "bogus", "agent"])
         assert exc.value.code == 2
+
+    def test_cli_permission_error_returns_json_not_traceback(self, tmp_path: Path, capsys):
+        """接口错误约定的 CLI 侧：越权写 agent-* 命名空间必须翻译成 JSON + exit 2，
+        而不是裸栈崩溃（旧实现只捕 ValueError，此路径直接 traceback）。"""
+        code = cli_main(["--root", str(tmp_path / "p"), "write", "x", "episode", "agent-a", "--ns", "agent-tars"])
+        assert code == 2
+        err = json.loads(capsys.readouterr().err)
+        assert "private" in err["error"]
+
+    def test_cli_link_reports_missing_ids(self, tmp_path: Path, capsys):
+        """按 id 动词的信封约定：不存在 = {"found": false}，不是异常也不是第三种键名。"""
+        assert cli_main(["--root", str(tmp_path / "l"), "link", "nope", "alsono"]) == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out == {"found": False, "missing": ["nope", "alsono"]}

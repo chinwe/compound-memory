@@ -44,7 +44,7 @@ _Avoid_: 删除、trash
 把归档记忆移回活动区，恢复可检索性。
 
 **Recency reference（新近基准）**：
-判断一条记忆"多新"的时间基准：`last_used` 优先，无则 `created`。排序与衰减共用同一基准，不得各算各的。
+判断一条记忆"多新"的时间基准：`last_used` 优先，无则 `created`。落点是 `scoring.recency_age(mem, now)`——直接交出基准距 today 的天数，坏/缺日期交 `None`；选基准与解析只在这一处，消费方只决定 `None` 的业务动作（排序记 0 分、衰减跳过）。不得各算各的。
 _Avoid_: 参考时间、基准日期
 
 ### 检索
