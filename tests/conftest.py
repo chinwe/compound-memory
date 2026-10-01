@@ -1,18 +1,15 @@
-"""Test config.
+"""测试配置。
 
-Why we don't use pytest's builtin tmp_path: the WorkBuddy sandbox (a) raises
-EEXIST on mkdir of an existing dir and (b) blocks bulk unlinks via its trash
-hook. Our fixtures create fresh project-local dirs instead.
+为何不用 pytest 内置 tmp_path：WorkBuddy 沙箱 (a) 对已存在目录 mkdir 报 EEXIST，
+(b) 通过 trash hook 拦截批量 unlink。fixture 改为新建项目本地目录。
 
-The asyncio-first ordering keeps mcp.Client sessions away from tests that
-monkeypatch shutil.which (anyio cancel-scope runs in a different task otherwise).
+asyncio 优先的收集排序，让 mcp.Client 会话远离 monkeypatch shutil.which 的测试
+（否则 anyio cancel-scope 会跨 task 运行而崩溃）。
 
-Seam adapters injected by the shared store fixture:
-- clock: fixed date, so decay/rank assertions never depend on the wall clock
-  (midnight-crossing flakes).
-- remover: rename instead of unlink, so archive/revive during tests stay
-  sandbox-safe (production uses plain Path.unlink — single-file unlink is fine,
-  only bulk deletes get blocked).
+共享 store fixture 注入的 seam adapter：
+- clock：固定日期，decay/rank 断言不依赖墙钟（消除跨零点抖动）。
+- remover：改名代替 unlink，测试中的归档/复活保持沙箱安全
+  （生产用普通 Path.unlink——单文件 unlink 不受影响，只有批量删除会被拦）。
 """
 
 import datetime as dt
@@ -34,7 +31,7 @@ CLOCK_DATE = dt.date(2026, 10, 1)
 
 
 def sandbox_safe_remove(path: Path) -> None:
-    """Removal adapter for the sandbox: rename out of the way instead of unlink."""
+    """沙箱安全删除 adapter：改名挪走，不做 unlink。"""
     if path.exists():
         os.replace(path, path.with_name(f".{path.name}.rm"))
 
@@ -51,7 +48,7 @@ def pytest_collection_modifyitems(session, config, items):
 @pytest.fixture
 def tmp_path_factory():
     class _TestTmpFactory:
-        def mktemp(self, name: str, numbered: bool = True) -> Path:
+        def mktemp(self, name: str) -> Path:
             d = _TEST_TMP_BASE / f"{name}-{uuid.uuid4().hex[:8]}"
             d.mkdir(parents=True, exist_ok=True)
             return d

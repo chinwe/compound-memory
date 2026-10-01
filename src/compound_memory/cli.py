@@ -1,4 +1,4 @@
-"""CLI: non-MCP access to the same store (scripts, cron distillation, decay sweeps)."""
+"""CLI：不经 MCP 直接访问同一 store（脚本、定时蒸馏、衰减扫描等运维面）。"""
 
 from __future__ import annotations
 

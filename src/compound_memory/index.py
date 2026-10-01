@@ -148,23 +148,23 @@ class Index:
 
     # ---------- 内部：变更原语 ----------
 
-    def _upsert(self, mem: Memory, rel_path: str) -> None:
-        """加入/刷新一条记忆的词条；先移除其残留旧路径。"""
+    def _purge(self, rel_path: str) -> None:
+        """清除某条路径的全部词条残留（不落盘，由调用方决定后续写）。"""
         index = self._load()
         for tok in list(index):
             if rel_path in index[tok]:
                 index[tok].remove(rel_path)
                 if not index[tok]:
                     del index[tok]
+
+    def _upsert(self, mem: Memory, rel_path: str) -> None:
+        """加入/刷新一条记忆的词条；先移除其残留旧路径。"""
+        self._purge(rel_path)
+        index = self._load()
         for tok in set(tokenize(doc_text(mem))):
             index.setdefault(tok, []).append(rel_path)
         self._save()
 
     def _remove(self, rel_path: str) -> None:
-        index = self._load()
-        for tok in list(index):
-            if rel_path in index[tok]:
-                index[tok].remove(rel_path)
-                if not index[tok]:
-                    del index[tok]
+        self._purge(rel_path)
         self._save()

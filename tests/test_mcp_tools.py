@@ -1,10 +1,10 @@
-"""Tests at the MCP tool boundary — the single seam agreed in the spec.
+"""MCP tool 边界测试——spec 约定的主测试缝。
 
-All compounding behaviour is asserted via the 5 tools (write/search/get/link/feedback),
-using an in-memory client connected directly to the server (no stdio subprocess).
-The client session must open/close inside the same task as the test (anyio requirement),
-so we use a helper instead of an async fixture.
-External behaviour only: ordering asserted via search results, never via scoring internals.
+全部复利行为经 5 个 tool（write/search/get/link/feedback）断言，
+用内存直连 server 的 mcp.Client（无 stdio 子进程）。
+client 会话必须与测试同 task 开关（anyio 要求），
+因此用 async helper 而非 async fixture。
+只断言外部行为：排序经 search 结果断言，不经评分内部。
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from compound_memory import server as cm_server  # noqa: E402
 
 
 def call(res) -> object:
-    """Extract the JSON payload a tool returned."""
+    """提取 tool 返回的 JSON 载荷。"""
     return json.loads(res.content[0].text)
 
 
@@ -76,6 +76,13 @@ class TestWriteAndSearch:
             out = call(await client.call_tool("memory_search", {"query": "   "}))
             assert out == {"hits": [], "count": 0}
 
+    async def test_search_rejects_bad_ns(self, memroot):
+        """拼错的 ns 是调用方错误：必须报错而非静默返回空结果——
+        静默空结果会让 agent 误判"无相关记忆"（与 write 的 ns 校验同一约定）。"""
+        async with make_client(memroot) as client:
+            res = await client.call_tool("memory_search", {"query": "Git", "ns": "shared"})
+            assert res.is_error
+
     async def test_search_is_namespace_scoped(self, memroot):
         async with make_client(memroot) as client:
             shared = call(await client.call_tool("memory_write", {
@@ -97,7 +104,7 @@ class TestWriteAndSearch:
 
 class TestCompounding:
     async def test_feedback_raises_confidence_and_ranking(self, memroot):
-        """利息①: used memory outranks a similar unused one."""
+        """利息①：被用过的记忆在相似查询中反超未用过的。"""
         async with make_client(memroot) as client:
             old = call(await client.call_tool("memory_write", {
                 "content": "Next.js App Router 缓存策略 force-static", "type": "episode", "source": "agent-a",
@@ -113,7 +120,7 @@ class TestCompounding:
             assert out["hits"][0]["id"] == old["id"]
 
     async def test_cross_agent_validation_bumps_confidence(self, memroot):
-        """利息④: a second, different agent validating gives +0.15 extra."""
+        """利息④：另一个不同 agent 验证时额外 +0.15。"""
         async with make_client(memroot) as client:
             mem = call(await client.call_tool("memory_write", {
                 "content": "macOS 的 sed -i 需要后备缀参数", "type": "fact", "source": "agent-a", "key": "sed-mac",
@@ -124,7 +131,7 @@ class TestCompounding:
             assert got["validated_by"] == ["agent-b"]
 
     async def test_link_is_bidirectional_and_get_returns_neighbors(self, memroot):
-        """利息②: neighbors come back with memory_get."""
+        """利息②：memory_get 会带出 links 邻居。"""
         async with make_client(memroot) as client:
             a = call(await client.call_tool("memory_write", {
                 "content": "sqlite-vec 向量检索", "type": "insight", "source": "agent-a",
@@ -172,7 +179,7 @@ class TestConflicts:
 
 class TestNamespacePermissions:
     async def test_private_ns_rejects_foreign_writer(self, memroot):
-        """spec: agent-<name> 仅 owner 读写."""
+        """spec: agent-<name> 仅 owner 可写."""
         async with make_client(memroot) as client:
             res = await client.call_tool("memory_write", {
                 "content": "x", "type": "episode", "source": "agent-a", "ns": "agent-tars",

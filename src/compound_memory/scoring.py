@@ -1,4 +1,4 @@
-"""Scoring: tokenization, lexical similarity (BM25), recency decay, final score.
+"""评分：分词、词面相似度（BM25）、新近衰减、最终得分。
 
 检索得分 = 0.45·相似度 + 0.25·置信度 + 0.20·新近度(e^(-Δt/τ)) + 0.10·类型权重
 
@@ -36,7 +36,7 @@ def _cjk_bigrams(run: list[str]) -> list[str]:
 
 
 def tokenize(text: str) -> list[str]:
-    """Lowercase tokenizer: latin/digit words + CJK character bigrams."""
+    """小写分词器：拉丁字母/数字整词 + CJK 相邻双字（bigram）。"""
     tokens: list[str] = []
     cjk_run: list[str] = []
     for piece in TOKEN_RE.findall(text.lower()):
@@ -51,7 +51,7 @@ def tokenize(text: str) -> list[str]:
 
 
 def doc_text(mem: Memory) -> str:
-    """The searchable text of a memory — single definition point (content + key)."""
+    """记忆的可检索文本——单一定义点（content + key）。"""
     return mem.content + " " + (mem.key or "")
 
 
@@ -75,7 +75,7 @@ def bm25_scores(
     k1: float = 1.5,
     b: float = 0.75,
 ) -> list[float]:
-    """BM25 relevance of each doc for the query. Returns 0.0 when nothing matches."""
+    """各文档对 query 的 BM25 相关度；无匹配时返回 0.0。"""
     n_docs = len(docs_tokens)
     if n_docs == 0 or not query_tokens:
         return [0.0] * n_docs
@@ -97,7 +97,7 @@ def bm25_scores(
 
 
 def recency_score(mem: Memory, now: dt.date) -> float:
-    """Exponential recency e^(-Δdays/τ); τ by memory type; bad dates ⇒ 0.0."""
+    """指数新近度 e^(-Δdays/τ)，τ 取自记忆类型；坏日期 ⇒ 0.0。"""
     tau = TAU_DAYS.get(mem.type, 90.0)
     age = recency_age(mem, now)
     if age is None:
@@ -106,7 +106,7 @@ def recency_score(mem: Memory, now: dt.date) -> float:
 
 
 def normalized_similarity(bm25: float, n_query_tokens: int) -> float:
-    """Clamp BM25 to [0, 1] by dividing by query length."""
+    """BM25 除以 query token 数，截断到 [0, 1]。"""
     if n_query_tokens <= 0:
         return 0.0
     return min(1.0, bm25 / n_query_tokens)

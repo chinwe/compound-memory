@@ -1,7 +1,7 @@
-"""MCP server: the single read/write boundary for all agents.
+"""MCP server：所有 Agent 的唯一读写边界。
 
-Exactly five tools: memory_write / memory_search / memory_get / memory_link / memory_feedback.
-memory_feedback is a first-class citizen — the compounding loop depends on it.
+恰好 5 个 tool：memory_write / memory_search / memory_get / memory_link / memory_feedback。
+memory_feedback 是一等公民——复利闭环依赖它。
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ def memory_write(
 
 @mcp.tool()
 def memory_search(query: str, ns: str = "_shared", top_k: int = 5) -> dict[str, Any]:
-    """Hybrid search (lexical similarity + confidence + recency + type weight). Default namespace is _shared. Returns {'hits': [...]} sorted by score."""
+    """Search memories (lexical similarity + confidence + recency + type weight). Default namespace is _shared. Returns {'hits': [...]} sorted by score."""
     hits = _store_or_configure().search(query=query, ns=ns, top_k=top_k)
     return {"hits": hits, "count": len(hits)}
 

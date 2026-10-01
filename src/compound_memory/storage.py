@@ -1,10 +1,10 @@
-"""Storage layer: Markdown + YAML frontmatter, namespaces, git, compounding engine.
+"""存储层：Markdown + YAML frontmatter、命名空间、git、复利引擎。
 
-Layout under root:
-    namespaces/<ns>/<type>/<id>.md   active memories
-    archive/<ns>/<type>/<id>.md      decayed, recoverable
-    index/tokens.json                rebuildable search cache
-    review-queue.md                  fact/insight conflict queue
+根目录布局：
+    namespaces/<ns>/<type>/<id>.md   活动记忆
+    archive/<ns>/<type>/<id>.md      衰减归档（可恢复）
+    index/tokens.json                可重建的检索缓存
+    review-queue.md                  fact/insight 冲突队列
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ GIT_IDENTITY = ("-c", "user.name=compound-memory", "-c", "user.email=memory@loca
 
 
 def _unlink_file(path: Path) -> None:
-    """Default removal adapter (tests inject a sandbox-safe one via conftest)."""
+    """默认删除 adapter（测试侧经 conftest 注入沙箱安全版本）。"""
     if path.exists():
         path.unlink()
 
@@ -64,7 +64,7 @@ class MemoryStore:
     def _new_id(self) -> str:
         return f"{self._clock().strftime('%Y%m%d')}_{uuid.uuid4().hex[:6]}"
 
-    # ---------- layout / git ----------
+    # ---------- 布局 / git ----------
 
     def _ensure_layout(self) -> None:
         shared = self.ns_root / "_shared"
@@ -89,7 +89,7 @@ class MemoryStore:
         self._git("add", "-A", check=False)
         self._git("commit", "-qm", message, check=False)
 
-    # ---------- file IO ----------
+    # ---------- 文件 IO ----------
 
     def _active_path(self, mem: Memory) -> Path:
         return self.ns_root / mem.ns / mem.type / f"{mem.id}.md"
@@ -140,11 +140,18 @@ class MemoryStore:
     def _to_dict(mem: Memory) -> dict[str, Any]:
         return asdict(mem)
 
-    # ---------- public API ----------
+    # ---------- 公开接口 ----------
     #
     # 接口错误约定（单一定义，adapter 各翻译一次）：
     # - 调用方错误（参数非法 / 越权写命名空间 / 自链接）⇒ 抛 ValueError / PermissionError；
     # - 目标记忆不存在 ⇒ 正常返回 {"found": False}——所有按 id 的动词恒含 found 键。
+
+    @staticmethod
+    def _check_ns(ns: str) -> None:
+        """ns 格式校验（write/search 共用）：非法 ns 是调用方错误，必须抛错——
+        search 侧静默返回空结果会让 agent 误判"无相关记忆"。"""
+        if ns != "_shared" and not ns.startswith("agent-"):
+            raise ValueError("ns must be '_shared' or start with 'agent-'")
 
     def write(
         self,
@@ -159,8 +166,7 @@ class MemoryStore:
     ) -> dict[str, Any]:
         if type not in MEMORY_TYPES:
             raise ValueError(f"type must be one of {MEMORY_TYPES}, got: {type!r}")
-        if ns != "_shared" and not ns.startswith("agent-"):
-            raise ValueError("ns must be '_shared' or start with 'agent-'")
+        self._check_ns(ns)
         if ns.startswith("agent-") and source not in (ns, ns[len("agent-"):]):
             raise PermissionError(f"namespace {ns!r} is private to its owner; writer is {source!r}")
         conflict_with: Memory | None = None
@@ -246,13 +252,14 @@ class MemoryStore:
         now: dt.date | None = None,
     ) -> list[dict[str, Any]]:
         """检索 = 选候选（store 的 layout 职责）+ 排序（scoring.rank 单一定义点）。"""
+        self._check_ns(ns)
         now = now or self._clock()
         q_tokens = tokenize(query)
         if not q_tokens:
             return []
         return rank(query, self._candidates(q_tokens, ns), now=now, top_k=top_k)
 
-    # ---------- decay / archive / revive ----------
+    # ---------- 衰减 / 归档 / 复活 ----------
 
     def decay_sweep(self, now: dt.date | None = None) -> list[str]:
         now = now or self._clock()
@@ -298,13 +305,13 @@ class MemoryStore:
         self._remover(src)
         self.index.sync(mem, self._active_rel(mem))
 
-    # ---------- index (rebuildable cache; mechanics live in index.Index) ----------
+    # ---------- 索引（可重建缓存；机制在 index.Index） ----------
 
     def _active_rel(self, mem: Memory) -> str:
         return str(self._active_path(mem).relative_to(self.root))
 
     def _scan_pairs(self) -> list[tuple[Memory, str]]:
-        """Scan the active tree for Index rebuilds (injected callback, invoked lazily)."""
+        """扫描活动区供 Index 全量重建（注入回调，惰性调用）。"""
         return [
             (self.parse(path), str(path.relative_to(self.root)))
             for path in sorted(self.ns_root.rglob("*.md"))
@@ -327,7 +334,7 @@ class MemoryStore:
                     out.append(mem)
         return out
 
-    # ---------- conflicts / stats ----------
+    # ---------- 冲突 / 统计 ----------
 
     def _find_by_key(self, ns: str, mtype: str, key: str, exclude_content: str) -> Memory | None:
         base = self.ns_root / ns / mtype
