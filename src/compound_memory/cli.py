@@ -67,6 +67,31 @@ def cmd_review_queue(args: argparse.Namespace) -> None:
     _emit(_open_store(args).review_queue())
 
 
+def cmd_distill_plan(args: argparse.Namespace) -> None:
+    _emit(
+        _open_store(args).distill_plan(
+            window_days=args.window,
+            min_uses=args.min_uses,
+            min_confidence=args.min_confidence,
+            ns=args.ns,
+        )
+    )
+
+
+def cmd_distill_apply(args: argparse.Namespace) -> None:
+    _emit(
+        _open_store(args).distill_apply(
+            content=args.content,
+            type=args.type,
+            source=args.source,
+            source_ids=[s.strip() for s in args.sources.split(",") if s.strip()],
+            ns=args.ns,
+            key=args.key,
+            confidence=args.confidence,
+        )
+    )
+
+
 def cmd_git_log(args: argparse.Namespace) -> None:
     _emit(_open_store(args).git_log(limit=args.limit))
 
@@ -96,6 +121,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_decay)
 
     p = sub.add_parser("revive"); p.add_argument("id"); p.set_defaults(func=cmd_revive)
+    p = sub.add_parser(
+        "distill-plan",
+        help="scan distillation candidates and print a signal-annotated list",
+        description="Scan distillation candidates (deterministic half of distillation). Signals per candidate: "
+        "merge_with (same ns/type/key, strong), possible_dup_of (BM25 normalized_similarity >= 0.5, weak), "
+        "promotion_candidate (episode uses >= 5). Judgment (merge/summarize) stays with the calling agent.",
+    )
+    p.add_argument("--window", type=int, default=30, help="recency window in days (last_used first, created fallback)")
+    p.add_argument("--min-uses", type=int, default=1, help="activity gate: uses >= this")
+    p.add_argument("--min-confidence", type=float, default=0.5, help="activity gate: confidence >= this")
+    p.add_argument("--ns", default="_shared")
+    p.set_defaults(func=cmd_distill_plan)
+    p = sub.add_parser("distill-apply")
+    p.add_argument("content"); p.add_argument("type", choices=MEMORY_TYPES); p.add_argument("source")
+    p.add_argument("--sources", required=True, help="comma-separated source memory ids")
+    p.add_argument("--ns", default="_shared"); p.add_argument("--key", default=None)
+    p.add_argument("--confidence", type=float, default=None)
+    p.set_defaults(func=cmd_distill_apply)
     p = sub.add_parser("stats"); p.set_defaults(func=cmd_stats)
     p = sub.add_parser("rebuild-index"); p.set_defaults(func=cmd_rebuild_index)
     p = sub.add_parser("review-queue"); p.set_defaults(func=cmd_review_queue)

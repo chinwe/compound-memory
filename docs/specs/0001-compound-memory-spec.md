@@ -33,7 +33,7 @@
 10. As a 用户, I want 直接用编辑器打开并修改记忆文件, so that 人可以审计、纠错、手工整理。
 11. As a 用户, I want 每次写入都有 Git 提交记录, so that 误删误改可以回滚，多 Agent 写入有审计轨迹。
 12. As a 用户, I want 冲突的事实进入 review 队列而不是被静默覆盖, so that 我（或主治 Agent）能做最终裁决。
-13. As a 用户, I want 蒸馏任务（日摘要/周洞察/月固化）定时自动运行, so that 不需要我手工整理记忆。
+13. As a 用户, I want 蒸馏的确定性准备（候选扫描/信号标注/归档）定时自动运行、判断（摘要/合并）由 Agent 按需完成, so that 不需要我手工整理记忆。
 14. As a 用户, I want 长期未用且低置信的记忆自动衰减归档, so that 检索质量不被噪声稀释。
 15. As a 用户, I want 归档的记忆可以恢复、再次命中时按新证据重算置信度, so that 数据只归档不丢失。
 16. As a 用户, I want 索引目录可以随时删除重建, so that 索引损坏永远不会丢失真实数据。
@@ -48,16 +48,16 @@
 - **总体架构四层**：Agent 层（任意 MCP 客户端/CLI）→ 协议层（Memory MCP Server，stdio）→ 存储层（Markdown + frontmatter + Git，位于 `~/.agents/memory`）→ 策略层（评分排序、使用强化、衰减淘汰、定时蒸馏）。
 - **协议契约**：MCP server 暴露且仅暴露 5 个 tool——`memory_write` / `memory_search` / `memory_get` / `memory_link` / `memory_feedback`。`memory_feedback` 是一等公民而非可选项，这是复利闭环的关键约束。
 - **命名空间模型**：`_shared` 全 Agent 可读写；`agent-<name>` 仅 owner 可写，读不隔离（本地单机可信环境，读写两侧均不校验读取者身份）。写入必须带 `source`（写入者标识，用于跨 Agent 验证与审计）。
-- **数据模型**：每条记忆为一个 md 文件，frontmatter 字段：`id / ns / type / source / created / confidence / uses / last_used / links / ttl / key / validated_by / archived`。`type ∈ {episode, fact, insight, skill}`，type 决定写入策略（episode 为 append-only）、衰减窗口（episode 90d / insight 180d / fact 与 skill 不衰减）与蒸馏去向。
+- **数据模型**：每条记忆为一个 md 文件，frontmatter 字段：`id / ns / type / source / created / confidence / uses / last_used / links / ttl / key / validated_by / archived / origin`。`type ∈ {episode, fact, insight, skill}`，type 决定写入策略（episode 为 append-only）、衰减窗口（episode 90d / insight 180d / fact 与 skill 不衰减）与蒸馏去向；`origin` 为可选字段，仅蒸馏产物携带 `distillation`（由 distill-apply 写入）。
 - **评分与置信度公式**（来自设计讨论，已与用户对齐）：
   ```text
   检索得分 = 0.45·相似度（BM25 词面）+ 0.25·置信度 + 0.20·新近度(e^(−Δt/τ)) + 0.10·类型权重
   置信度   = min(1, conf₀ + 0.1·uses + 0.15·跨Agent验证次数)
   ```
-- **复利四来源**：① 使用强化（feedback 回写 uses+1、conf+0.1）② 关联增值（links 双向关联，memory_get 时带出一度邻居；search 命中自动召回邻居为 roadmap）③ 蒸馏提纯（日摘要 → 周洞察 → 月固化，条数减少密度上升）（未实现，roadmap）④ 跨 Agent 验证（与 source 不同的 agent feedback 时，conf+0.15）。
-- **防通胀**：新近度指数衰减 + 长期未用且少用（uses < 3）的记忆归档（不物理删除）+ 蒸馏时去重合并（未实现，roadmap）。
+- **复利四来源**：① 使用强化（feedback 回写 uses+1、conf+0.1）② 关联增值（links 双向关联，memory_get 时带出一度邻居；search 命中自动召回邻居为 roadmap）③ 蒸馏提纯（`distill-plan` 确定性扫描产出带信号标注的候选清单 → 调用方 Agent 判断取舍/摘要 → `distill-apply` 原子落库，条数减少密度上升）④ 跨 Agent 验证（与 source 不同的 agent feedback 时，conf+0.15）。
+- **防通胀**：新近度指数衰减 + 长期未用且少用（uses < 3）的记忆归档（不物理删除）+ 蒸馏时双信号去重标注（key 强信号 + BM25 弱信号，只标注不合并，合并与否由判断段裁决）。
 - **冲突解决**：episodes append-only 天然无冲突；facts/insights 同 key 不同值时保留双版本并生成 review 队列，由主治 Agent 或人裁决；一切写入带 source + 时间戳。
-- **生命周期状态机**：episode → reinforced → insight → principle/skill（类型间晋升未实现，roadmap）；任意中间态可经衰减进入 archive，archive 命中可复活并按新证据重算 conf（已实现）。
+- **生命周期状态机**：类型终身不变（episode/fact/insight/skill 原地不迁移，改类型 = 蒸馏新写 + 源归档）；强化由 uses/confidence 表达（不设 reinforced/principle 中间类型）；晋升 = 蒸馏产物（高活性 episode 在 distill-plan 标 promotion-candidate，判断后置给 Agent 蒸馏为更高密度新记忆）；任意记忆可经衰减进入 archive，archive 命中可复活并按新证据重算 conf。
 - **索引即缓存**：记忆文件本身可直接 ripgrep；词法索引（token→路径缓存）可随时从源文件重建，SQLite 不作为主存储；向量索引（sqlite-vec）deferred——触发条件为活动记忆 ≥500 条或实际报告 search 召回缺口，届时重开；技术路线已验证（sqlite-vec wheel + BGE-small-zh ONNX int8 + onnxruntime 1.19.2 + RRF rank 融合）。
 - **Git 集成**：每次写入自动 commit；仓库仅留本地或推私有 remote。
 - **技术选型**：Python（managed runtime 3.13）实现 stdio MCP server；蒸馏任务由系统 cron 或宿主 automation 调度（未实现，roadmap）。

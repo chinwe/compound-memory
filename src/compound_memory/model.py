@@ -40,3 +40,5 @@ class Memory:
     key: str | None = None
     validated_by: list[str] = field(default_factory=list)
     archived: bool = False
+    # 写入来源通道（frontmatter 可选字段）：普通写入不落盘，仅蒸馏产物为 "distillation"
+    origin: str | None = None

@@ -22,12 +22,16 @@ import yaml
 
 from .index import Index
 from .model import MEMORY_TYPES, TTL_DAYS, Memory
-from .scoring import rank, recency_age, tokenize
+from .scoring import bm25_scores, doc_text, normalized_similarity, rank, recency_age, tokenize
 
 ARCHIVE_USES_THRESHOLD = 3
 CONF_USE_BUMP = 0.1
 CONF_CROSS_AGENT_BUMP = 0.15
 GIT_IDENTITY = ("-c", "user.name=compound-memory", "-c", "user.email=memory@local")
+# 蒸馏信号阈值（distill-plan 单一定义点；--help 同步注明）：
+# 疑似重复 = normalized_similarity(BM25/n_query_tokens) 达到该值；晋升建议 = episode 高活性门槛
+DISTILL_DUP_SIM_THRESHOLD = 0.5
+PROMOTION_USES_THRESHOLD = 5
 
 
 def _unlink_file(path: Path) -> None:
@@ -163,7 +167,35 @@ class MemoryStore:
         links: list[str] | None = None,
         created: str | None = None,
         confidence: float | None = None,
+        origin: str | None = None,
     ) -> dict[str, Any]:
+        mem, conflict_with = self._write_new(
+            content,
+            type=type,
+            source=source,
+            ns=ns,
+            key=key,
+            links=links,
+            created=created,
+            confidence=confidence,
+            origin=origin,
+        )
+        self._commit(f"write {mem.id} ({type}/{ns}) by {source}")
+        return self._write_result(mem, conflict_with)
+
+    def _write_new(
+        self,
+        content: str,
+        type: str,
+        source: str,
+        ns: str,
+        key: str | None,
+        links: list[str] | None,
+        created: str | None,
+        confidence: float | None,
+        origin: str | None,
+    ) -> tuple[Memory, Memory | None]:
+        """write 的无 commit 核心——distill_apply 复用它把产物写入 + 源归档收进一次 commit。"""
         if type not in MEMORY_TYPES:
             raise ValueError(f"type must be one of {MEMORY_TYPES}, got: {type!r}")
         self._check_ns(ns)
@@ -183,13 +215,17 @@ class MemoryStore:
             links=list(links or []),
             ttl=TTL_DAYS[type],
             key=key,
+            origin=origin,
         )
         self._save(mem)
         if conflict_with is not None:
             self._append_review(conflict_with, mem)
         self.index.sync(mem, self._active_rel(mem))
-        self._commit(f"write {mem.id} ({type}/{ns}) by {source}")
-        result = self._to_dict(mem)
+        return mem, conflict_with
+
+    @staticmethod
+    def _write_result(mem: Memory, conflict_with: Memory | None) -> dict[str, Any]:
+        result = MemoryStore._to_dict(mem)
         result["conflict"] = conflict_with is not None
         if conflict_with is not None:
             result["conflicts_with"] = conflict_with.id
@@ -304,6 +340,115 @@ class MemoryStore:
         self._save(mem)
         self._remover(src)
         self.index.sync(mem, self._active_rel(mem))
+
+    # ---------- 蒸馏（确定性段；判断/摘要交调用方 Agent，CONTEXT.md: Distillation） ----------
+
+    def distill_plan(
+        self,
+        window_days: int = 30,
+        min_uses: int = 1,
+        min_confidence: float = 0.5,
+        ns: str = "_shared",
+    ) -> dict[str, Any]:
+        """蒸馏候选扫描：窗口 + 活性门过滤，产出带信号标注的建议清单（只标注不合并）。
+
+        三类信号：merge_with（同 ns 同 type 同 key，强信号）、possible_dup_of
+        （BM25 normalized_similarity ≥ DISTILL_DUP_SIM_THRESHOLD，弱信号）、
+        promotion_candidate（episode 高活性，晋升建议——判断后置，#6）。
+        归档区不参与；坏日期记忆按宁缺勿滥跳过。
+        """
+        self._check_ns(ns)
+        now = self._clock()
+        cands: list[Memory] = []
+        for path in sorted((self.ns_root / ns).rglob("*.md")):
+            mem = self.parse(path)
+            age = recency_age(mem, now)
+            if age is None or age > window_days:
+                continue
+            if mem.uses < min_uses or mem.confidence < min_confidence:
+                continue
+            cands.append(mem)
+        docs_tokens = [tokenize(doc_text(m)) for m in cands]
+        # 每条候选的 tokens 当 query 在候选集上算 BM25——语料语义与 rank 的候选集一致
+        sims = [
+            [normalized_similarity(rel, len(qt)) for rel in bm25_scores(qt, docs_tokens)]
+            for qt in docs_tokens
+        ]
+        by_key: dict[tuple[str, str], list[int]] = {}
+        for i, mem in enumerate(cands):
+            if mem.key:
+                by_key.setdefault((mem.type, mem.key), []).append(i)
+        candidates: list[dict[str, Any]] = []
+        for i, mem in enumerate(cands):
+            merge_with = (
+                [cands[j].id for j in by_key[(mem.type, mem.key)] if j != i] if mem.key else []
+            )
+            candidates.append(
+                {
+                    "id": mem.id,
+                    "type": mem.type,
+                    "key": mem.key,
+                    "uses": mem.uses,
+                    "confidence": mem.confidence,
+                    "created": mem.created,
+                    "last_used": mem.last_used,
+                    "content": mem.content,
+                    "merge_with": merge_with,
+                    "possible_dup_of": [
+                        cands[j].id for j in range(len(cands)) if j != i and sims[i][j] >= DISTILL_DUP_SIM_THRESHOLD
+                    ],
+                    "promotion_candidate": mem.type == "episode" and mem.uses >= PROMOTION_USES_THRESHOLD,
+                }
+            )
+        return {
+            "window_days": window_days,
+            "min_uses": min_uses,
+            "min_confidence": min_confidence,
+            "ns": ns,
+            "candidates": candidates,
+        }
+
+    def distill_apply(
+        self,
+        content: str,
+        type: str,
+        source: str,
+        source_ids: list[str],
+        ns: str = "_shared",
+        key: str | None = None,
+        confidence: float | None = None,
+    ) -> dict[str, Any]:
+        """蒸馏落库（原子）：产物写入（links 溯源到全部源、origin=distillation）+
+        源批量归档，收进一次 commit。源任一不存在 ⇒ 整体不落库（found: False）。
+        产物与现存 fact/insight 的 key 冲突走既有 review 队列机制，不特殊对待。
+        """
+        source_ids = list(dict.fromkeys(source_ids))  # 去重保序：重复源只归档一次
+        sources = [self.find(mid) for mid in source_ids]
+        missing = [mid for mid, mem in zip(source_ids, sources) if mem is None]
+        if missing:
+            return {"found": False, "missing": missing}
+        mem, conflict_with = self._write_new(
+            content,
+            type=type,
+            source=source,
+            ns=ns,
+            key=key,
+            links=source_ids,
+            created=None,
+            confidence=confidence,
+            origin="distillation",
+        )
+        archived: list[str] = []
+        for src in sources:
+            assert src is not None
+            if not src.archived:
+                self._archive(src)
+            archived.append(src.id)
+        self._commit(f"distill apply {mem.id} <- " + ", ".join(archived))
+        result = self._write_result(mem, conflict_with)
+        result["found"] = True
+        result["archived_sources"] = archived
+        return result
 
     # ---------- 索引（可重建缓存；机制在 index.Index） ----------
 
