@@ -27,8 +27,16 @@ _Avoid_: 数据不出机（字面绝对化会连 search 动线一起禁掉）
 _Avoid_: score、weight（weight 专指类型权重）
 
 **Compounding（复利）**：
-记忆系统随使用增值的机制：使用强化置信度、双向关联在 get 时带出邻居、跨 Agent 验证额外加分。
+记忆系统随使用增值的机制：使用强化置信度、双向关联在 get/search 时带出邻居、跨 Agent 验证额外加分。
 _Avoid_: 加分、利息
+
+**Distillation（蒸馏）**：
+把一批源记忆沉淀为更少、更高密度产物的过程。确定性段产出候选清单（含疑似重复标注），判断段由调用方 Agent 完成取舍；产物 links 溯源到源，源归档可复活。
+_Avoid_: 压缩、summarize（那只是判断段的一个动作）
+
+**Promotion（晋升）**：
+记忆的洞见价值经蒸馏确认的形态：蒸馏产物（更高密度的新记忆）即晋升结果；源记忆类型终身不变，强化状态由 uses/confidence 表达。
+_Avoid_: 升级、类型迁移（type 原地变更已禁）
 
 **Review queue（冲突队列）**：
 同 key 同类型的 fact/insight 内容冲突时，等待人工复核的队列。

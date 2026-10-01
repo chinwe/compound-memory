@@ -58,7 +58,7 @@
 - **防通胀**：新近度指数衰减 + 长期未用且少用（uses < 3）的记忆归档（不物理删除）+ 蒸馏时去重合并（未实现，roadmap）。
 - **冲突解决**：episodes append-only 天然无冲突；facts/insights 同 key 不同值时保留双版本并生成 review 队列，由主治 Agent 或人裁决；一切写入带 source + 时间戳。
 - **生命周期状态机**：episode → reinforced → insight → principle/skill（类型间晋升未实现，roadmap）；任意中间态可经衰减进入 archive，archive 命中可复活并按新证据重算 conf（已实现）。
-- **索引即缓存**：记忆文件本身可直接 ripgrep；词法索引（token→路径缓存）可随时从源文件重建，SQLite 不作为主存储；向量索引（sqlite-vec）未实现（roadmap）。
+- **索引即缓存**：记忆文件本身可直接 ripgrep；词法索引（token→路径缓存）可随时从源文件重建，SQLite 不作为主存储；向量索引（sqlite-vec）deferred——触发条件为活动记忆 ≥500 条或实际报告 search 召回缺口，届时重开；技术路线已验证（sqlite-vec wheel + BGE-small-zh ONNX int8 + onnxruntime 1.19.2 + RRF rank 融合）。
 - **Git 集成**：每次写入自动 commit；仓库仅留本地或推私有 remote。
 - **技术选型**：Python（managed runtime 3.13）实现 stdio MCP server；蒸馏任务由系统 cron 或宿主 automation 调度（未实现，roadmap）。
 - **落地节奏**：P0 纯文件约定 + ripgrep 检索脚本（半天）→ P1 MCP server + 向量索引（1–2 天）→ P2 复利引擎：feedback 闭环 + 定时蒸馏 + 衰减归档（2–3 天）。P2 之前只是"开户"，复利从 P2 开始。
