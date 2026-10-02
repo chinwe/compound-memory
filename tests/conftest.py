@@ -11,6 +11,7 @@
 
 import datetime as dt
 import os
+import shutil
 import sys
 import uuid
 from pathlib import Path
@@ -33,7 +34,26 @@ def sandbox_safe_remove(path: Path) -> None:
         os.replace(path, path.with_name(f".{path.name}.rm"))
 
 
+def _prune_test_tmp() -> None:
+    """上轮残留的 fixture 目录整目录改名挪走再删——避免逐个 unlink（沙箱拦批量删除）。
+
+    删除被沙箱拦截时只留一个 .test-tmp.previous 目录（不随运行次数增长），下轮再试；
+    挪不动（如并发运行）则维持原状，不阻塞测试。
+    """
+    previous = _TEST_TMP_BASE.with_name(".test-tmp.previous")
+    if previous.exists():
+        shutil.rmtree(previous, ignore_errors=True)
+    if not _TEST_TMP_BASE.exists():
+        return
+    try:
+        os.replace(_TEST_TMP_BASE, previous)
+    except OSError:
+        return
+    shutil.rmtree(previous, ignore_errors=True)
+
+
 def pytest_configure(config):
+    _prune_test_tmp()
     if not _TEST_TMP_BASE.exists():
         _TEST_TMP_BASE.mkdir()
 

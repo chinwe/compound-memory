@@ -6,22 +6,16 @@ memory_feedback 是一等公民——复利闭环依赖它。
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any, Callable
 
 from mcp.server.mcpserver import MCPServer
 
-from .storage import MEMORY_TYPES, MemoryStore
+from .storage import MEMORY_TYPES, MemoryStore, default_root
 
 mcp = MCPServer("compound-memory")
 
 _store: MemoryStore | None = None
-
-
-def default_root() -> Path:
-    env = os.environ.get("COMPOUND_MEMORY_ROOT")
-    return Path(env) if env else Path.home() / ".agents" / "memory"
 
 
 def configure(

@@ -12,7 +12,15 @@ import datetime as dt
 import pytest
 
 from compound_memory.model import Memory
-from compound_memory.scoring import W_CONF, W_SIM, W_TYPE, TYPE_WEIGHT, rank, recency_age
+from compound_memory.scoring import (
+    W_CONF,
+    W_SIM,
+    W_TYPE,
+    TYPE_WEIGHT,
+    age_days,
+    rank,
+    recency_age,
+)
 
 
 TODAY = dt.date(2026, 10, 1)
@@ -113,6 +121,11 @@ class TestDegradedDates:
 
 
 class TestRecencyAge:
+    def test_age_days_shared_parse_helper(self):
+        """stats 的 last_used 窗口与 recency_age 共用同一解析降级——坏日期语义不会分叉。"""
+        assert age_days("2026-09-21", TODAY) == 10
+        assert age_days("not-a-date", TODAY) is None
+
     def test_last_used_wins_over_created(self):
         mem = make_mem(1, "x", created="2020-01-01", last_used="2026-09-30")
         assert recency_age(mem, dt.date(2026, 10, 1)) == 1

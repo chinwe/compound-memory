@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .storage import MEMORY_TYPES, MemoryStore
+from .storage import MEMORY_TYPES, MemoryStore, default_root
 
 
 def _emit(payload: Any) -> None:
@@ -51,8 +51,12 @@ def cmd_feedback(args: argparse.Namespace) -> None:
 
 
 def cmd_decay(args: argparse.Namespace) -> None:
-    now = dt.date.fromisoformat(args.now) if args.now else None
-    _emit({"archived": _open_store(args).decay_sweep(now=now)})
+    # --now 经固定 clock 的 store 注入——时间接缝只有 clock 一条（store 不另设 now= 参数）
+    if args.now:
+        store = MemoryStore(Path(args.root), clock=lambda: dt.date.fromisoformat(args.now))
+    else:
+        store = _open_store(args)
+    _emit({"archived": store.decay_sweep()})
 
 
 def cmd_revive(args: argparse.Namespace) -> None:
@@ -170,9 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.root is None:
-        import os
-
-        args.root = os.environ.get("COMPOUND_MEMORY_ROOT", str(Path.home() / ".agents" / "memory"))
+        args.root = default_root()
     try:
         args.func(args)
         return 0

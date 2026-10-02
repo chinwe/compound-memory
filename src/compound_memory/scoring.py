@@ -60,18 +60,22 @@ def doc_text(mem: Memory) -> str:
     return mem.content + " " + (mem.key or "")
 
 
+def age_days(date_str: str, today: dt.date) -> int | None:
+    """ISO 日期字符串 → 距 today 天数；坏/缺日期返回 None（消费方决定业务动作）。"""
+    try:
+        return (today - dt.date.fromisoformat(date_str)).days
+    except (ValueError, TypeError):
+        return None
+
+
 def recency_age(mem: Memory, now: dt.date) -> int | None:
     """新近基准（CONTEXT.md: recency reference）：last_used 优先，无则 created。
 
     返回基准距 now 的天数（负数 = 基准在未来，交由消费方定夺）；
-    坏/缺日期返回 None。选基准与解析只在这一处，消费方只决定 None 的业务动作
-    （rank ⇒ 新近项记 0 分；decay ⇒ 跳过该条）。
+    坏/缺日期返回 None。基准选择只在这一处，解析降级共用 age_days，
+    消费方只决定 None 的业务动作（rank ⇒ 新近项记 0 分；decay ⇒ 跳过该条）。
     """
-    ref = mem.last_used or mem.created
-    try:
-        return (now - dt.date.fromisoformat(ref)).days
-    except (ValueError, TypeError):
-        return None
+    return age_days(mem.last_used or mem.created, now)
 
 
 def bm25_scores(

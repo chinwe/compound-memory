@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime as dt
 import dataclasses
+import os
 import shutil
 import subprocess
 import uuid
@@ -23,7 +24,7 @@ import yaml
 from .index import Index
 from .model import MEMORY_TYPES, TTL_DAYS, Memory
 from .review_queue import ReviewQueue
-from .scoring import bm25_scores, doc_text, normalized_similarity, rank, recency_age, tokenize
+from .scoring import age_days, bm25_scores, doc_text, normalized_similarity, rank, recency_age, tokenize
 
 ARCHIVE_USES_THRESHOLD = 3
 CONF_USE_BUMP = 0.1
@@ -75,12 +76,21 @@ def _conf_bucket(conf: float) -> str:
 
 
 def _within_days(date_str: str, days: int, now: dt.date) -> bool:
-    """ISO 日期落在 [now-days, now] 内；坏日期/未来日期一律 False（坏数据不冒充活性）。"""
-    try:
-        age = (now - dt.date.fromisoformat(date_str)).days
-    except (ValueError, TypeError):
-        return False
-    return 0 <= age <= days
+    """ISO 日期落在 [now-days, now] 内；坏日期/未来日期一律 False（坏数据不冒充活性）。
+
+    解析降级共用 scoring.age_days；与 recency_age 同源不同策——这里只看 last_used、
+    不回退 created，语义差异留在调用处。"""
+    age = age_days(date_str, now)
+    return age is not None and 0 <= age <= days
+
+
+def default_root() -> Path:
+    """记忆库根目录解析单一定义点：$COMPOUND_MEMORY_ROOT 优先，否则 ~/.agents/memory。
+
+    CLI 与 MCP server 两个 adapter 都从这里取默认——环境变量名与回退路径不得另写一份。
+    """
+    env = os.environ.get("COMPOUND_MEMORY_ROOT")
+    return Path(env) if env else Path.home() / ".agents" / "memory"
 
 
 class MemoryStore:
@@ -121,9 +131,16 @@ class MemoryStore:
         for t in MEMORY_TYPES:
             (shared / t).mkdir(parents=True, exist_ok=True)
         self.archive_root.mkdir(parents=True, exist_ok=True)
+        # 运行时工件目录清单归这里一处所有（index/ 缓存、distill/ 蒸馏产物）——
+        # scripts/distill-prepare.sh 不再自行补写；已存在的旧库缺行时补齐
         gitignore = self.root / ".gitignore"
-        if not gitignore.exists():
-            gitignore.write_text("index/\n", encoding="utf-8")
+        existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+        missing = [line for line in ("index/\n", "distill/\n") if line not in existing]
+        if missing and existing and not existing.endswith("\n"):
+            missing[0] = "\n" + missing[0]  # 手编文件缺尾换行时先补，避免拼接坏行
+        if missing:
+            with gitignore.open("a", encoding="utf-8") as fh:
+                fh.writelines(missing)
 
     def _git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -185,10 +202,6 @@ class MemoryStore:
             for path in base.rglob(f"{mem_id}.md"):
                 return self.parse(path)
         return None
-
-    @staticmethod
-    def _to_dict(mem: Memory) -> dict[str, Any]:
-        return asdict(mem)
 
     # ---------- 公开接口 ----------
     #
@@ -271,7 +284,7 @@ class MemoryStore:
 
     @staticmethod
     def _write_result(mem: Memory, conflict_with: Memory | None) -> dict[str, Any]:
-        result = MemoryStore._to_dict(mem)
+        result = asdict(mem)
         result["conflict"] = conflict_with is not None
         if conflict_with is not None:
             result["conflicts_with"] = conflict_with.id
@@ -281,10 +294,10 @@ class MemoryStore:
         mem = self.find(mem_id)
         if mem is None:
             return {"found": False}
-        result = self._to_dict(mem)
+        result = asdict(mem)
         result["found"] = True
         if include_neighbors and mem.links:
-            neighbors = [self._to_dict(n) for n in (self.find(l) for l in mem.links) if n is not None]
+            neighbors = [asdict(n) for n in (self.find(l) for l in mem.links) if n is not None]
             result["neighbors"] = neighbors
         return result
 
@@ -305,7 +318,7 @@ class MemoryStore:
         self._save(mem)
         self.index.sync(mem, self._active_rel(mem))
         self._commit(f"feedback {mem.id} by {agent}: uses={mem.uses} conf={mem.confidence}")
-        result = self._to_dict(mem)
+        result = asdict(mem)
         result["found"] = True
         return result
 
@@ -331,12 +344,11 @@ class MemoryStore:
         query: str,
         ns: str = "_shared",
         top_k: int = 5,
-        now: dt.date | None = None,
         include_neighbors: bool = True,
     ) -> list[dict[str, Any]]:
         """检索 = 选候选（store 的 layout 职责）+ 排序（scoring.rank 单一定义点）。"""
         self._check_ns(ns)
-        now = now or self._clock()
+        now = self._clock()
         q_tokens = tokenize(query)
         if not q_tokens:
             return []
@@ -362,8 +374,8 @@ class MemoryStore:
 
     # ---------- 衰减 / 归档 / 复活 ----------
 
-    def decay_sweep(self, now: dt.date | None = None) -> list[str]:
-        now = now or self._clock()
+    def decay_sweep(self) -> list[str]:
+        now = self._clock()
         archived: list[str] = []
         for path in sorted(self.ns_root.rglob("*.md")):
             mem = self.parse(path)
@@ -387,7 +399,7 @@ class MemoryStore:
             self._move_to_active(mem)
             self._save(mem)
             self._commit(f"revive {mem_id}")
-        result = self._to_dict(mem)
+        result = asdict(mem)
         result["found"] = True
         return result
 

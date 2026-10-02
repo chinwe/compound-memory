@@ -11,13 +11,10 @@ ROOT="${COMPOUND_MEMORY_ROOT:-$HOME/.agents/memory}"
 # launchd 的 PATH 不含 ~/.local/bin：UV_BIN 允许外部覆盖，其次 PATH，最后默认安装位置
 UV_BIN="${UV_BIN:-$(command -v uv || echo "$HOME/.local/bin/uv")}"
 
-# last-plan.json 是运行时产物（与 index/ 同类），不进记忆库 git——缺行则补
-# （先跑 CLI 让 store 初始化出 .gitignore，再补 distill/ 行）
+# last-plan.json 是运行时产物；<root>/.gitignore 由 store 的 _ensure_layout 统一管理
+# （index/ 与 distill/ 都在其中）——脚本只负责建目录与产出 plan
 mkdir -p "$ROOT/distill"
 echo "[$(date '+%Y-%m-%dT%H:%M:%S')] distill-prepare: plan -> $ROOT/distill/last-plan.json"
 "$UV_BIN" run --project "$REPO_DIR" compound-memory \
   --root "$ROOT" distill-plan > "$ROOT/distill/last-plan.json"
-if grep -q '^distill/$' "$ROOT/.gitignore" 2>/dev/null; then :; else
-  echo "distill/" >> "$ROOT/.gitignore"
-fi
 echo "[$(date '+%Y-%m-%dT%H:%M:%S')] distill-prepare: done"

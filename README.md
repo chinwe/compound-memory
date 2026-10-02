@@ -25,7 +25,7 @@ Agent (MCP 客户端 / CLI)
 | ③ 蒸馏提纯 | `distill-plan`（CLI，确定性候选+双信号去重标注）→ Agent 判断 → `distill-apply` 原子落库（产物 links 溯源，源归档可复活） |
 | ④ 跨 Agent 验证 | 与 source 不同的 agent 反馈时 conf 额外 +0.15 |
 
-评分公式：`0.45·相似度 + 0.25·置信度 + 0.20·新近度(e^(-Δt/τ)) + 0.10·类型权重`
+评分公式（权重以 `src/compound_memory/scoring.py` 的 `W_*` 常量为准）：`0.45·相似度 + 0.25·置信度 + 0.20·新近度(e^(-Δt/τ)) + 0.10·类型权重`
 
 ## MCP 接入
 

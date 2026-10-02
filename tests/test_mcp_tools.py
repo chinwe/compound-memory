@@ -21,6 +21,7 @@ pytest.importorskip("mcp")
 import mcp  # noqa: E402
 
 from compound_memory import server as cm_server  # noqa: E402
+from compound_memory.storage import MemoryStore  # noqa: E402
 
 
 def call(res) -> object:
@@ -28,10 +29,15 @@ def call(res) -> object:
     return json.loads(res.content[0].text)
 
 
+# make_client 配置出的当前 store：测试经这个句柄拿 store，不摸 cm_server 私有符号
+current_store: MemoryStore
+
+
 @asynccontextmanager
 async def make_client(root: Path, git_off: bool = False):
-    """无 git 场景经 configure 注入探测 adapter——不 patch 全局 shutil.which（跨 task 危险）。"""
-    cm_server.configure(root, git=True, git_probe=(lambda: False) if git_off else None)
+    """配置 server store 并开内存 client；无 git 场景经 configure 注入探测 adapter。"""
+    global current_store
+    current_store = cm_server.configure(root, git=True, git_probe=(lambda: False) if git_off else None)
     async with mcp.Client(cm_server.mcp) as c:
         yield c
 
@@ -201,7 +207,7 @@ class TestNeighborRecall:
                 "content": "陈旧的关联邻居", "type": "episode", "source": "agent-a",
             }))
             call(await client.call_tool("memory_link", {"id_a": anchor["id"], "id_b": stale["id"]}))
-            store = cm_server._store_or_configure()
+            store = current_store
             store._archive(store.find(stale["id"]))  # type: ignore[arg-type]
             out = call(await client.call_tool("memory_search", {"query": "活性锚点"}))
             assert out["hits"][0]["neighbors"] == []
@@ -232,7 +238,7 @@ class TestConflicts:
             }))
             assert second["conflict"] is True
             assert second["conflicts_with"] == first["id"]
-            queue = cm_server._store_or_configure().review_queue()
+            queue = current_store.review_queue()
             assert len(queue) == 1
             assert first["id"] in queue[0] and second["id"] in queue[0]
 
