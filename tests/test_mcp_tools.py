@@ -232,8 +232,9 @@ class TestConflicts:
             }))
             assert second["conflict"] is True
             assert second["conflicts_with"] == first["id"]
-            queue = cm_server._store_or_configure().review_queue_path.read_text(encoding="utf-8")
-            assert first["id"] in queue and second["id"] in queue
+            queue = cm_server._store_or_configure().review_queue()
+            assert len(queue) == 1
+            assert first["id"] in queue[0] and second["id"] in queue[0]
 
     async def test_same_content_same_key_is_not_a_conflict(self, memroot):
         async with make_client(memroot) as client:

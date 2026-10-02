@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import datetime as dt
 import dataclasses
-import re
 import shutil
 import subprocess
 import uuid
@@ -23,6 +22,7 @@ import yaml
 
 from .index import Index
 from .model import MEMORY_TYPES, TTL_DAYS, Memory
+from .review_queue import ReviewQueue
 from .scoring import bm25_scores, doc_text, normalized_similarity, rank, recency_age, tokenize
 
 ARCHIVE_USES_THRESHOLD = 3
@@ -39,9 +39,6 @@ PROMOTION_USES_THRESHOLD = 5
 USES_HISTOGRAM_BUCKETS = ("0", "1-2", "3-5", "6-9", "10+")
 CONFIDENCE_HISTOGRAM_BUCKETS = ("<0.3", "0.3-0.6", "0.6-0.8", "0.8-1.0")
 RECENT_WINDOW_DAYS = 7
-# review-queue 行结构（_append_review 生成）：old/new 记忆 id 各在 "(` 与 " (" 边界；
-# 非贪婪到首个 " vs "——行由机器生成，content 截断 40 字符，该边界实际可靠
-_REVIEW_ROW_RE = re.compile(r"^- \S+ conflict `[^`]+`: (?P<old>\S+) \(.*?\) vs (?P<new>\S+) \(")
 
 
 def _unlink_file(path: Path) -> None:
@@ -99,7 +96,7 @@ class MemoryStore:
         self.ns_root = self.root / "namespaces"
         self.archive_root = self.root / "archive"
         self.index = Index(self.root, scan_pairs=self._scan_pairs)
-        self.review_queue_path = self.root / "review-queue.md"
+        self._review_queue = ReviewQueue(self.root / "review-queue.md", clock=clock)
         self.git_enabled = git and (git_probe or _git_available)()
         self._clock = clock
         self._remover = remover or _unlink_file
@@ -268,7 +265,7 @@ class MemoryStore:
         )
         self._save(mem)
         if conflict_with is not None:
-            self._append_review(conflict_with, mem)
+            self._review_queue.append(conflict_with, mem)
         self.index.sync(mem, self._active_rel(mem))
         return mem, conflict_with
 
@@ -559,61 +556,19 @@ class MemoryStore:
                 return mem
         return None
 
-    def _append_review(self, old: Memory, new: Memory) -> None:
-        line = (
-            f"- {self._today()} conflict `{new.ns}/{new.type}/{new.key}`: "
-            f"{old.id} ({old.source}: {old.content[:40]}) vs {new.id} ({new.source}: {new.content[:40]})\n"
-        )
-        with self.review_queue_path.open("a", encoding="utf-8") as fh:
-            fh.write(line)
     def review_queue(self) -> list[str]:
-        if not self.review_queue_path.exists():
-            return []
-        return [
-            line[2:].rstrip("\n")
-            for line in self.review_queue_path.read_text(encoding="utf-8").splitlines()
-            if line.startswith("- ")
-        ]
+        """冲突队列展示行——行格式的生成与解析都在 ReviewQueue。"""
+        return self._review_queue.lines()
 
     def review_resolve(self, ids: list[str] | None = None, all: bool = False) -> dict[str, Any]:
-        """登记冲突已解决：清除 review-queue 中命中行并自动 commit。
+        """登记冲突已解决：委托 ReviewQueue 清行，resolved>0 时自动 commit。
 
         裁决（新旧取舍）归调用方——这里只做登记，不做判断（spec 非目标：不自动裁决冲突）。
-
-        - all=True：清空整个队列（幂等，空队列返回 resolved=0）。
-        - 按 id：行内 old/new 任一命中即整行清除；任一 id 未命中任何行 ⇒
-          ValueError 原子拒绝（队列原样保留），避免半清状态让调用方误判。
-        - 解析失败的行 fail-safe 保留：宁可不登记，不误删记录。
         """
-        if all and ids:
-            raise ValueError("pass either ids or --all, not both")
-        if not all and not ids:
-            raise ValueError("review-resolve needs memory ids or --all")
-        if self.review_queue_path.exists():
-            lines = self.review_queue_path.read_text(encoding="utf-8").splitlines(keepends=True)
-        else:
-            lines = []
-        if all:
-            keep = []
-            removed = sum(1 for line in lines if line.startswith("- "))
-        else:
-            wanted = set(ids or [])
-            covered: set[str] = set()
-            matched: list[bool] = []
-            for line in lines:
-                m = _REVIEW_ROW_RE.match(line)
-                matched.append(m is not None and bool(wanted & {m.group("old"), m.group("new")}))
-                if m is not None:
-                    covered |= {m.group("old"), m.group("new")}
-            missing = wanted - covered
-            if missing:
-                raise ValueError(f"ids not found in review queue: {', '.join(sorted(missing))}")
-            keep = [line for line, hit in zip(lines, matched) if not hit]
-            removed = sum(matched)
-        if removed:
-            self.review_queue_path.write_text("".join(keep), encoding="utf-8")
-            self._commit(f"review resolve {removed} entries")
-        return {"resolved": removed, "remaining": sum(1 for line in keep if line.startswith("- "))}
+        out = self._review_queue.resolve(ids=ids, all=all)
+        if out["resolved"]:
+            self._commit(f"review resolve {out['resolved']} entries")
+        return out
 
     def stats(self) -> dict[str, Any]:
         by_type: dict[str, int] = {}

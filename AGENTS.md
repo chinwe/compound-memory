@@ -12,12 +12,13 @@
 
 ## 架构边界
 
-- `src/compound_memory/` 分层：`server.py`（唯一读写边界，恰好 5 个 MCP tool，勿增删）→ `storage.py`（MD+frontmatter 存储、命名空间、git、复利引擎）→ `index.py` + `scoring.py`；`model.py` 是共享领域模型（从 storage 拆出以打破循环依赖，勿再引入循环 import）。
+- `src/compound_memory/` 分层：`server.py`（唯一读写边界，恰好 5 个 MCP tool，勿增删）→ `storage.py`（MD+frontmatter 存储、命名空间、git、复利引擎）→ `index.py` + `scoring.py` + `review_queue.py`（冲突队列 artifact 的生成/解析/清除）；`model.py` 是共享领域模型（从 storage 拆出以打破循环依赖，勿再引入循环 import）。
 - 单一定义点，改这些领域前先读对应模块 docstring：
   - `model.TYPE_SPEC`：记忆类型唯一知识源（权重/半衰期/归档 TTL），加类型只改这张表；
   - `scoring.rank`：排序管线与搜索结果形状的唯一位置（权重 0.45 相似 + 0.25 置信 + 0.20 新近 + 0.10 类型）；
   - `Index`：拥有"活动记忆必被索引、归档必不在索引"不变量，缓存损坏自动重建、检索降级不报错；活性是 store 级的——读路径自动检测跨进程缓存更新（重载）与带外新增/删除文件（目录 mtime 重建），手编已有文件**内容**需显式 `rebuild-index`；
   - `scoring.recency_age`：新近基准（last_used 优先，created 兜底），直接返回距 today 天数、坏日期返回 None；排序与衰减共用，勿各算各的；
+  - `ReviewQueue`：review-queue.md 行格式（生成 + 解析 + fail-safe 保留）单一定义点，勿在别处裸读/裸写队列文件；
   - `MemoryStore` 接口错误约定：调用方错误（参数/越权/自链接）抛 `ValueError`/`PermissionError`（CLI/MCP adapter 各翻译一次），目标不存在返回 `{"found": False}`（按 id 动词恒含 `found` 键）。
 - 术语遵循 `CONTEXT.md` glossary，注意每条的 Avoid 列表，不要用同义词漂移。
 
