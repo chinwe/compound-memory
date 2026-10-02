@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .storage import MEMORY_TYPES, MemoryStore, default_root
+from .storage import DISTILL_DUP_SIM_THRESHOLD, MEMORY_TYPES, MemoryStore, PROMOTION_USES_THRESHOLD, default_root
 
 
 def _emit(payload: Any) -> None:
@@ -139,8 +139,8 @@ def build_parser() -> argparse.ArgumentParser:
         "distill-plan",
         help="scan distillation candidates and print a signal-annotated list",
         description="Scan distillation candidates (deterministic half of distillation). Signals per candidate: "
-        "merge_with (same ns/type/key, strong), possible_dup_of (BM25 normalized_similarity >= 0.5, weak), "
-        "promotion_candidate (episode uses >= 5). Judgment (merge/summarize) stays with the calling agent.",
+        f"merge_with (same ns/type/key, strong), possible_dup_of (BM25 normalized_similarity >= {DISTILL_DUP_SIM_THRESHOLD}, weak), "
+        f"promotion_candidate (episode uses >= {PROMOTION_USES_THRESHOLD}). Judgment (merge/summarize) stays with the calling agent.",
     )
     p.add_argument("--window", type=int, default=30, help="recency window in days (last_used first, created fallback)")
     p.add_argument("--min-uses", type=int, default=1, help="activity gate: uses >= this")

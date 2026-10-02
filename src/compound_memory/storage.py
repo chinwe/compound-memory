@@ -24,13 +24,13 @@ import yaml
 from .index import Index
 from .model import MEMORY_TYPES, TTL_DAYS, Memory
 from .review_queue import ReviewQueue
-from .scoring import age_days, bm25_scores, doc_text, normalized_similarity, rank, recency_age, tokenize
+from .scoring import age_days, doc_text, dup_similarity_matrix, rank, recency_age, tokenize
 
 ARCHIVE_USES_THRESHOLD = 3
 CONF_USE_BUMP = 0.1
 CONF_CROSS_AGENT_BUMP = 0.15
 GIT_IDENTITY = ("-c", "user.name=compound-memory", "-c", "user.email=memory@local")
-# 蒸馏信号阈值（distill-plan 单一定义点；--help 同步注明）：
+# 蒸馏信号阈值（distill-plan 单一定义点；CLI --help 文本由这两个常量生成，不会漂移）：
 # 疑似重复 = normalized_similarity(BM25/n_query_tokens) 达到该值；晋升建议 = episode 高活性门槛
 DISTILL_DUP_SIM_THRESHOLD = 0.5
 PROMOTION_USES_THRESHOLD = 5
@@ -445,12 +445,7 @@ class MemoryStore:
             if mem.uses < min_uses or mem.confidence < min_confidence:
                 continue
             cands.append(mem)
-        docs_tokens = [tokenize(doc_text(m)) for m in cands]
-        # 每条候选的 tokens 当 query 在候选集上算 BM25——语料语义与 rank 的候选集一致
-        sims = [
-            [normalized_similarity(rel, len(qt)) for rel in bm25_scores(qt, docs_tokens)]
-            for qt in docs_tokens
-        ]
+        sims = dup_similarity_matrix([doc_text(m) for m in cands])
         by_key: dict[tuple[str, str], list[int]] = {}
         for i, mem in enumerate(cands):
             if mem.key:

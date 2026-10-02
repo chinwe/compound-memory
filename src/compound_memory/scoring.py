@@ -121,6 +121,21 @@ def normalized_similarity(bm25: float, n_query_tokens: int) -> float:
     return min(1.0, bm25 / n_query_tokens)
 
 
+def dup_similarity_matrix(docs: list[str]) -> list[list[float]]:
+    """蒸馏疑似重复信号的相似度矩阵：每条候选文本当 query 在候选集上打分。
+
+    matrix[i][j] = normalized_similarity(以 docs[i] 的 tokens 为 query 对 docs[j] 的 BM25)，
+    与 rank 同一套分词/归一——语料语义一致，互标才可比。BM25 的 query/doc 角色不对称，
+    矩阵因此非对称；对角线（自查自）恒 > 0，由消费方跳过自身。
+    阈值标注（possible_dup_of）是 distill-plan 的策略，不在这里。
+    """
+    docs_tokens = [tokenize(d) for d in docs]
+    return [
+        [normalized_similarity(rel, len(qt)) for rel in bm25_scores(qt, docs_tokens)]
+        for qt in docs_tokens
+    ]
+
+
 def final_score(sim: float, confidence: float, recency: float, mtype: str) -> float:
     return W_SIM * sim + W_CONF * confidence + W_RECENCY * recency + W_TYPE * TYPE_WEIGHT.get(mtype, 0.5)
 

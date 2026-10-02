@@ -18,6 +18,7 @@ from compound_memory.scoring import (
     W_TYPE,
     TYPE_WEIGHT,
     age_days,
+    dup_similarity_matrix,
     rank,
     recency_age,
 )
@@ -118,6 +119,22 @@ class TestDegradedDates:
             W_SIM * hit["similarity"] + W_CONF * 0.5 + W_TYPE * TYPE_WEIGHT["episode"],
             abs=1e-3,
         )
+
+
+class TestDistillDupMatrix:
+    def test_similar_docs_flag_each_other_unrelated_score_zero(self):
+        """蒸馏疑似重复信号的纯数学半边：近似文本互得高分、无关文本零分。
+        不需要 store/文件树——阈值标注（possible_dup_of）是 distill-plan 的策略，数学归 scoring。"""
+        docs = [
+            "compound-memory 蒸馏管线把候选清单交给 agent 判断",
+            "compound-memory 蒸馏管线把候选清单交给调用方判断",
+            "Kubernetes Pod 亲和性配置",
+        ]
+        matrix = dup_similarity_matrix(docs)
+        assert len(matrix) == 3 and all(len(row) == 3 for row in matrix)
+        assert all(row[i] > 0 for i, row in enumerate(matrix))  # 自查自必得分
+        assert matrix[0][2] == 0.0 and matrix[2][0] == 0.0  # 无关文本零匹配
+        assert matrix[0][1] > matrix[0][2]  # 近似文本高于无关文本（BM25 非对称，只比相对大小）
 
 
 class TestRecencyAge:
