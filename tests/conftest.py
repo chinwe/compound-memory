@@ -3,9 +3,6 @@
 为何不用 pytest 内置 tmp_path：WorkBuddy 沙箱 (a) 对已存在目录 mkdir 报 EEXIST，
 (b) 通过 trash hook 拦截批量 unlink。fixture 改为新建项目本地目录。
 
-asyncio 优先的收集排序，让 mcp.Client 会话远离 monkeypatch shutil.which 的测试
-（否则 anyio cancel-scope 会跨 task 运行而崩溃）。
-
 共享 store fixture 注入的 seam adapter：
 - clock：固定日期，decay/rank 断言不依赖墙钟（消除跨零点抖动）。
 - remover：改名代替 unlink，测试中的归档/复活保持沙箱安全
@@ -39,10 +36,6 @@ def sandbox_safe_remove(path: Path) -> None:
 def pytest_configure(config):
     if not _TEST_TMP_BASE.exists():
         _TEST_TMP_BASE.mkdir()
-
-
-def pytest_collection_modifyitems(session, config, items):
-    items.sort(key=lambda it: 0 if "asyncio" in it.keywords else 1)
 
 
 @pytest.fixture

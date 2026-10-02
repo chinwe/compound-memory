@@ -29,19 +29,11 @@ def call(res) -> object:
 
 
 @asynccontextmanager
-async def make_client(root: Path, patch_git_off=False):
-    if patch_git_off:
-        import shutil as _shutil
-
-        real_which = _shutil.which
-        _shutil.which = lambda name: None if name == "git" else real_which(name)
-    cm_server.configure(root, git=True)
-    try:
-        async with mcp.Client(cm_server.mcp) as c:
-            yield c
-    finally:
-        if patch_git_off:
-            _shutil.which = real_which  # type: ignore[possibly-undefined]
+async def make_client(root: Path, git_off: bool = False):
+    """无 git 场景经 configure 注入探测 adapter——不 patch 全局 shutil.which（跨 task 危险）。"""
+    cm_server.configure(root, git=True, git_probe=(lambda: False) if git_off else None)
+    async with mcp.Client(cm_server.mcp) as c:
+        yield c
 
 
 @pytest.fixture
@@ -273,7 +265,7 @@ class TestNamespacePermissions:
 
 class TestWithoutGit:
     async def test_tools_work_without_git(self, memroot2):
-        async with make_client(memroot2, patch_git_off=True) as client:
+        async with make_client(memroot2, git_off=True) as client:
             res = call(await client.call_tool("memory_write", {
                 "content": "无 git 环境下也能写", "type": "episode", "source": "agent-a",
             }))

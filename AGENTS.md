@@ -24,7 +24,7 @@
 ## 测试与沙箱坑
 
 - 禁用 pytest 内置 `tmp_path`：WorkBuddy 沙箱对已存在目录 mkdir 报 EEXIST，批量 unlink 被 trash hook 拦截。conftest.py 自建 fixture 落到 `.test-tmp/`，新测试直接用现成 fixture。
-- asyncio 测试必须先收集（conftest 已排序）：anyio cancel scope 不能跨 task，`mcp.Client` 会话须与测试同一 task 内 `async with`（用 asynccontextmanager helper，勿用 fixture 开关 client）。
+- anyio cancel scope 不能跨 task：`mcp.Client` 会话须与测试同一 task 内 `async with`（用 asynccontextmanager helper，勿用 fixture 开关 client）。git 可用性经 `MemoryStore(git_probe=...)` / `configure(..., git_probe=...)` 注入，勿 patch 全局 `shutil.which`。
 - mcp 2.x 行为：`FastMCP` 已改名 `MCPServer`（`mcp.server.mcpserver`）；单元素 list 返回值会被 unwrap 成对象——批量结果要包一层 `{"hits": [...]}`；工具内异常默认返回 `is_error=True` 而非抛出。
 - 删除文件的沙箱约束已收进 seam adapter：生产默认 `Path.unlink`（单文件 unlink 不受批量守卫影响）；conftest 的 `sandbox_safe_remove`（改名 `.{name}.rm`）只在测试侧注入。测试断言日期一律用 conftest 的 `CLOCK_DATE`（store fixture 已注入固定 clock），勿贴真实墙钟。
 

@@ -116,9 +116,9 @@ class TestGit:
         assert any("feedback" in line for line in log2)
         assert len(log2) > len(log1)
 
-    def test_no_git_binary_disables_gracefully(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr("shutil.which", lambda name: None)
-        store = MemoryStore(tmp_path / "nogit")
+    def test_no_git_binary_disables_gracefully(self, tmp_path: Path):
+        """launchd 最小 PATH 等无 git 环境：探测失败即降级——写读照常，不报错。"""
+        store = MemoryStore(tmp_path / "nogit", git_probe=lambda: False)
         mem = store.write(content="无 git 环境", type="episode", source="agent-a")
         assert mem["id"]
         assert store.search("无 git") != []

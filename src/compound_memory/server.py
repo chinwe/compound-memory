@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from mcp.server.mcpserver import MCPServer
 
@@ -24,9 +24,15 @@ def default_root() -> Path:
     return Path(env) if env else Path.home() / ".agents" / "memory"
 
 
-def configure(root: Path | str | None = None, git: bool = True) -> MemoryStore:
+def configure(
+    root: Path | str | None = None,
+    git: bool = True,
+    git_probe: Callable[[], bool] | None = None,
+) -> MemoryStore:
     global _store
-    _store = MemoryStore(Path(root) if root is not None else default_root(), git=git)
+    _store = MemoryStore(
+        Path(root) if root is not None else default_root(), git=git, git_probe=git_probe
+    )
     return _store
 
 

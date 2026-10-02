@@ -50,6 +50,11 @@ def _unlink_file(path: Path) -> None:
         path.unlink()
 
 
+def _git_available() -> bool:
+    """默认 git 探测 adapter（测试侧经 git_probe 注入，勿 patch 全局 shutil.which）。"""
+    return shutil.which("git") is not None
+
+
 def _uses_bucket(uses: int) -> str:
     if uses >= 10:
         return "10+"
@@ -88,13 +93,14 @@ class MemoryStore:
         git: bool = True,
         clock: Callable[[], dt.date] = dt.date.today,
         remover: Callable[[Path], None] | None = None,
+        git_probe: Callable[[], bool] | None = None,
     ) -> None:
         self.root = Path(root)
         self.ns_root = self.root / "namespaces"
         self.archive_root = self.root / "archive"
         self.index = Index(self.root, scan_pairs=self._scan_pairs)
         self.review_queue_path = self.root / "review-queue.md"
-        self.git_enabled = git and shutil.which("git") is not None
+        self.git_enabled = git and (git_probe or _git_available)()
         self._clock = clock
         self._remover = remover or _unlink_file
         self._ensure_layout()
