@@ -1,6 +1,6 @@
 # 研究笔记：向量检索地基（sqlite-vec 与本地 embedding 的现实可行性）
 
-- Ticket: [002-vector-search-ground](../tickets/002-vector-search-ground.md)
+- Ticket: [chinwe/compound-memory#3](https://github.com/chinwe/compound-memory/issues/3)
 - 分支: `research/vector-search-ground`
 - 日期: 2026-10-01
 - 方法: 一手来源核验（官方文档 / PyPI JSON API / HF 模型库 API / 论文原文）+ 本机实测（macOS 12 x64，darwin 21.6；项目 `.venv` Python 3.12.13；uv 以 `UV_ONLY_BINARY=':all:'` 安装，只验证 wheel 路线）

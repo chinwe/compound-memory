@@ -1,6 +1,6 @@
 # 同类 Agent 记忆系统的蒸馏先例（研究笔记）
 
-- Ticket: [001-distillation-precedents](../tickets/001-distillation-precedents.md)
+- Ticket: [chinwe/compound-memory#2](https://github.com/chinwe/compound-memory/issues/2)
 - 分支: `research/distillation-precedents`
 - Status: done（结论供票 003 蒸馏执行者、票 004 管线形状使用）
 - 方法：只采一手来源（源码 / 官方文档 / 论文 / 官方帮助中心），二手文章仅作导航。所有关键论断标注来源链接。
