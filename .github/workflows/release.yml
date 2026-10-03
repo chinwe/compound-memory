@@ -8,8 +8,10 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     # Trusted Publisher (OIDC): PyPI 侧预配置 owner/repo/workflow/environment 后免 token 发布
+    # 显式声明 permissions 后未列出的权限归零:contents: read 是 checkout 的 fetch 所必需
     permissions:
       id-token: write
+      contents: read
     environment: pypi
     steps:
       - uses: actions/checkout@v4
