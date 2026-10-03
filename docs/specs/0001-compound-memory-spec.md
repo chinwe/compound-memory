@@ -46,7 +46,7 @@
 ## Implementation Decisions
 
 - **总体架构四层**：Agent 层（任意 MCP 客户端/CLI）→ 协议层（Memory MCP Server，stdio）→ 存储层（Markdown + frontmatter + Git，位于 `~/.agents/memory`）→ 策略层（评分排序、使用强化、衰减淘汰、定时蒸馏）。
-- **协议契约**：MCP server 暴露且仅暴露 5 个 tool——`memory_write` / `memory_search` / `memory_get` / `memory_link` / `memory_feedback`。`memory_feedback` 是一等公民而非可选项，这是复利闭环的关键约束。
+- **协议契约**：MCP server 暴露且仅暴露 5 个 tool——`memory_write` / `memory_search` / `memory_get` / `memory_link` / `memory_feedback`。`memory_feedback` 是一等公民而非可选项，这是复利闭环的关键约束；闭环铁律（采纳后必须 feedback、只写稳定事实、复用既有 key）内嵌在各 tool 的 description 中，使宿主不注入外部使用规范也能维持闭环（注入规范仅用于收紧写入质量）。
 - **命名空间模型**：`_shared` 全 Agent 可读写；`agent-<name>` 仅 owner 可写，读不隔离（本地单机可信环境，读写两侧均不校验读取者身份）。写入必须带 `source`（写入者标识，用于跨 Agent 验证与审计）。
 - **数据模型**：每条记忆为一个 md 文件，frontmatter 字段：`id / ns / type / source / created / confidence / uses / last_used / links / ttl / key / validated_by / archived / origin`。`type ∈ {episode, fact, insight, skill}`，type 决定写入策略（episode 为 append-only）、衰减窗口（episode 90d / insight 180d / fact 与 skill 不衰减）与蒸馏去向；`origin` 为可选字段，仅蒸馏产物携带 `distillation`（由 distill-apply 写入）。
 - **评分与置信度公式**（2026-10-03 vec-spike 实测后重定权，已与用户对齐）：
@@ -59,9 +59,9 @@
 - **防通胀**：新近度指数衰减 + 长期未用且少用（uses < 3）的记忆归档（不物理删除）+ 蒸馏时双信号去重标注（key 强信号 + BM25 弱信号，只标注不合并，合并与否由判断段裁决）。
 - **冲突解决**：episodes append-only 天然无冲突；facts/insights 同 key 不同值时保留双版本并生成 review 队列，由主治 Agent 或人裁决；一切写入带 source + 时间戳。
 - **生命周期状态机**：类型终身不变（episode/fact/insight/skill 原地不迁移，改类型 = 蒸馏新写 + 源归档）；强化由 uses/confidence 表达（不设 reinforced/principle 中间类型）；晋升 = 蒸馏产物（高活性 episode 在 distill-plan 标 promotion-candidate，判断后置给 Agent 蒸馏为更高密度新记忆）；任意记忆可经衰减进入 archive，archive 命中可复活并按新证据重算 conf。
-- **索引即缓存**：记忆文件本身可直接 ripgrep；词法索引（token→路径缓存）与向量索引（sqlite-vec vec0 表，`index/vectors.db`）都是可随时从源文件重建的缓存，SQLite 不作为主存储。两份缓存同守不变量：活动记忆必被索引、归档记忆必不在索引、缺失/损坏自动重建、检索降级不报错；带外增删的自愈分两档——词法缓存全量重建（纯 tokenize，廉价），向量缓存增量对账（按 content_hash 逐条 diff，只编码新增/变更/移除的条目——跨进程小写入不放大成全库重编码，读路径首查延迟从 O(全库) 降为 O(变更条数)）。向量路为可选能力（extra `vec`：onnxruntime 1.19.2 钉版/macOS x64 上限 + tokenizers + numpy + sqlite-vec），未安装或 BGE 模型缺失（HF 缓存无 `Xenova/bge-small-zh-v1.5`，经 hf-mirror.com 下载，不自动联网）时自动降级纯词面。检索形态：候选 = 词面命中 ∪ 向量 KNN（ns/活性过滤，池 16），两路 rank 在 `rank` 内 RRF（k=60）融合为主序，先验（conf/recency/type）整体压到 ε=0.04 做 tie-break——先验翻不过 rank 差（recall-audit 失效模式②的根治）。写入路径同步编码单条（实测 ~400ms/850 字符）；feedback 内容不变零编码。换 embedding 模型需显式 `rebuild-index`。
+- **索引即缓存**：记忆文件本身可直接 ripgrep；词法索引（token→路径缓存）与向量索引（sqlite-vec vec0 表，`index/vectors.db`）都是可随时从源文件重建的缓存，SQLite 不作为主存储。两份缓存同守不变量：活动记忆必被索引、归档记忆必不在索引、缺失/损坏自动重建、检索降级不报错；带外增删的自愈分两档——词法缓存全量重建（纯 tokenize，廉价），向量缓存增量对账（按 content_hash 逐条 diff，只编码新增/变更/移除的条目——跨进程小写入不放大成全库重编码，读路径首查延迟从 O(全库) 降为 O(变更条数)）。向量路为可选能力（extra `vec`：onnxruntime 1.19.2 钉版/macOS x64 上限 + tokenizers + numpy + sqlite-vec），未安装或 BGE 模型缺失（HF 缓存无 `Xenova/bge-small-zh-v1.5`，经 hf-mirror.com 下载，不自动联网）时自动降级纯词面。检索形态：候选 = 词面命中 ∪ 向量 KNN（ns/活性过滤，池 16），两路 rank 在 `rank` 内 RRF（k=60）融合为主序，先验（conf/recency/type）整体压到 ε=0.04 做 tie-break——先验翻不过 rank 差（recall-audit 失效模式②的根治）。写入路径同步编码单条（实测 ~400ms/850 字符）；feedback 内容不变零编码。换 embedding 模型需显式 `rebuild-index`。模型 repo id 与输出维度可经环境变量覆盖（`COMPOUND_MEMORY_EMBEDDING_MODEL`，默认 `Xenova/bge-small-zh-v1.5`；`COMPOUND_MEMORY_EMBEDDING_DIM`，默认 512；单一定义点 `embedding.py`，换模型须同步改维度），支持语言中性/多语言模型接入。
 - **Git 集成**：每次写入自动 commit；仓库仅留本地或推私有 remote。
-- **技术选型**：Python（managed runtime 3.13）实现 stdio MCP server；蒸馏准备由 macOS launchd LaunchAgent（`scripts/` 安装物）或宿主 automation 定时调度，判断段由调用方 Agent 按需完成。
+- **技术选型**：Python（managed runtime 3.13）实现 stdio MCP server；蒸馏准备定时调度三选一——macOS launchd LaunchAgent（`scripts/` 安装物，睡眠错过补跑）、Linux systemd user timer（`Persistent=true` 同样补跑）、cron（最通用但不补跑），三者共用平台无关的 `scripts/distill-prepare.sh`；判断段由调用方 Agent 按需完成。
 - **落地节奏**：P0 纯文件约定 + ripgrep 检索脚本（半天）→ P1 MCP server + 向量索引（1–2 天）→ P2 复利引擎：feedback 闭环 + 定时蒸馏 + 衰减归档（2–3 天）。P2 之前只是"开户"，复利从 P2 开始。
 
 ## Testing Decisions

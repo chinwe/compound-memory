@@ -50,6 +50,8 @@ uv run --directory <仓库> compound-memory init
 - **namespace**：默认写 `_shared`（全体可见）；`agent-<name>` 是私有区，仅属主可写。日常任务一律用默认值即可。
 - **写什么**：稳定事实（用户偏好、项目约定、环境限制、踩坑结论）才写；一次性、会话内临时信息不写。内容用中文，key 用稳定英文短横线标识（如 `user-tts`、`proj-xxx`）。
 
+> 这三条约定与「采纳后必须 feedback」铁律已内嵌在 5 个 MCP tool 的 description 里（server.py），宿主即便不注入本规范，agent 读工具说明也能维持复利闭环；注入规范用于进一步收紧写入质量。
+
 ---
 
 ## 2. WorkBuddy✅
@@ -230,7 +232,7 @@ uv run compound-memory distill-apply "合并后的经验" insight agent-zcode \
   --sources <id1>,<id2>                    # 原子落库：产物 links 溯源 + 源归档（可复活）
 ```
 
-launchd 每天 09:00 自动把候选清单写到 `<root>/distill/last-plan.json`（见 README「定时蒸馏准备」）。各宿主 Agent 任意会话中发现清单有新候选时按需处理即可。
+launchd（macOS）/ systemd user timer（Linux）/ cron 每天 09:00 自动把候选清单写到 `<root>/distill/last-plan.json`（安装物与命令见 README「定时蒸馏准备」）。各宿主 Agent 任意会话中发现清单有新候选时按需处理即可。
 
 ## 8. 故障排查
 

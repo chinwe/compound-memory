@@ -25,11 +25,11 @@ Agent (MCP 客户端 / CLI)
 | ③ 蒸馏提纯 | `distill-plan`（CLI，确定性候选+双信号去重标注）→ Agent 判断 → `distill-apply` 原子落库（产物 links 溯源，源归档可复活） |
 | ④ 跨 Agent 验证 | 与 source 不同的 agent 反馈时 conf 额外 +0.15 |
 
-评分公式（权重以 `src/compound_memory/scoring.py` 的 `W_*` 常量为准）：`0.45·相似度 + 0.25·置信度 + 0.20·新近度(e^(-Δt/τ)) + 0.10·类型权重`
+评分公式（权重以 `src/compound_memory/scoring.py` 的 `W_*` 常量为准）：`0.70·相似度 + 0.15·置信度 + 0.10·新近度(0.5+0.5·e^(−Δt/τ)) + 0.05·类型权重`；双路（向量路启用）时改为 RRF 融合主序 + ε=0.04 先验 tie-break（见 spec「索引即缓存」）。
 
 ## MCP 接入
 
-各宿主（WorkBuddy / ZCode / Claude Code / DeepSeek Harness）的完整接入配置与统一使用规范见 `docs/agent-integration.md`。
+各宿主（WorkBuddy / ZCode / Claude Code / DeepSeek Harness）的完整接入配置与统一使用规范见 `docs/agent-integration.md`。5 个 tool 的 description 自带闭环铁律（命中采纳后必须回写 `memory_feedback`、只写稳定事实、复用既有 key），宿主不注入使用规范也能保持复利闭环——注入规范（agent-integration §6）仍推荐，用于收紧写入质量。
 
 ```json
 {
@@ -44,7 +44,7 @@ Agent (MCP 客户端 / CLI)
 }
 ```
 
-各宿主配置若不展开 `~` 占位写法，替换为本机绝对路径即可。
+各宿主配置若不展开 `~` 占位写法，替换为本机绝对路径即可。向量召回路为可选（`uv sync --extra vec`）：未装 extra 或 HF 缓存缺模型时自动降级纯词面。embedding 模型与维度可经 `COMPOUND_MEMORY_EMBEDDING_MODEL`（默认 `Xenova/bge-small-zh-v1.5`）与 `COMPOUND_MEMORY_EMBEDDING_DIM`（默认 512）覆盖——换模型属运维动作，改后需显式 `rebuild-index`。
 
 ## CLI
 
@@ -65,9 +65,11 @@ uv run compound-memory review-queue   # 冲突队列（CLI 唯一入口）
 uv run compound-memory git-log        # 审计轨迹
 ```
 
-## 定时蒸馏准备（launchd）
+## 定时蒸馏准备（launchd / cron / systemd）
 
-ADR 0001：确定性准备定时跑，判断（摘要/合并）由 Agent 会话内按需完成。每天 09:00 把候选清单写到 `<root>/distill/last-plan.json`。调度选 launchd 而非 cron：macOS 系统标准，睡眠错过的计划唤醒后补跑。
+ADR 0001：确定性准备定时跑，判断（摘要/合并）由 Agent 会话内按需完成。每天 09:00 把候选清单写到 `<root>/distill/last-plan.json`。调度器三选一：**launchd**（macOS 系统标准，睡眠错过的计划唤醒后补跑）、**systemd user timer**（`Persistent=true` 同样补跑）、**cron**（最通用但不补跑错过的计划）。三者都调用同一个平台无关的 `scripts/distill-prepare.sh`。
+
+**launchd（macOS）**：
 
 ```bash
 REPO=$(pwd); UV="$HOME/.local/bin/uv"   # 项目环境由 uv 管理，脚本内经 UV_BIN 覆盖 launchd PATH
@@ -78,7 +80,28 @@ launchctl load ~/Library/LaunchAgents/com.compound-memory.distill-prepare.plist
 launchctl list | grep compound-memory   # 验证已加载；日志在 <root>/distill/prepare.log
 ```
 
-失败要响亮：脚本 `set -eu`，任何一步失败以非 0 退出（`launchctl list` 可见退出码，日志落 distill/prepare.log）。`distill/` 是运行时产物目录（自动加入库 .gitignore），不产生 commit 噪声——只有 Agent 判断后跑 `distill-apply` 才落一次原子 commit。
+**systemd user（Linux）**：
+
+```bash
+REPO=$(pwd); UV="$HOME/.local/bin/uv"
+mkdir -p ~/.config/systemd/user
+for f in service timer; do
+  sed -e "s|__REPO__|$REPO|g" -e "s|__UV__|$UV|g" -e "s|__ROOT__|$HOME/.agents/memory|g" \
+    scripts/compound-memory-distill-prepare.$f.example \
+    > ~/.config/systemd/user/compound-memory-distill-prepare.$f
+done
+systemctl --user daemon-reload
+systemctl --user enable --now compound-memory-distill-prepare.timer
+systemctl --user list-timers | grep compound-memory   # 验证已加载
+```
+
+**cron（其他环境）**：`crontab -e` 加入（sed 填充占位符后）：
+
+```
+0 9 * * * UV_BIN=$HOME/.local/bin/uv COMPOUND_MEMORY_ROOT=$HOME/.agents/memory /bin/sh <仓库>/scripts/distill-prepare.sh >> $HOME/.agents/memory/distill/prepare.log 2>&1
+```
+
+失败要响亮：脚本 `set -eu`，任何一步失败以非 0 退出（`launchctl list` / `systemctl --user list-units` / cron 邮件可见，日志落 distill/prepare.log）。`distill/` 是运行时产物目录（自动加入库 .gitignore），不产生 commit 噪声——只有 Agent 判断后跑 `distill-apply` 才落一次原子 commit。
 
 ## 开发
 
