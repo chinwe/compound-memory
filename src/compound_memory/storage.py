@@ -391,8 +391,14 @@ class MemoryStore:
                     break
                 if mem_id in sims:
                     continue
-                mem = self.find(mem_id)
-                if mem is None or mem.archived or mem.ns != ns:
+                # knn 自带活动区 rel_path，直读即可——逐 hit find() 是 rglob 全库
+                # 递归，千条库一次 search 最多 17 遍全扫描（perf-bench 基线的词面
+                # 线性项主因）；rel_path 过期（手编挪位）由 knn 内部的 stale 对账修正
+                path = self.root / rel_path
+                if not path.exists():
+                    continue
+                mem = self.parse(path)
+                if mem.archived or mem.ns != ns:
                     continue
                 sims[mem_id] = cos
                 rels.append(rel_path)

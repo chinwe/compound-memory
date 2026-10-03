@@ -189,3 +189,20 @@ class TestIncrementalReconcile:
         hits = b.search("缓存线程模型", include_neighbors=False)
         assert gone["id"] not in [h["id"] for h in hits]
         assert [h["id"] for h in hits] == [kept["id"]]
+
+    def test_out_of_band_move_recall_relocates(self, tmp_path: Path):
+        """手编挪位（文件换 type 目录、内容不变）：对账修正 rel_path 后向量路仍召回。
+
+        钉住直读语义的行为等价——向量召回按 knn 返回的 rel_path 直读文件，
+        不再逐 hit find()（rglob 全库）；挪位的修正完全依赖 stale 对账。
+        """
+        import os
+
+        a = make_vec_store(tmp_path, bag_embedder_factory())
+        b = make_vec_store(tmp_path, bag_embedder_factory())
+        res = a.write(content="redis persistence 配置要点", type="fact", source="agent-a")
+        src = a.ns_root / "_shared" / "fact" / f"{res['id']}.md"
+        dst = a.ns_root / "_shared" / "episode" / src.name
+        os.replace(src, dst)
+        hits = b.search("redis 持久化", include_neighbors=False)
+        assert [h["id"] for h in hits] == [res["id"]]
