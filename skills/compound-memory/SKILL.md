@@ -13,7 +13,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 2. **采纳即反馈**：命中且**实际采纳**后必须调 `memory_feedback`（`agent` 填本宿主 source id）——复利闭环的核心动作，漏掉它记忆库就不增值。归档记忆被 feedback 自动复活。
 3. **任务结束沉淀**：会话确认的稳定事实（用户偏好、项目约定、环境限制、踩坑结论）用 `memory_write` 写入，判据见下表；一次性、会话内临时信息只存在于会话。
 
-新记忆与已有记忆有因果/派生关系时用 `memory_link` 双向连上，检索时自动带出邻居。邻居是线索不是结论：采纳以 hit 本身为准。
+新记忆与已有记忆有因果/派生关系时用 `memory_link` 双向连上，检索时自动带出邻居（两条记忆必须同 ns，跨 ns 链被拒绝）。邻居是线索不是结论：采纳以 hit 本身为准。
 
 ## 写入约定
 
@@ -22,10 +22,10 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | `type` | `fact` 客观事实（配置、账号、环境参数）；`insight` 经验教训；`skill` 可复用操作方法；`episode` 事件经历 |
 | `key` | fact/insight 用稳定英文短横线标识（`user-tts`、`proj-xxx`）；更新既有事实复用同 key，新版本与旧版内容不同时返回 `conflict: true` 并入冲突队列 |
 | `source` | 宿主标识：`agent-workbuddy` / `agent-zcode` / `agent-claude` / `agent-deepseek` |
-| `ns` | 默认 `_shared`；`agent-*` 是私有区仅属主可写（越权抛 `PermissionError`） |
+| `ns` | 默认 `_shared`；`agent-*` 是私有区，写/读/反馈都只认属主——读私有 ns 须带 `reader`（自己的 agent id，缺省即拒绝），越权抛 `PermissionError` |
 | 内容 | 中文，与库内既有条目一致 |
 
-读取语义：按 id 的 `memory_get` 恒含 `found` 键，目标不存在返回 `{"found": false}`；归档记忆仍可 get，对它 `memory_feedback` 或 CLI `revive` 即恢复可检索。
+读取语义：按 id 的 `memory_get` 恒含 `found` 键，目标不存在返回 `{"found": false}`；目标在私有 ns 时必带 `reader`；归档记忆仍可 get，对它 `memory_feedback` 或 CLI `revive`（私有 ns 带 `--reader`）即恢复可检索。
 
 ## 运维与蒸馏（CLI）
 
@@ -37,12 +37,12 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | `rebuild-index` | 手工编辑过记忆文件**内容**后（活性检测只覆盖新增/删除文件） |
 | `review-queue` | 处理同 key 冲突队列（人工裁决入口） |
 | `decay` | 衰减归档，长期未用且少用才动（定时任务跑） |
-| `revive <id>` | 复活归档记忆 |
+| `revive <id>` | 复活归档记忆（私有 ns 记忆加 `--reader`） |
 | `git-log` | 审计轨迹（每次写入自动 commit） |
 
 ### 蒸馏工作流（判断段归调用方 Agent）
 
-1. `distill-plan`：确定性候选清单写到 `<root>/distill/last-plan.json`（launchd 每天 09:00 自动跑），标注 merge_with / possible_dup_of / promotion_candidate。
+1. `distill-plan`：确定性候选清单写到 `<root>/distill/last-plan.json`（launchd 每天 09:00 自动跑），标注 merge_with / possible_dup_of / promotion_candidate。扫私有 ns 加 `--reader`；`distill-apply` 的源与产物必须同 ns。
 2. Agent 读 `last-plan.json` 做取舍、拟合并文案。
 3. `distill-apply "<产物>" insight <source> --sources <id1>,<id2>`：原子落库，产物 links 溯源到源、源归档可复活。任意会话发现清单有新候选时按需处理即可。
 
@@ -53,7 +53,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | 宿主看不到 5 个 memory_* 工具 | 手动跑启动命令看报错：多为 uv 不在预期路径，或 `--directory` 指向的仓库位置漂移 |
 | 搜索为空 / 召回不全 | `stats` 看记忆量；怀疑索引损坏 `rebuild-index`（缓存可随时重建，检索降级不报错） |
 | SessionStart 没注入 | hook 任何异常都静默退出；手动跑 `~/.agents/memory/hooks/session_start.py` 查输出是否为合法 `{"additionalContext": ...}` JSON |
-| 写入 `PermissionError` | ns 越权：日常写 `_shared` |
+| 写入/读取/反馈 `PermissionError` | ns 越权：日常写读 `_shared`；读私有 `agent-*` ns 要带 `reader`（`agent-<名>` 或 `<名>`） |
 | 写入返回 `conflict: true` | 内容与既有版本不同，已入冲突队列；裁决后把废置版本归档（frontmatter `archived: true` 移入 `archive/` 并删活动文件）再 `rebuild-index` |
 
 架构与复利机制见仓库 `README.md`，术语见 `CONTEXT.md`。

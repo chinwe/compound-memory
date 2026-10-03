@@ -16,7 +16,7 @@
 
 - **统一协议**：一个 Memory MCP Server 作为唯一读写入口，任何支持 MCP 的客户端（或通过 CLI）都能接入，存储层对 Agent 透明。
 - **文件即数据库**：纯 Markdown + YAML frontmatter + Git 存储，人可直接读改、可审计、可回滚；向量/关键词索引只是可重建的缓存。
-- **命名空间**：`_shared` 共享区（复利发生地）+ `agent-*` 私有区（草稿/偏好），写权限隔离。
+- **命名空间**：`_shared` 共享区（复利发生地）+ `agent-*` 私有区（草稿/偏好），读写权限隔离。
 - **复利引擎**：记忆通过四个机制增值——使用强化、关联召回、周期蒸馏、跨 Agent 验证；同时用衰减 + 归档防通胀。核心信念：**复利 = 反馈闭环，没有 feedback 的记忆都是死本金。**
 
 ## User Stories
@@ -47,7 +47,7 @@
 
 - **总体架构四层**：Agent 层（任意 MCP 客户端/CLI）→ 协议层（Memory MCP Server，stdio）→ 存储层（Markdown + frontmatter + Git，位于 `~/.agents/memory`）→ 策略层（评分排序、使用强化、衰减淘汰、定时蒸馏）。
 - **协议契约**：MCP server 暴露且仅暴露 5 个 tool——`memory_write` / `memory_search` / `memory_get` / `memory_link` / `memory_feedback`。`memory_feedback` 是一等公民而非可选项，这是复利闭环的关键约束；闭环铁律（采纳后必须 feedback、只写稳定事实、复用既有 key）内嵌在各 tool 的 description 中，使宿主不注入外部使用规范也能维持闭环（注入规范仅用于收紧写入质量）。
-- **命名空间模型**：`_shared` 全 Agent 可读写；`agent-<name>` 仅 owner 可写，读不隔离（本地单机可信环境，读写两侧均不校验读取者身份）。写入必须带 `source`（写入者标识，用于跨 Agent 验证与审计）。
+- **命名空间模型**（2026-10-03 修订，废止原「读不隔离」决策）：`_shared` 全 Agent 可读写；`agent-<name>` 仅 owner 可写，读同样按属主校验——`memory_search`（显式传私有 ns 时）与 `memory_get` 须带 `reader`（`agent-<name>` 或 `<name>`，缺省即拒绝，fail-closed），`_shared` 读不校验。旁路同规则收口：`memory_link` 只允许同 ns（跨 ns 链会把对侧 id 写进另一侧文件，成为私有 id 泄漏源，且邻居召回本就同 ns 过滤）；`memory_feedback` 对私有记忆仅属主可反馈；`distill_apply` 源与产物必须同 ns；`get` 返回的 `links` 按同 ns 脱敏（兼容存量跨 ns 链）。身份为自报字符串（本地单机协作边界，非安全边界，细粒度 ACL 仍列非目标）。写入必须带 `source`（写入者标识，用于跨 Agent 验证与审计）。
 - **数据模型**：每条记忆为一个 md 文件，frontmatter 字段：`id / ns / type / source / created / confidence / uses / last_used / links / ttl / key / validated_by / archived / origin`。`type ∈ {episode, fact, insight, skill}`，type 决定写入策略（episode 为 append-only）、衰减窗口（episode 90d / insight 180d / fact 与 skill 不衰减）与蒸馏去向；`origin` 为可选字段，仅蒸馏产物携带 `distillation`（由 distill-apply 写入）。
 - **评分与置信度公式**（2026-10-03 vec-spike 实测后重定权，已与用户对齐）：
   ```text

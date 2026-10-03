@@ -232,6 +232,28 @@ class MemoryStore:
         if ns != "_shared" and not ns.startswith("agent-"):
             raise ValueError("ns must be '_shared' or start with 'agent-'")
 
+    @staticmethod
+    def _check_ns_owner(ns: str, identity: str | None, role: str = "reader") -> None:
+        """读/反馈侧 owner 校验：agent-* 私有 ns 只有属主宿主可读、可反馈。
+
+        与 write 的 `_check_ns + PermissionError` 对称——写侧已保证非属主写不进
+        私有 ns，读侧若不校验则任何宿主显式传 ns=agent-<别人> 即可越权读全量
+        （2026-10-03 实测：search 签名原本无调用方身份参数，跨宿主零阻力）；
+        feedback 侧不校验则外来 agent 可刷 uses/confidence 或复活归档。
+
+        identity 缺省时对 _shared 放行、对 agent-* 拒绝：宁可不读，不猜身份。
+        role 只是让报错指引对得上调用方的参数名（reader / agent）。
+        """
+        if not ns.startswith("agent-"):
+            return
+        owner = ns[len("agent-"):]
+        if identity in (ns, owner):
+            return
+        raise PermissionError(
+            f"namespace {ns!r} is private to {owner!r}; {role} is {identity!r}. "
+            f"Pass {role}={ns!r} or {role}={owner!r} if you are that host."
+        )
+
     def write(
         self,
         content: str,
@@ -306,14 +328,22 @@ class MemoryStore:
             result["conflicts_with"] = conflict_with.id
         return result
 
-    def get(self, mem_id: str, include_neighbors: bool = True) -> dict[str, Any]:
+    def get(self, mem_id: str, include_neighbors: bool = True, reader: str | None = None) -> dict[str, Any]:
         mem = self.find(mem_id)
         if mem is None:
             return {"found": False}
+        self._check_ns_owner(mem.ns, reader)
         result = asdict(mem)
         result["found"] = True
+        # links 输出同 ns 脱敏：跨 ns 遗留链不把对侧 id 暴露给本侧读者（与邻居召回同规则）
+        same_ns_links: list[str] = []
+        for l in mem.links:
+            t = self.find(l)
+            if t is None or t.ns == mem.ns:
+                same_ns_links.append(l)
+        result["links"] = same_ns_links
         if include_neighbors and mem.links:
-            neighbors = [asdict(n) for n in (self.find(l) for l in mem.links) if n is not None]
+            neighbors = [asdict(n) for n in (self.find(l) for l in same_ns_links) if n is not None]
             result["neighbors"] = neighbors
         return result
 
@@ -321,6 +351,8 @@ class MemoryStore:
         mem = self.find(mem_id)
         if mem is None:
             return {"found": False}
+        # 私有记忆只有属主可反馈：防外来 agent 刷 uses/confidence、混入 validated_by 或复活归档
+        self._check_ns_owner(mem.ns, agent, role="agent")
         if mem.archived:
             self._move_to_active(mem)
         mem.uses += 1
@@ -346,6 +378,10 @@ class MemoryStore:
         if missing:
             return {"found": False, "missing": missing}
         assert mem_a is not None and mem_b is not None
+        # 跨 ns 链会把对侧 id 写进本侧文件 frontmatter，成为私有 id 的泄漏源；
+        # 且邻居召回本就同 ns 过滤，跨 ns 链对复利无贡献——创建侧直接禁止
+        if mem_a.ns != mem_b.ns:
+            raise ValueError(f"cannot link memories across namespaces: {mem_a.ns!r} vs {mem_b.ns!r}")
         if id_b not in mem_a.links:
             mem_a.links.append(id_b)
         if id_a not in mem_b.links:
@@ -361,13 +397,18 @@ class MemoryStore:
         ns: str = "_shared",
         top_k: int = 5,
         include_neighbors: bool = True,
+        reader: str | None = None,
     ) -> list[dict[str, Any]]:
         """检索 = 选候选（store 的 layout 职责）+ 排序（scoring.rank 单一定义点）。
 
         embedder 可用时叠加向量召回：候选 = 词面命中 ∪ 向量 KNN（ns/活性过滤），
         两路 rank 在 rank 内 RRF 融合；向量路任何故障都降级纯词面（宁缺勿炸）。
+
+        reader 是调用方身份，ns=agent-* 时必填且须为属主（读侧 owner 校验，
+        与 write 的越权抛 PermissionError 对称）；ns=_shared 时忽略。
         """
         self._check_ns(ns)
+        self._check_ns_owner(ns, reader)
         now = self._clock()
         q_tokens = tokenize(query)
         if not q_tokens:
@@ -378,7 +419,7 @@ class MemoryStore:
             self._candidates(q_tokens, ns, vec_rels),
             now=now,
             top_k=top_k,
-            neighbor_lookup=self._active_neighbors if include_neighbors else None,
+            neighbor_lookup=(lambda mid: self._active_neighbors(mid, ns)) if include_neighbors else None,
             vec_sims=vec_sims,
         )
 
@@ -414,15 +455,19 @@ class MemoryStore:
         except Exception:
             return None, []
 
-    def _active_neighbors(self, mem_id: str) -> list[Memory]:
-        """邻居召回的数据源：hit 的一度 links，归档邻居不召回（截断/上限/去环归 rank）。"""
+    def _active_neighbors(self, mem_id: str, ns: str = "_shared") -> list[Memory]:
+        """邻居召回的数据源：hit 的一度 links，归档邻居不召回（截断/上限/去环归 rank）。
+
+        ns 过滤是访问控制的一部分，不可省：_shared 记忆若链到agent-* 私有记忆，
+        邻居会把私有正文带进 _shared 的检索结果（2026-10-03 实测泄漏）。
+        """
         mem = self.find(mem_id)
         if mem is None:
             return []
         out: list[Memory] = []
         for link_id in mem.links:
             neighbor = self.find(link_id)
-            if neighbor is not None and not neighbor.archived:
+            if neighbor is not None and not neighbor.archived and neighbor.ns == ns:
                 out.append(neighbor)
         return out
 
@@ -445,10 +490,12 @@ class MemoryStore:
             self._commit("decay: archive " + ", ".join(archived))
         return archived
 
-    def revive(self, mem_id: str) -> dict[str, Any]:
+    def revive(self, mem_id: str, reader: str | None = None) -> dict[str, Any]:
         mem = self.find(mem_id)
         if mem is None:
             return {"found": False}
+        # revive 返回全文，与 get 同属按 id 读路径：私有 ns 仅属主可复活
+        self._check_ns_owner(mem.ns, reader)
         if mem.archived:
             self._move_to_active(mem)
             self._save(mem)
@@ -480,6 +527,7 @@ class MemoryStore:
         min_uses: int = 1,
         min_confidence: float = 0.5,
         ns: str = "_shared",
+        reader: str | None = None,
     ) -> dict[str, Any]:
         """蒸馏候选扫描：窗口 + 活性门过滤，产出带信号标注的建议清单（只标注不合并）。
 
@@ -487,8 +535,11 @@ class MemoryStore:
         （BM25 normalized_similarity ≥ DISTILL_DUP_SIM_THRESHOLD，弱信号）、
         promotion_candidate（episode 高活性，晋升建议——判断后置，#6）。
         归档区不参与；坏日期记忆按宁缺勿滥跳过。
+
+        reader：候选带正文返回，扫私有 ns 须属主（与 get/search 同规则）。
         """
         self._check_ns(ns)
+        self._check_ns_owner(ns, reader)
         now = self._clock()
         cands: list[Memory] = []
         for path in sorted((self.ns_root / ns).rglob("*.md")):
@@ -553,6 +604,11 @@ class MemoryStore:
         missing = [mid for mid, mem in zip(source_ids, sources) if mem is None]
         if missing:
             return {"found": False, "missing": missing}
+        # 蒸馏不跨 ns：私有记忆被当源蒸进 _shared 是正文泄漏通道；
+        # distill_plan 本就按单 ns 扫描，源与产物同 ns 是既定流程
+        foreign_ns = sorted({s.ns for s in sources if s is not None and s.ns != ns})
+        if foreign_ns:
+            raise ValueError(f"distill sources must live in target ns {ns!r}; found in: {foreign_ns}")
         mem, conflict_with = self._write_new(
             content,
             type=type,

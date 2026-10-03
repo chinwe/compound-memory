@@ -53,27 +53,35 @@ def memory_write(
 
 
 @mcp.tool()
-def memory_search(query: str, ns: str = "_shared", top_k: int = 5, include_neighbors: bool = True) -> dict[str, Any]:
-    """Search memories. Fuses lexical (BM25) and, when the vec extra + model are installed, vector (BGE) recall via RRF; otherwise falls back to lexical only. Confidence/recency/type act only as a small tie-break. Default namespace is _shared. Each hit embeds up to 3 trimmed one-hop neighbors (active only) unless include_neighbors=False. Returns {'hits': [...]} sorted by score. Compounding rule: after actually adopting a hit, call memory_feedback (agent = your source id) — skipped feedbacks leave the store static."""
-    hits = _store_or_configure().search(query=query, ns=ns, top_k=top_k, include_neighbors=include_neighbors)
+def memory_search(
+    query: str,
+    ns: str = "_shared",
+    top_k: int = 5,
+    include_neighbors: bool = True,
+    reader: str | None = None,
+) -> dict[str, Any]:
+    """Search memories. Fuses lexical (BM25) and, when the vec extra + model are installed, vector (BGE) recall via RRF; otherwise falls back to lexical only. Confidence/recency/type act only as a small tie-break. Default namespace is _shared. Each hit embeds up to 3 trimmed one-hop neighbors (active only) unless include_neighbors=False. reader: your own source agent id — REQUIRED when ns is 'agent-<name>' (private namespace, readable only by its owner host); ignored for _shared. Returns {'hits': [...]} sorted by score. Compounding rule: after actually adopting a hit, call memory_feedback (agent = your source id) — skipped feedbacks leave the store static."""
+    hits = _store_or_configure().search(
+        query=query, ns=ns, top_k=top_k, include_neighbors=include_neighbors, reader=reader
+    )
     return {"hits": hits, "count": len(hits)}
 
 
 @mcp.tool()
-def memory_get(mem_id: str, include_neighbors: bool = True) -> dict[str, Any]:
-    """Fetch a memory by id; one-hop link neighbors are included by default. After adopting it, call memory_feedback (agent = your source id)."""
-    return _store_or_configure().get(mem_id, include_neighbors=include_neighbors)
+def memory_get(mem_id: str, include_neighbors: bool = True, reader: str | None = None) -> dict[str, Any]:
+    """Fetch a memory by id; one-hop link neighbors are included by default. reader: your own source agent id — required when the memory lives in a private 'agent-<name>' namespace (readable only by its owner host). After adopting it, call memory_feedback (agent = your source id)."""
+    return _store_or_configure().get(mem_id, include_neighbors=include_neighbors, reader=reader)
 
 
 @mcp.tool()
 def memory_link(id_a: str, id_b: str) -> dict[str, Any]:
-    """Create a bidirectional link between two memories (compounding source #2: association)."""
+    """Create a bidirectional link between two memories (compounding source #2: association). Both memories must live in the same namespace; cross-namespace links are rejected."""
     return _store_or_configure().link(id_a, id_b)
 
 
 @mcp.tool()
 def memory_feedback(mem_id: str, agent: str) -> dict[str, Any]:
-    """Report that a memory was actually used. Increments uses, raises confidence (+0.1; extra +0.15 when a different agent validates). agent must be your own source agent id. Archiving is reversed on feedback. MUST be called after a memory is adopted — this closes the compounding loop."""
+    """Report that a memory was actually used. Increments uses, raises confidence (+0.1; extra +0.15 when a different agent validates). agent must be your own source agent id. Memories in a private 'agent-<name>' namespace accept feedback only from the owner (agent = 'agent-<name>' or '<name>'). Archiving is reversed on feedback. MUST be called after a memory is adopted — this closes the compounding loop."""
     return _store_or_configure().feedback(mem_id, agent)
 
 

@@ -35,13 +35,17 @@ def cmd_write(args: argparse.Namespace) -> None:
 def cmd_search(args: argparse.Namespace) -> None:
     _emit(
         _open_store(args).search(
-            query=args.query, ns=args.ns, top_k=args.top_k, include_neighbors=args.include_neighbors
+            query=args.query,
+            ns=args.ns,
+            top_k=args.top_k,
+            include_neighbors=args.include_neighbors,
+            reader=args.reader,
         )
     )
 
 
 def cmd_get(args: argparse.Namespace) -> None:
-    _emit(_open_store(args).get(args.id))
+    _emit(_open_store(args).get(args.id, reader=args.reader))
 
 
 def cmd_link(args: argparse.Namespace) -> None:
@@ -62,7 +66,7 @@ def cmd_decay(args: argparse.Namespace) -> None:
 
 
 def cmd_revive(args: argparse.Namespace) -> None:
-    _emit(_open_store(args).revive(args.id))
+    _emit(_open_store(args).revive(args.id, reader=args.reader))
 
 
 def cmd_stats(args: argparse.Namespace) -> None:
@@ -88,6 +92,7 @@ def cmd_distill_plan(args: argparse.Namespace) -> None:
             min_uses=args.min_uses,
             min_confidence=args.min_confidence,
             ns=args.ns,
+            reader=args.reader,
         )
     )
 
@@ -125,18 +130,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("search")
     p.add_argument("query"); p.add_argument("--ns", default="_shared"); p.add_argument("--top-k", type=int, default=5)
+    p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
     p.add_argument("--no-neighbors", dest="include_neighbors", action="store_false",
                    help="omit embedded one-hop neighbors from hits")
     p.set_defaults(func=cmd_search)
 
-    p = sub.add_parser("get"); p.add_argument("id"); p.set_defaults(func=cmd_get)
+    p = sub.add_parser("get")
+    p.add_argument("id")
+    p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
+    p.set_defaults(func=cmd_get)
     p = sub.add_parser("link"); p.add_argument("a"); p.add_argument("b"); p.set_defaults(func=cmd_link)
     p = sub.add_parser("feedback"); p.add_argument("id"); p.add_argument("agent"); p.set_defaults(func=cmd_feedback)
 
     p = sub.add_parser("decay"); p.add_argument("--now", default=None, help="ISO date override (testing)")
     p.set_defaults(func=cmd_decay)
 
-    p = sub.add_parser("revive"); p.add_argument("id"); p.set_defaults(func=cmd_revive)
+    p = sub.add_parser("revive")
+    p.add_argument("id")
+    p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
+    p.set_defaults(func=cmd_revive)
     p = sub.add_parser(
         "distill-plan",
         help="scan distillation candidates and print a signal-annotated list",
@@ -148,6 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-uses", type=int, default=1, help="activity gate: uses >= this")
     p.add_argument("--min-confidence", type=float, default=0.5, help="activity gate: confidence >= this")
     p.add_argument("--ns", default="_shared")
+    p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
     p.set_defaults(func=cmd_distill_plan)
     p = sub.add_parser("distill-apply")
     p.add_argument("content"); p.add_argument("type", choices=MEMORY_TYPES); p.add_argument("source")

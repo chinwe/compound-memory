@@ -269,6 +269,47 @@ class TestNamespacePermissions:
             }))
             assert res["ns"] == "agent-tars"
 
+    async def test_private_read_requires_reader_param(self, memroot):
+        """search/get 的 reader 透传：缺身份 is_error，属主身份放行."""
+        async with make_client(memroot) as client:
+            priv = call(await client.call_tool("memory_write", {
+                "content": "私有检索草稿", "type": "fact", "source": "agent-tars", "ns": "agent-tars",
+            }))
+            no_reader = await client.call_tool(
+                "memory_search", {"query": "私有检索", "ns": "agent-tars"}
+            )
+            assert no_reader.is_error
+            assert (await client.call_tool("memory_get", {"mem_id": priv["id"]})).is_error
+            hits = call(await client.call_tool(
+                "memory_search", {"query": "私有检索", "ns": "agent-tars", "reader": "agent-tars"}
+            ))
+            assert [h["id"] for h in hits["hits"]] == [priv["id"]]
+            got = call(await client.call_tool(
+                "memory_get", {"mem_id": priv["id"], "reader": "tars"}
+            ))
+            assert got["found"] is True
+
+    async def test_cross_ns_link_rejected(self, memroot):
+        async with make_client(memroot) as client:
+            shared = call(await client.call_tool("memory_write", {
+                "content": "共享记忆", "type": "episode", "source": "agent-a",
+            }))
+            priv = call(await client.call_tool("memory_write", {
+                "content": "私有记忆", "type": "episode", "source": "agent-tars", "ns": "agent-tars",
+            }))
+            res = await client.call_tool("memory_link", {"id_a": shared["id"], "id_b": priv["id"]})
+            assert res.is_error
+
+    async def test_private_feedback_rejects_foreign_agent(self, memroot):
+        async with make_client(memroot) as client:
+            priv = call(await client.call_tool("memory_write", {
+                "content": "私有反馈目标", "type": "fact", "source": "agent-tars", "ns": "agent-tars",
+            }))
+            res = await client.call_tool("memory_feedback", {"mem_id": priv["id"], "agent": "agent-a"})
+            assert res.is_error
+            ok = call(await client.call_tool("memory_feedback", {"mem_id": priv["id"], "agent": "tars"}))
+            assert ok["uses"] == 1
+
 
 class TestWithoutGit:
     async def test_tools_work_without_git(self, memroot2):

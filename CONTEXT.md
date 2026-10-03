@@ -15,7 +15,7 @@ _Avoid_: 记录、entry、note
 _Avoid_: category、kind
 
 **Namespace（命名空间）**：
-记忆的可见范围：`_shared` 全体 Agent 共享；`agent-*` 仅属主 Agent 可写。
+记忆的可见范围：`_shared` 全体 Agent 共享；`agent-*` 仅属主 Agent 可读写（读/反馈须带属主身份）。
 _Avoid_: scope、bucket
 
 **Local-first（本地优先）**：
