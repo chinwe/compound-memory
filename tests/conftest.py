@@ -10,16 +10,20 @@
 """
 
 import datetime as dt
+import math
 import os
 import shutil
 import sys
 import uuid
+import zlib
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from compound_memory.scoring import tokenize  # noqa: E402
 from compound_memory.storage import MemoryStore  # noqa: E402
 
 _TEST_TMP_BASE = Path(__file__).resolve().parents[1] / ".test-tmp"
@@ -82,5 +86,38 @@ def store(tmp_path: Path) -> MemoryStore:
     """共享的 MemoryStore fixture（原先在 test_lifecycle / test_index 各有一份）。
 
     注入固定 clock 与沙箱安全 remover——两条 seam adapter 都只在测试侧存在。
+    不带 embedder：默认走纯词面，向量行为全部由 vec_store 显式覆盖。
     """
     return MemoryStore(tmp_path / "memroot", clock=lambda: CLOCK_DATE, remover=sandbox_safe_remove)
+
+
+def bag_embedder_factory(dim: int = 512) -> Callable[[list[str]], list[list[float]]]:
+    """确定性词袋 embedder：token hash 落维后 L2 归一——余弦 ≈ 词集重叠率。
+
+    让向量测试"语义相近"可控且不依赖 onnxruntime/真模型；由 zlib.crc32 保证跨运行稳定。
+    """
+
+    def embed(texts: list[str]) -> list[list[float]]:
+        out: list[list[float]] = []
+        for text in texts:
+            vec = [0.0] * dim
+            for tok in set(tokenize(text)):
+                vec[zlib.crc32(tok.encode("utf-8")) % dim] += 1.0
+            norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+            out.append([v / norm for v in vec])
+        return out
+
+    return embed
+
+
+@pytest.fixture
+def bag_embedder() -> Callable[[list[str]], list[list[float]]]:
+    return bag_embedder_factory()
+
+
+@pytest.fixture
+def vec_store(tmp_path: Path, bag_embedder: Callable[[list[str]], list[list[float]]]) -> MemoryStore:
+    """带向量路的 store：其余 seam 与 store fixture 一致。"""
+    return MemoryStore(
+        tmp_path / "memroot", clock=lambda: CLOCK_DATE, remover=sandbox_safe_remove, embedder=bag_embedder
+    )

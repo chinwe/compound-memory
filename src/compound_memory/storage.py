@@ -3,7 +3,8 @@
 根目录布局：
     namespaces/<ns>/<type>/<id>.md   活动记忆
     archive/<ns>/<type>/<id>.md      衰减归档（可恢复）
-    index/tokens.json                可重建的检索缓存
+    index/tokens.json                可重建的词法检索缓存
+    index/vectors.db                 可重建的向量检索缓存（vec extra，缺失时自动降级）
     review-queue.md                  fact/insight 冲突队列
 """
 
@@ -25,6 +26,10 @@ from .index import Index
 from .model import MEMORY_TYPES, TTL_DAYS, Memory
 from .review_queue import ReviewQueue
 from .scoring import age_days, doc_text, dup_similarity_matrix, rank, recency_age, tokenize
+from .vector_index import VectorIndex
+
+# 向量召回候选池：词面候选 ∪ 向量 KNN 前 VEC_POOL 条（ns/活性过滤后）
+VEC_POOL = 16
 
 ARCHIVE_USES_THRESHOLD = 3
 CONF_USE_BUMP = 0.1
@@ -101,11 +106,14 @@ class MemoryStore:
         clock: Callable[[], dt.date] = dt.date.today,
         remover: Callable[[Path], None] | None = None,
         git_probe: Callable[[], bool] | None = None,
+        embedder: Callable[[list[str]], list[list[float]]] | None = None,
     ) -> None:
         self.root = Path(root)
         self.ns_root = self.root / "namespaces"
         self.archive_root = self.root / "archive"
         self.index = Index(self.root, scan_pairs=self._scan_pairs)
+        self.vector_index = VectorIndex(self.root, scan_pairs=self._scan_pairs, embedder=embedder)
+        self._embedder = embedder
         self._review_queue = ReviewQueue(self.root / "review-queue.md", clock=clock)
         self.git_enabled = git and (git_probe or _git_available)()
         self._clock = clock
@@ -279,7 +287,7 @@ class MemoryStore:
         self._save(mem)
         if conflict_with is not None:
             self._review_queue.append(conflict_with, mem)
-        self.index.sync(mem, self._active_rel(mem))
+        self._sync_indexes(mem, self._active_rel(mem))
         return mem, conflict_with
 
     @staticmethod
@@ -316,7 +324,7 @@ class MemoryStore:
         mem.confidence = round(min(1.0, mem.confidence + bump), 3)
         mem.last_used = self._today()
         self._save(mem)
-        self.index.sync(mem, self._active_rel(mem))
+        self._sync_indexes(mem, self._active_rel(mem))
         self._commit(f"feedback {mem.id} by {agent}: uses={mem.uses} conf={mem.confidence}")
         result = asdict(mem)
         result["found"] = True
@@ -346,19 +354,51 @@ class MemoryStore:
         top_k: int = 5,
         include_neighbors: bool = True,
     ) -> list[dict[str, Any]]:
-        """检索 = 选候选（store 的 layout 职责）+ 排序（scoring.rank 单一定义点）。"""
+        """检索 = 选候选（store 的 layout 职责）+ 排序（scoring.rank 单一定义点）。
+
+        embedder 可用时叠加向量召回：候选 = 词面命中 ∪ 向量 KNN（ns/活性过滤），
+        两路 rank 在 rank 内 RRF 融合；向量路任何故障都降级纯词面（宁缺勿炸）。
+        """
         self._check_ns(ns)
         now = self._clock()
         q_tokens = tokenize(query)
         if not q_tokens:
             return []
+        vec_sims, vec_rels = self._vector_recall(query, ns)
         return rank(
             query,
-            self._candidates(q_tokens, ns),
+            self._candidates(q_tokens, ns, vec_rels),
             now=now,
             top_k=top_k,
             neighbor_lookup=self._active_neighbors if include_neighbors else None,
+            vec_sims=vec_sims,
         )
+
+    def _vector_recall(self, query: str, ns: str) -> tuple[dict[str, float] | None, list[str]]:
+        """向量召回：查询编码 + KNN（大池取回后按 ns/去重收敛到 VEC_POOL）。
+
+        返回 (vec_sims, vec_rels)；embedder 未注入或任何故障 ⇒ (None, []) 纯词面降级。
+        """
+        if self._embedder is None:
+            return None, []
+        try:
+            qvec = self._embedder([query])[0]
+            hits = self.vector_index.knn(qvec, k=64)
+            sims: dict[str, float] = {}
+            rels: list[str] = []
+            for mem_id, rel_path, cos in hits:
+                if len(sims) >= VEC_POOL:
+                    break
+                if mem_id in sims:
+                    continue
+                mem = self.find(mem_id)
+                if mem is None or mem.archived or mem.ns != ns:
+                    continue
+                sims[mem_id] = cos
+                rels.append(rel_path)
+            return (sims or None), rels
+        except Exception:
+            return None, []
 
     def _active_neighbors(self, mem_id: str) -> list[Memory]:
         """邻居召回的数据源：hit 的一度 links，归档邻居不召回（截断/上限/去环归 rank）。"""
@@ -409,14 +449,14 @@ class MemoryStore:
         mem.archived = True
         self._save(mem)
         self._remover(src)
-        self.index.sync(mem, old_rel)
+        self._sync_indexes(mem, old_rel)
 
     def _move_to_active(self, mem: Memory) -> None:
         src = self._archive_path(mem)
         mem.archived = False
         self._save(mem)
         self._remover(src)
-        self.index.sync(mem, self._active_rel(mem))
+        self._sync_indexes(mem, self._active_rel(mem))
 
     # ---------- 蒸馏（确定性段；判断/摘要交调用方 Agent，CONTEXT.md: Distillation） ----------
 
@@ -522,10 +562,15 @@ class MemoryStore:
         result["archived_sources"] = archived
         return result
 
-    # ---------- 索引（可重建缓存；机制在 index.Index） ----------
+    # ---------- 索引（可重建缓存；机制在 index.Index 与 vector_index.VectorIndex） ----------
 
     def _active_rel(self, mem: Memory) -> str:
         return str(self._active_path(mem).relative_to(self.root))
+
+    def _sync_indexes(self, mem: Memory, rel_path: str) -> None:
+        """全部写路径的索引收口：词法 + 向量两份缓存一起保活（向量侧 hash 未变时零编码）。"""
+        self.index.sync(mem, rel_path)
+        self.vector_index.sync(mem, rel_path)
 
     def _scan_pairs(self) -> list[tuple[Memory, str]]:
         """扫描活动区供 Index 全量重建（注入回调，惰性调用）。"""
@@ -535,15 +580,21 @@ class MemoryStore:
         ]
 
     def rebuild_index(self) -> dict[str, Any]:
-        return self.index.rebuild(self._scan_pairs())
+        counts = self.index.rebuild(self._scan_pairs())
+        counts.update(self.vector_index.rebuild(self._scan_pairs()))
+        return counts
 
-    def _candidates(self, q_tokens: list[str], ns: str) -> list[Memory]:
-        """Indexed lookup: 索引活性（跨进程重载/带外重建）由 Index 在内部自愈，
+    def _candidates(self, q_tokens: list[str], ns: str, vec_rels: list[str] | None = None) -> list[Memory]:
+        """Indexed lookup: 索引活性（跨进程重载/带外重建）由各缓存内部自愈，
         这里全信索引命中，只逐一复查文件存在性与 ns/archived——防的是索引
         词条与手编文件内容的漂移（改内容不改目录 mtime，那条路走显式 rebuild）。
-        """
+        vec_rels 非空时，向量 KNN 命中（rel_path 由向量缓存给出）并入候选并集。"""
+        rels = list(self.index.candidates(q_tokens))
+        for rel_path in vec_rels or []:
+            if rel_path not in rels:
+                rels.append(rel_path)
         out: list[Memory] = []
-        for rel in self.index.candidates(q_tokens):
+        for rel in rels:
             path = self.root / rel
             if path.exists():
                 mem = self.parse(path)

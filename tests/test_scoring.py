@@ -14,6 +14,7 @@ import pytest
 from compound_memory.model import Memory
 from compound_memory.scoring import (
     W_CONF,
+    W_RECENCY,
     W_SIM,
     W_TYPE,
     TYPE_WEIGHT,
@@ -111,14 +112,61 @@ class TestCompositeOrdering:
 
 
 class TestDegradedDates:
-    def test_unparseable_date_scores_zero_recency(self):
-        """坏日期 ⇒ 新近项按 0 计（沿用 recency_score 既有语义），排序不炸。"""
+    def test_unparseable_date_scores_neutral_recency(self):
+        """坏日期 ⇒ 新近项按中性值 0.5 计（底座语义：不奖励也不惩罚），排序不炸。"""
         mem = make_mem(1, "python tutorial", last_used="not-a-date")
         (hit,) = rank("python", [mem], now=NOW)
         assert hit["score"] == pytest.approx(
-            W_SIM * hit["similarity"] + W_CONF * 0.5 + W_TYPE * TYPE_WEIGHT["episode"],
+            W_SIM * hit["similarity"] + W_CONF * 0.5 + W_RECENCY * 0.5 + W_TYPE * TYPE_WEIGHT["episode"],
             abs=1e-3,
         )
+
+
+class TestRRFFusion:
+    """双路 RRF 融合（vec-spike S5 形态）：RRF rank 定主序，先验只做 ε 内 tie-break。"""
+
+    def test_vector_only_candidates_enter_results(self):
+        """词面零命中但向量召回的候选必须能进结果——扩候选是向量路的全部意义。"""
+        mem = make_mem(1, "redis persistence")
+        hits = rank("缓冲区设置", [mem], now=NOW, vec_sims={mem.id: 0.9})
+        assert [h["id"] for h in hits] == [mem.id]
+        assert hits[0]["similarity"] == pytest.approx(0.5, abs=0.01)  # 单路 rank1 的 RRF norm
+
+    def test_full_hit_on_both_channels_normalizes_to_one(self):
+        """两路都 rank1 ⇒ 融合相似度归一到 1.0（结果形状语义不漂移）。"""
+        mem = make_mem(1, "python tutorial")
+        (hit,) = rank("python 学习", [mem], now=NOW, vec_sims={mem.id: 0.8})
+        assert hit["similarity"] == pytest.approx(1.0, abs=1e-6)
+
+    def test_prior_never_overturns_rank_gap(self):
+        """核心设计约束：conf 高 0.5 抵不过 RRF rank1 vs rank2 的差距——先验翻不了主序。"""
+        strong = make_mem(1, "nginx buffer", confidence=0.5)
+        weak = make_mem(2, "nginx proxy", confidence=1.0)
+        hits = rank(
+            "nginx buffer",  # strong 词面满命中 rank1，weak 只共享 nginx 排 rank2
+            [weak, strong],
+            now=NOW,
+            vec_sims={strong.id: 0.9, weak.id: 0.3},
+        )
+        # strong：词面 rank1 + 向量 rank1；weak：两路 rank2——RRF 主序必压过 conf 马太效应
+        assert [h["id"] for h in hits] == [strong.id, weak.id]
+
+    def test_prior_breaks_true_ties(self):
+        """RRF 完全同分（词面与向量 rank 交叉对称）时，先验 tie-break 决定先后。"""
+        low_conf = make_mem(1, "alpha beta", confidence=0.5)
+        high_conf = make_mem(2, "gamma delta", confidence=0.9)
+        hits = rank(
+            "alpha gamma",  # 两条各命中一词、dl/tf 对称 ⇒ 词面 rank 按 candidates 序
+            [low_conf, high_conf],
+            now=NOW,
+            vec_sims={low_conf.id: 0.8, high_conf.id: 0.9},  # 向量 rank 反转 ⇒ fused 打平
+        )
+        assert [h["id"] for h in hits] == [high_conf.id, low_conf.id]
+
+    def test_single_channel_degrades_to_lexical_order(self):
+        """vec_sims=None 的单路退路：无词面命中 ⇒ 空结果（历史行为零回归）。"""
+        mem = make_mem(1, "redis persistence")
+        assert rank("缓冲区设置", [mem], now=NOW, vec_sims=None) == []
 
 
 class TestDistillDupMatrix:

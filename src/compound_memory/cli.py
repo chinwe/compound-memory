@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .embedding import auto_encoder
 from .storage import DISTILL_DUP_SIM_THRESHOLD, MEMORY_TYPES, MemoryStore, PROMOTION_USES_THRESHOLD, default_root
 
 
@@ -18,7 +19,8 @@ def _emit(payload: Any) -> None:
 
 
 def _open_store(args: argparse.Namespace) -> MemoryStore:
-    return MemoryStore(Path(args.root))
+    # CLI 与 server 同权：vec extra + 模型就绪即启用向量路，否则自动降级纯词面
+    return MemoryStore(Path(args.root), embedder=auto_encoder())
 
 
 def cmd_init(args: argparse.Namespace) -> None:

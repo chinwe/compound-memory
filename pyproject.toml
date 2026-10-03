@@ -27,7 +27,10 @@ compound-memory = "compound_memory.cli:main"
 compound-memory-server = "compound_memory.server:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.24", "mypy>=1.10", "types-PyYAML>=6"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "mypy>=1.10", "types-PyYAML>=6", "sqlite-vec>=0.1.9"]
+# 向量召回路（可选）：未安装时 search 自动降级纯词面（检索降级不报错）。
+# onnxruntime 钉 1.19.2：macOS x64 可装的最新版（1.20+ 的 wheel 标签要求 macOS 13+）
+vec = ["onnxruntime==1.19.2", "tokenizers>=0.20", "numpy>=1.26", "sqlite-vec>=0.1.9"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -40,3 +43,7 @@ testpaths = ["tests"]
 python_version = "3.13"
 strict = false
 warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["onnxruntime.*", "onnxruntime", "tokenizers.*", "tokenizers", "sqlite_vec.*", "sqlite_vec", "numpy.*", "numpy"]
+ignore_missing_imports = true

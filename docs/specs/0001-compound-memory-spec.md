@@ -2,7 +2,7 @@
 
 标签：`ready-for-agent`
 状态：已定稿（基于 2026-10-01 设计讨论直接综合，未做追加访谈）
-实现状态：2026-10-01 与代码同步；唯一 deferred 项为向量索引（缓做 + 触发器，见「索引即缓存」），其余描述与实现一致。
+实现状态：2026-10-03 与代码同步（向量索引已落地，见「索引即缓存」）；评分公式于 2026-10-03 经 vec-spike 实测重定权。
 
 ---
 
@@ -49,23 +49,24 @@
 - **协议契约**：MCP server 暴露且仅暴露 5 个 tool——`memory_write` / `memory_search` / `memory_get` / `memory_link` / `memory_feedback`。`memory_feedback` 是一等公民而非可选项，这是复利闭环的关键约束。
 - **命名空间模型**：`_shared` 全 Agent 可读写；`agent-<name>` 仅 owner 可写，读不隔离（本地单机可信环境，读写两侧均不校验读取者身份）。写入必须带 `source`（写入者标识，用于跨 Agent 验证与审计）。
 - **数据模型**：每条记忆为一个 md 文件，frontmatter 字段：`id / ns / type / source / created / confidence / uses / last_used / links / ttl / key / validated_by / archived / origin`。`type ∈ {episode, fact, insight, skill}`，type 决定写入策略（episode 为 append-only）、衰减窗口（episode 90d / insight 180d / fact 与 skill 不衰减）与蒸馏去向；`origin` 为可选字段，仅蒸馏产物携带 `distillation`（由 distill-apply 写入）。
-- **评分与置信度公式**（来自设计讨论，已与用户对齐）：
+- **评分与置信度公式**（2026-10-03 vec-spike 实测后重定权，已与用户对齐）：
   ```text
-  检索得分 = 0.45·相似度（BM25 词面）+ 0.25·置信度 + 0.20·新近度(e^(−Δt/τ)) + 0.10·类型权重
+  检索得分 = 0.70·相似度 + 0.15·置信度 + 0.10·新近度(0.5+0.5·e^(−Δt/τ)) + 0.05·类型权重
   置信度   = min(1, conf₀ + 0.1·uses + 0.15·跨Agent验证次数)
   ```
+  设计约束：sim 是主序，先验只做 tie-break——conf/recency/type 三槽的有效分差跨度必须盖不过 sim 槽的单 token 命中差，否则高置信/新近的无关记忆会挤掉正确答案（recall-audit 失效模式②的马太效应，spike S1–S4 形态实测复现）。新近度带 0.5 底座（槽内跨度压到 0.5），坏日期记中性值 0.5。双路（向量路启用）时改走 S5 形态：score = RRF_norm + 0.04·(0.5·conf + 0.3·recency_norm + 0.2·type)，score 上限 ≈1.04（不再恒 ≤1）；单路降级时保持上行线性公式。
 - **复利四来源**：① 使用强化（feedback 回写 uses+1、conf+0.1）② 关联增值（links 双向关联，memory_get 时带出一度邻居；search 命中自动内嵌精简邻居——每 hit 上限 3、一度、去环、只召回活动记忆，邻居不参与排序分，include_neighbors/--no-neighbors 可关）③ 蒸馏提纯（`distill-plan` 确定性扫描产出带信号标注的候选清单 → 调用方 Agent 判断取舍/摘要 → `distill-apply` 原子落库，条数减少密度上升）④ 跨 Agent 验证（与 source 不同的 agent feedback 时，conf+0.15）。
 - **防通胀**：新近度指数衰减 + 长期未用且少用（uses < 3）的记忆归档（不物理删除）+ 蒸馏时双信号去重标注（key 强信号 + BM25 弱信号，只标注不合并，合并与否由判断段裁决）。
 - **冲突解决**：episodes append-only 天然无冲突；facts/insights 同 key 不同值时保留双版本并生成 review 队列，由主治 Agent 或人裁决；一切写入带 source + 时间戳。
 - **生命周期状态机**：类型终身不变（episode/fact/insight/skill 原地不迁移，改类型 = 蒸馏新写 + 源归档）；强化由 uses/confidence 表达（不设 reinforced/principle 中间类型）；晋升 = 蒸馏产物（高活性 episode 在 distill-plan 标 promotion-candidate，判断后置给 Agent 蒸馏为更高密度新记忆）；任意记忆可经衰减进入 archive，archive 命中可复活并按新证据重算 conf。
-- **索引即缓存**：记忆文件本身可直接 ripgrep；词法索引（token→路径缓存）可随时从源文件重建，SQLite 不作为主存储；向量索引（sqlite-vec）deferred——触发条件为活动记忆 ≥500 条或实际报告 search 召回缺口，届时重开；技术路线已验证（sqlite-vec wheel + BGE-small-zh ONNX int8 + onnxruntime 1.19.2 + RRF rank 融合）。
+- **索引即缓存**：记忆文件本身可直接 ripgrep；词法索引（token→路径缓存）与向量索引（sqlite-vec vec0 表，`index/vectors.db`）都是可随时从源文件重建的缓存，SQLite 不作为主存储。两份缓存同守不变量：活动记忆必被索引、归档记忆必不在索引、缺失/损坏/带外增删自动重建、检索降级不报错。向量路为可选能力（extra `vec`：onnxruntime 1.19.2 钉版/macOS x64 上限 + tokenizers + numpy + sqlite-vec），未安装或 BGE 模型缺失（HF 缓存无 `Xenova/bge-small-zh-v1.5`，经 hf-mirror.com 下载，不自动联网）时自动降级纯词面。检索形态：候选 = 词面命中 ∪ 向量 KNN（ns/活性过滤，池 16），两路 rank 在 `rank` 内 RRF（k=60）融合为主序，先验（conf/recency/type）整体压到 ε=0.04 做 tie-break——先验翻不过 rank 差（recall-audit 失效模式②的根治）。写入路径同步编码单条（实测 ~400ms/850 字符）；feedback 内容不变零编码。换 embedding 模型需显式 `rebuild-index`。
 - **Git 集成**：每次写入自动 commit；仓库仅留本地或推私有 remote。
 - **技术选型**：Python（managed runtime 3.13）实现 stdio MCP server；蒸馏准备由 macOS launchd LaunchAgent（`scripts/` 安装物）或宿主 automation 定时调度，判断段由调用方 Agent 按需完成。
 - **落地节奏**：P0 纯文件约定 + ripgrep 检索脚本（半天）→ P1 MCP server + 向量索引（1–2 天）→ P2 复利引擎：feedback 闭环 + 定时蒸馏 + 衰减归档（2–3 天）。P2 之前只是"开户"，复利从 P2 开始。
 
 ## Testing Decisions
 
-- **测试缝两层**：MCP tool 边界（test_mcp_tools.py，`mcp.Client(server)` 内存直连、无 stdio 子进程——anyio 限制要求 client 会话与测试同 task）+ 核心模块单测（scoring / index / model / store 运维面）。评分公式在 MCP 边界经 search 排序间接断言，公式内部不单测。
+- **测试缝两层**：MCP tool 边界（test_mcp_tools.py，`mcp.Client(server)` 内存直连、无 stdio 子进程——anyio 限制要求 client 会话与测试同 task）+ 核心模块单测（scoring / index / vector_index / model / store 运维面）。评分公式在 MCP 边界经 search 排序间接断言，公式内部不单测。向量路测试用确定性词袋 fake embedder（不依赖 onnxruntime/真模型）；真模型端到端靠 CLI 冒烟与 `experiments/vec-spike/` 回归。
 - 好测试的标准：只验证"写入 → 检索 → 反馈"等外部可见行为闭环，例如：写入后 search 能召回；feedback 后同一查询的排序上升；get 能带出 links 邻居；fact 冲突后 review 队列出现双版本。
 - 存储与索引是实现细节，但"索引可重建"本身是一条验收测试：删除 index/ 目录后 search 仍正常工作。
 

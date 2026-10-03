@@ -1,6 +1,11 @@
 """评分：分词、词面相似度（BM25）、新近衰减、最终得分。
 
-检索得分 = 0.45·相似度 + 0.25·置信度 + 0.20·新近度(e^(-Δt/τ)) + 0.10·类型权重
+检索得分 = 0.70·相似度 + 0.15·置信度 + 0.10·新近度(0.5+0.5·e^(-Δt/τ)) + 0.05·类型权重
+
+设计约束（2026-10-03 vec-spike 实测定型）：sim 是主序，先验只做 tie-break——
+conf/recency/type 三槽的**有效分差跨度**必须盖不过 sim 槽的单 token 命中差，
+否则高置信/新近的无关记忆会挤掉正确答案（recall-audit 失效模式②的马太效应）。
+recency_score 因此带 0.5 底座（跨度 0.5），坏日期记中性值 0.5 而非 0。
 
 rank 是排序管线的单一定义点：调用方传入原始 query 与候选记忆，
 tokenize → BM25 → 归一化 → 新近 → 合分 → 排序 → 结果形状全部在实现内。
@@ -22,14 +27,20 @@ TOKEN_RE = re.compile(r"[a-z0-9]+|[\u4e00-\u9fff]")
 TYPE_WEIGHT = {t: s.weight for t, s in TYPE_SPEC.items()}
 TAU_DAYS = {t: s.tau_days for t, s in TYPE_SPEC.items()}
 
-W_SIM = 0.45
-W_CONF = 0.25
-W_RECENCY = 0.20
-W_TYPE = 0.10
+W_SIM = 0.70
+W_CONF = 0.15
+W_RECENCY = 0.10
+W_TYPE = 0.05
 # 邻居召回（CONTEXT.md: 关联增值）：hit 内嵌精简邻居的形状上限——
 # 数据由调用方经 neighbor_lookup 提供（store 只供活动记忆），截断/上限/去环在此单点收口
 MAX_NEIGHBORS = 3
 NEIGHBOR_CONTENT_CHARS = 80
+# 向量路 RRF 融合（vec-spike S5 形态，2026-10-03）：两路 rank 融合为主序，
+# 先验（conf/recency/type）整体压到 PRIOR_EPSILON 做 tie-break——
+# RRF 相邻 rank 位差 = 1/(K+1) ≈ 0.016，ε=0.04 意味着先验最多抬 ~2 个 rank 位，
+# 抬不动正确答案与高置信噪声之间的真实 rank 差（recall-audit 失效模式②的根治）。
+RRF_K = 60
+PRIOR_EPSILON = 0.04
 
 
 def _cjk_bigrams(run: list[str]) -> list[str]:
@@ -106,12 +117,15 @@ def bm25_scores(
 
 
 def recency_score(mem: Memory, now: dt.date) -> float:
-    """指数新近度 e^(-Δdays/τ)，τ 取自记忆类型；坏日期 ⇒ 0.0。"""
+    """新近度 0.5 + 0.5·e^(-Δdays/τ)，τ 取自记忆类型；底座把槽内跨度压到 0.5（先验只做 tie-break）。
+
+    坏/缺日期返回中性值 0.5（不奖励也不惩罚，与底座语义一致）。
+    """
     tau = TAU_DAYS.get(mem.type, 90.0)
     age = recency_age(mem, now)
     if age is None:
-        return 0.0
-    return math.exp(-max(0, age) / tau)
+        return 0.5
+    return 0.5 + 0.5 * math.exp(-max(0, age) / tau)
 
 
 def normalized_similarity(bm25: float, n_query_tokens: int) -> float:
@@ -146,25 +160,28 @@ def rank(
     now: dt.date,
     top_k: int = 5,
     neighbor_lookup: Callable[[str], list[Memory]] | None = None,
+    vec_sims: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     """排序管线：query 与候选记忆进，最终搜索结果出。
 
     结果 dict 的形状在这里一处定义（id / score / similarity / confidence /
     uses / type / ns / source / content；提供 neighbor_lookup 时每 hit 内嵌
     neighbors）。邻居只"带出"不"提分"——公式与排序不受影响（#7）。
+
+    vec_sims（mem_id → 余弦相似度）为 None 时走纯词面单路：rel≤0 的候选缺席、
+    BM25 归一分进 0.70 槽——与历史行为逐位一致。提供时走双路 RRF 融合：
+    词面路（rel>0 才参与）与向量路各出一列 rank，RRF norm 作主序、先验压到
+    PRIOR_EPSILON 做 tie-break；词面零命中但向量召回的候选由此进入结果。
     """
     q_tokens = tokenize(query)
     if not q_tokens:
         return []
     docs = [tokenize(doc_text(m)) for m in candidates]
     rels = bm25_scores(q_tokens, docs)
+    by_id = {m.id: (m, rel) for m, rel in zip(candidates, rels)}
     hits: list[dict[str, Any]] = []
-    for mem, rel in zip(candidates, rels):
-        if rel <= 0:
-            continue
-        sim = normalized_similarity(rel, len(q_tokens))
-        rec = recency_score(mem, now)
-        score = final_score(sim, mem.confidence, rec, mem.type)
+
+    def emit(mem: Memory, sim: float, score: float) -> None:
         hits.append(
             {
                 "id": mem.id,
@@ -178,6 +195,39 @@ def rank(
                 "content": mem.content,
             }
         )
+
+    if vec_sims is None:
+        for mem, rel in zip(candidates, rels):
+            if rel <= 0:
+                continue
+            sim = normalized_similarity(rel, len(q_tokens))
+            score = final_score(sim, mem.confidence, recency_score(mem, now), mem.type)
+            emit(mem, sim, score)
+    else:
+        lexical = sorted(
+            ((m.id, rel) for m, rel in zip(candidates, rels) if rel > 0),
+            key=lambda t: -t[1],
+        )
+        lexical_rank = {mid: r for r, (mid, _) in enumerate(lexical, 1)}
+        vec_rank = {
+            mid: r
+            for r, (mid, _) in enumerate(
+                sorted(((mid, s) for mid, s in vec_sims.items() if mid in by_id), key=lambda t: -t[1]), 1
+            )
+        }
+        rrf_max = 2.0 / (RRF_K + 1)  # 双路都拿 rank1 的理论上限；满命中归一到 1.0
+        for mem, _ in by_id.values():
+            fused = 0.0
+            if mem.id in lexical_rank:
+                fused += 1.0 / (RRF_K + lexical_rank[mem.id])
+            if mem.id in vec_rank:
+                fused += 1.0 / (RRF_K + vec_rank[mem.id])
+            if fused <= 0:
+                continue  # 两路都不在场：不该出现在结果里（调用方候选并集含兜底）
+            rec_n = (recency_score(mem, now) - 0.5) / 0.5  # 底座归一回 [0,1]
+            prior = 0.5 * mem.confidence + 0.3 * rec_n + 0.2 * TYPE_WEIGHT.get(mem.type, 0.5)
+            sim = fused / rrf_max
+            emit(mem, sim, sim + PRIOR_EPSILON * prior)
     hits.sort(key=lambda h: -h["score"])
     top = hits[:top_k]
     if neighbor_lookup is not None:

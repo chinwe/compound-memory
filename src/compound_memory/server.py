@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from mcp.server.mcpserver import MCPServer
 
+from .embedding import auto_encoder
 from .storage import MEMORY_TYPES, MemoryStore, default_root
 
 mcp = MCPServer("compound-memory")
@@ -22,10 +23,11 @@ def configure(
     root: Path | str | None = None,
     git: bool = True,
     git_probe: Callable[[], bool] | None = None,
+    embedder: Callable[[list[str]], list[list[float]]] | None = None,
 ) -> MemoryStore:
     global _store
     _store = MemoryStore(
-        Path(root) if root is not None else default_root(), git=git, git_probe=git_probe
+        Path(root) if root is not None else default_root(), git=git, git_probe=git_probe, embedder=embedder
     )
     return _store
 
@@ -52,7 +54,7 @@ def memory_write(
 
 @mcp.tool()
 def memory_search(query: str, ns: str = "_shared", top_k: int = 5, include_neighbors: bool = True) -> dict[str, Any]:
-    """Search memories (lexical similarity + confidence + recency + type weight). Default namespace is _shared. Each hit embeds up to 3 trimmed one-hop neighbors (active only) unless include_neighbors=False. Returns {'hits': [...]} sorted by score."""
+    """Search memories. Fuses lexical (BM25) and, when the vec extra + model are installed, vector (BGE) recall via RRF; otherwise falls back to lexical only. Confidence/recency/type act only as a small tie-break. Default namespace is _shared. Each hit embeds up to 3 trimmed one-hop neighbors (active only) unless include_neighbors=False. Returns {'hits': [...]} sorted by score."""
     hits = _store_or_configure().search(query=query, ns=ns, top_k=top_k, include_neighbors=include_neighbors)
     return {"hits": hits, "count": len(hits)}
 
@@ -76,7 +78,9 @@ def memory_feedback(mem_id: str, agent: str) -> dict[str, Any]:
 
 
 def main() -> None:
-    _store_or_configure()
+    if _store is None:
+        # 生产入口自动挂向量路（vec extra + 模型就绪才生效，否则静默降级纯词面）
+        configure(embedder=auto_encoder())
     mcp.run()
 
 
