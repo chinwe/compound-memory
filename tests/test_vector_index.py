@@ -27,6 +27,19 @@ class CountingEmbedder:
         return self.inner(texts)
 
 
+class RecordingEmbedder:
+    """记录全部被编码文本——查询与文档走同一 embedder，只有按文本才能
+    断言"对账只编码 diff 的文档"（数调用次数会把查询编码混进来）。"""
+
+    def __init__(self, inner: Callable[[list[str]], list[list[float]]]) -> None:
+        self.inner = inner
+        self.texts: list[str] = []
+
+    def __call__(self, texts: list[str]) -> list[list[float]]:
+        self.texts.extend(texts)
+        return self.inner(texts)
+
+
 def make_vec_store(tmp_path: Path, embedder: Callable[[list[str]], list[list[float]]]) -> MemoryStore:
     return MemoryStore(
         tmp_path / "memroot", clock=lambda: CLOCK_DATE, remover=sandbox_safe_remove, embedder=embedder
@@ -106,3 +119,73 @@ class TestVectorIndexInvariants:
         counts = vec_store.rebuild_index()
         assert counts["memories"] == 1
         assert "tokens" in counts  # 词法缓存计数
+
+
+class TestIncrementalReconcile:
+    """带外增删的读路径自愈必须增量对账：编码成本 = 变更条数，而非全库。
+
+    跨进程场景（另一宿主 write/feedback 一条）是日常路径——若 stale 触发
+    全量重编码，库到几百条时首次 search 会阻塞分钟级（spec「索引即缓存」
+    的"自动恢复"不能以 O(全库) 编码为代价）。
+    """
+
+    def test_cross_process_write_encodes_only_diff(self, tmp_path: Path):
+        """未装 vec 的宿主写入后，装 vec 的宿主下一次 search 只编码新增那条。
+
+        真实跨进程场景：带外写入方不更新向量缓存（未装 vec extra / 手编文件），
+        读取方 stale 对账——若退化为全量重建，库大后首查阻塞分钟级。
+        """
+        embedder_b = RecordingEmbedder(bag_embedder_factory())
+        a = MemoryStore(  # 无 embedder：写入方不更新 vectors.db（模拟未装 vec extra）
+            tmp_path / "memroot", clock=lambda: CLOCK_DATE, remover=sandbox_safe_remove
+        )
+        b = make_vec_store(tmp_path, embedder_b)
+        a.write(content="redis persistence 配置要点", type="fact", source="agent-a")
+        a.write(content="nginx buffer 大小调优", type="fact", source="agent-a")
+        # B 首查：db 缺失 ⇒ 无 diff 基线，全量重建（历史分支，保持不变）
+        b.search("redis 持久化", include_neighbors=False)
+        assert [t.strip() for t in embedder_b.texts] == [
+            "redis 持久化",
+            "redis persistence 配置要点",
+            "nginx buffer 大小调优",
+        ]
+        res = a.write(content="docker prune 清理策略", type="fact", source="agent-a")
+        hits = b.search("容器磁盘清理", include_neighbors=False)
+        assert embedder_b.texts[-1].strip() == "docker prune 清理策略"  # 对账只编码新增那条
+        assert len(embedder_b.texts) == 5  # 全量 2 条 + diff 1 条 + 两次查询——前两条未重编码
+        assert hits[0]["id"] == res["id"]
+
+    def test_out_of_band_new_file_encodes_only_it(self, tmp_path: Path):
+        """绕过 store API 手放的新记忆文件：自愈只编码手放那条，且可被召回。"""
+        embedder_b = RecordingEmbedder(bag_embedder_factory())
+        a = make_vec_store(tmp_path, bag_embedder_factory())
+        b = make_vec_store(tmp_path, embedder_b)
+        a.write(content="redis persistence 配置要点", type="fact", source="agent-a")
+        b.search("redis 持久化", include_neighbors=False)
+        assert embedder_b.texts == ["redis 持久化"]
+        hand = a.ns_root / "_shared" / "fact" / "20260101_handmade.md"
+        hand.write_text(
+            "---\nid: 20260101_handmade\nns: _shared\ntype: fact\n"
+            "source: agent-x\ncreated: 2026-01-01\n---\n\nzabbix queue depth alerts\n",
+            encoding="utf-8",
+        )
+        hits = b.search("zabbix queue", include_neighbors=False)
+        assert hits[0]["id"] == "20260101_handmade"  # 强匹配排第一（双路 RRF 会带出零相似条，既有行为）
+        assert [t.strip() for t in embedder_b.texts] == [
+            "redis 持久化",
+            "zabbix queue",
+            "zabbix queue depth alerts",
+        ]
+
+    def test_out_of_band_delete_removed_from_index(self, tmp_path: Path):
+        """带外删除的记忆文件：对账后不再被向量路召回，其余不受影响。"""
+        embedder_b = CountingEmbedder(bag_embedder_factory())
+        a = make_vec_store(tmp_path, bag_embedder_factory())
+        b = make_vec_store(tmp_path, embedder_b)
+        kept = a.write(content="redis persistence 配置要点", type="fact", source="agent-a")
+        gone = a.write(content="memcached 线程模型", type="fact", source="agent-a")
+        b.search("缓存", include_neighbors=False)  # 建立基线
+        sandbox_safe_remove(a.ns_root / "_shared" / "fact" / f"{gone['id']}.md")
+        hits = b.search("缓存线程模型", include_neighbors=False)
+        assert gone["id"] not in [h["id"] for h in hits]
+        assert [h["id"] for h in hits] == [kept["id"]]

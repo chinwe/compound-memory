@@ -3,7 +3,8 @@
 不变量与词法 Index 同构（spec「索引即缓存」）：
 - 活动记忆必被索引（内容 hash 变更才重编码——feedback 只动 conf/uses，零编码成本）；
 - 归档记忆必不在索引；
-- 缓存缺失/损坏/带外增删 ⇒ 经注入的 scan_pairs 全量重建（千条级分钟量级）。
+- 缓存缺失 ⇒ 全量重建（无 diff 基线）；带外增删 ⇒ 增量对账，只编码 diff——
+  跨进程小写入（另一宿主 write/feedback 一条）不再放大成全库重编码。
 
 降级契约：embedder=None（未装 vec extra / 模型缺失）时全部动词退化为 no-op /
 空结果，检索自动退纯词面——检索降级不报错。写入路径同样吞缓存故障（索引可
@@ -90,15 +91,17 @@ class VectorIndex:
             self.rebuild(self._scan_pairs())
 
     def _ensure_fresh(self) -> None:
-        """读路径自愈：db 缺失/损坏 ⇒ 重建；活动区目录带外增删 ⇒ 重建。
+        """读路径自愈：db 缺失 ⇒ 全量重建（无 diff 基线）；活动区带外增删 ⇒ 增量对账。
 
-        重建失败保持静默（no-op），下次操作重试——宁缺勿炸。
+        对账失败保持静默（no-op），下次操作重试——宁缺勿炸。
         """
         if not self._usable():
             return
         stamp = self._db_stamp()
-        if stamp is None or self._stale(stamp):
+        if stamp is None:
             self.rebuild(self._scan_pairs())
+        elif self._stale(stamp):
+            self._reconcile()
 
     def _db_stamp(self) -> int | None:
         try:
@@ -126,6 +129,42 @@ class VectorIndex:
         except OSError:
             return False
         return False
+
+    def _reconcile(self) -> None:
+        """带外增删的增量对账：只编码 diff（新增/内容变更），未变更零编码。
+
+        跨进程写入的读路径自愈从「全库重编码」降为「变更条数 × 单条编码」——
+        另一宿主写一条记忆后，本进程的下一次 search 只等这一条的编码。
+        已消失（删除/转入归档）的条目移除向量行；内容未变仅 rel_path 漂移
+        （手编挪位）只更新 meta。故障保持静默（宁缺勿炸），下次读路径重试。
+        """
+        db = self._connect()
+        if db is None:
+            return
+        try:
+            active = [(mem, rel) for mem, rel in self._scan_pairs() if not mem.archived]
+            known = {
+                mid: (content_hash, rel_path)
+                for mid, content_hash, rel_path in db.execute(
+                    "SELECT mem_id, content_hash, rel_path FROM meta"
+                )
+            }
+            active_ids = {mem.id for mem, _ in active}
+            for mid in known:
+                if mid not in active_ids:
+                    self._remove(db, mid)
+            for mem, rel in active:
+                entry = known.get(mem.id)
+                if entry is not None and entry[0] == _content_hash(mem):
+                    if entry[1] != rel:
+                        db.execute("UPDATE meta SET rel_path = ? WHERE mem_id = ?", (rel, mem.id))
+                    continue
+                self._upsert(db, mem, rel)
+            db.commit()
+            # 对账落盘后刷新基线，与 sync/rebuild 同款语义（避免自触发 stale）
+            self._rebuilt_stamp = self._db_stamp()
+        except (sqlite3.DatabaseError, RuntimeError, OSError):
+            self._discard(db)
 
     # ---------- interface ----------
 
