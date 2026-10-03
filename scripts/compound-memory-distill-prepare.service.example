@@ -1,0 +1,12 @@
+# systemd user service 模板：跑一次蒸馏准备（占位符 __REPO__/__UV__/__ROOT__ 经 sed 填充，见 README）。
+# 与 .timer 搭配使用；安装到 ~/.config/systemd/user/ 后：
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now compound-memory-distill-prepare.timer
+[Unit]
+Description=compound-memory distill-prepare (deterministic distill plan)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh __REPO__/scripts/distill-prepare.sh
+Environment=UV_BIN=__UV__
+Environment=COMPOUND_MEMORY_ROOT=__ROOT__

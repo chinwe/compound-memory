@@ -1,0 +1,4 @@
+# cron 示例：每天 09:00 跑一次蒸馏准备（占位符 __REPO__/__UV__/__ROOT__ 经 sed 填充，见 README）。
+# 注意：cron 不补跑睡眠/关机错过的计划——需要补跑语义时选 launchd 或 systemd timer。
+# 安装：crontab -e 加入下行（sed 填充后）。
+0 9 * * * UV_BIN=__UV__ COMPOUND_MEMORY_ROOT=__ROOT__ /bin/sh __REPO__/scripts/distill-prepare.sh >> __ROOT__/distill/prepare.log 2>&1
