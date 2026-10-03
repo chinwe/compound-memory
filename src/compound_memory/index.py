@@ -3,7 +3,7 @@
 不变量在此唯一归属：活动记忆必被索引，归档记忆必不在索引。
 缓存文件缺失或损坏 ⇒ 经注入的 scan_pairs 全量重建——降级到慢，绝不报错。
 活性是 store 级而非进程级：读路径检测跨进程缓存更新（重载）与带外目录
-变更（重建）；手编已有文件的内容不改目录 mtime，那条路走显式 rebuild。
+变更（增量对账，只应用 diff）；手编已有文件的内容不改目录 mtime，那条路走显式 rebuild。
 检索文本知识来自 scoring.doc_text（单一定义点）。
 """
 
@@ -64,7 +64,8 @@ class Index:
         1. 缺失/损坏 ⇒ 全量重建；
         2. 缓存文件 mtime 变了（其他进程写过）⇒ 丢弃内存态重载；
         3. 任一 ns/type 目录 mtime 晚于缓存文件（带外新增/删除 .md）
-           ⇒ 缓存落后于活动区，全量重建。
+           ⇒ 增量对账：scan 后只更新 diff 的条目（与 VectorIndex._reconcile
+           同构，perf-bench：千条库带外写后首查的大头）。
         """
         self._ensure_live()
         stamp = self._cache_stamp()
@@ -76,7 +77,7 @@ class Index:
                 return
             stamp = self._loaded_stamp if self._loaded_stamp is not None else stamp
         if stamp is not None and self._dirs_newer_than(stamp):
-            self.rebuild(self._scan_pairs())
+            self._reconcile()
 
     def _dirs_newer_than(self, cache_stamp: int) -> bool:
         """活动区目录在缓存落盘后发生过增删（新增/删除文件会更新父目录 mtime）。"""
@@ -94,13 +95,45 @@ class Index:
                 type_dirs = [d for d in ns_dir.iterdir() if d.is_dir()]
             except OSError:
                 continue
-            for t_dir in type_dirs:
-                try:
-                    if t_dir.stat().st_mtime_ns > cache_stamp:
-                        return True
-                except OSError:
-                    continue
+        for t_dir in type_dirs:
+            try:
+                if t_dir.stat().st_mtime_ns > cache_stamp:
+                    return True
+            except OSError:
+                continue
         return False
+
+    def _reconcile(self) -> None:
+        """带外增删的增量对账：反转缓存出 rel→tokens 基线，scan 后只应用 diff。
+
+        与 VectorIndex._reconcile 同构——带外写一条不再放大成全库重建
+        （scan + tokenize + tokens.json 全量重写，千条库秒级）。diff 应用在
+        内存态完成后一次落盘；缓存与全量重建是集合等价的（rels 列表顺序
+        不保证一致，candidates 的 sorted 输出不受影响）。
+        """
+        index = self._load()
+        known: dict[str, set[str]] = {}
+        for tok, rels in index.items():
+            for rel in rels:
+                known.setdefault(rel, set()).add(tok)
+        active: dict[str, set[str]] = {}
+        for mem, rel in self._scan_pairs():
+            if not mem.archived:
+                active[rel] = set(tokenize(doc_text(mem)))
+        changed = False
+        for rel, tokens in active.items():
+            if known.get(rel) == tokens:
+                continue
+            self._purge(rel)
+            for tok in tokens:
+                index.setdefault(tok, []).append(rel)
+            changed = True
+        for rel in known:
+            if rel not in active:
+                self._purge(rel)
+                changed = True
+        if changed:
+            self._save()
 
     def _save(self) -> None:
         # 目录可能被外部整体移走（测试模拟缓存丢失、或人为 rm -rf index/），写前确保存在

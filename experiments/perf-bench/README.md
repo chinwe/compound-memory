@@ -71,15 +71,26 @@ rglob 本身比预估便宜（find 命中即返回，平均只遍历半棵目录
 yaml parse 才是每次 search 固定成本的大头——这也是宽查询（大候选集）最贵的
 原因。
 
+### 词法增量对账的对照（2026-10-03，如实记录：收益有限）
+
+词法 `Index._ensure_fresh` 的带外自愈同样改为增量对账（与向量侧同构，
+对账结果与全量重建集合等价）后，reconcile 场景**没有可测改善**
+（N=1000：5396ms → 5470ms，噪音内）。原因：对账消掉的只是 tokens.json
+全量重写（~0.2s），路径上真正的大头是**两遍 `scan_pairs` 的 yaml parse**
+（~3-4s，向量对账、词法对账各 scan 一遍）+ 全量 tokenize。词法对账仍保留：
+纯词面宿主的自愈省掉全量 json 写、tokens.json 重写成本不再随 N 增长，
+且两缓存机制同构。**下一个真正的杠杆**是让 scan 便宜：`parse` 的 yaml
+快速路径（平面键值 frontmatter 跳过 safe_load，怪文件回退）或一次 search
+内两缓存共享一遍 scan。
+
 ## 已知观察（基线暴露，待后续处理）
 
 - ~~向量召回的 mem 解析是 O(候选×N)~~ **已修**：直读 rel_path（见上方对照）。
   `_active_neighbors` 仍逐 hit `find()`（links 只存 id、无现成路径），5 hits
   成本约为 KNN 路的 1/3，暂留。
-- **reconcile 千条级 ~6s**：向量增量对账本身只编码 diff，但同一读路径还含
-  词法 Index 全量重建（scan + tokenize + tokens.json 重写）与两遍
-  `scan_pairs` 全库 parse；千条级词法自愈成为新的大头，词法增量对账是
-  下一个候选优化。
+- **reconcile 千条级 ~5.5s**：向量增量对账只编码 diff（P1 收益），但同一
+  读路径含两遍 `scan_pairs` 全库 parse（向量对账 + 词法对账各一遍）与全量
+  tokenize——scan 的 yaml parse 是压倒性大头，见上方词法对账对照一节。
 - `write` 在 N=500 档高于 N=1000：git commit 时长抖动（5 样本中位数），
   非趋势，写入路径整体不随 N 显著增长。
 - `feedback` ~200ms 恒定：大头是 sqlite commit fsync + 词法缓存全量重写，

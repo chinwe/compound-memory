@@ -18,6 +18,9 @@ import pytest
 from compound_memory.index import Index
 from compound_memory.model import Memory
 from compound_memory.scoring import tokenize
+from compound_memory.storage import MemoryStore
+
+from conftest import sandbox_safe_remove
 
 
 def make_mem(seq: int, content: str, archived: bool = False) -> Memory:
@@ -175,3 +178,47 @@ class TestStoreSeam:
         )
         hits = store.search("redis queue")
         assert "20260101_overlap" in [h["id"] for h in hits]
+
+
+class TestIncrementalReconcile:
+    """带外增删走增量对账（不再全量重建）：正确性基准 = 与全量重建集合等价。
+
+    对账是性能优化，测试钉的是用户可见行为不变：新增可召回、删除即消失、
+    挪位 relocates，且对账后的缓存内容与 rebuild 逐集合一致。
+    """
+
+    def _cache_map(self, store: MemoryStore) -> dict[str, set[str]]:
+        raw = json.loads((store.root / "index" / "tokens.json").read_text(encoding="utf-8"))
+        return {tok: set(rels) for tok, rels in raw.items()}
+
+    def test_reconcile_matches_full_rebuild(self, store: MemoryStore):
+        """带外加删后对账的缓存与全量重建集合等价——增量的正确性基准。"""
+        store.write(content="redis cache eviction policy", type="fact", source="agent-a")
+        gone = store.write(content="memcached threading model", type="fact", source="agent-a")
+        sandbox_safe_remove(store.ns_root / "_shared" / "fact" / f"{gone['id']}.md")
+        hand = store.ns_root / "_shared" / "fact" / "20260101_handmade.md"
+        hand.write_text(
+            "---\nid: 20260101_handmade\nns: _shared\ntype: fact\n"
+            "source: agent-x\ncreated: 2026-01-01\n---\n\nzabbix queue depth alerts\n",
+            encoding="utf-8",
+        )
+        store.search("redis cache")  # 触发带外自愈（对账路径）
+        reconciled = self._cache_map(store)
+        store.index.rebuild(store._scan_pairs())
+        assert reconciled == self._cache_map(store)
+
+    def test_out_of_band_delete_drops_from_recall(self, store: MemoryStore):
+        """带外删除：对账后不再召回（词条清除，不残留）。"""
+        kept = store.write(content="redis cache eviction policy", type="fact", source="agent-a")
+        gone = store.write(content="memcached threading model", type="fact", source="agent-a")
+        sandbox_safe_remove(store.ns_root / "_shared" / "fact" / f"{gone['id']}.md")
+        assert store.search("memcached threading") == []
+        assert [h["id"] for h in store.search("redis cache")] == [kept["id"]]
+
+    def test_out_of_band_move_relocates_recall(self, store: MemoryStore):
+        """手编挪位（换 type 目录、内容不变）：对账后新位置仍召回。"""
+        res = store.write(content="docker network bridge mode", type="fact", source="agent-a")
+        src = store.ns_root / "_shared" / "fact" / f"{res['id']}.md"
+        dst = store.ns_root / "_shared" / "episode" / src.name
+        os.replace(src, dst)
+        assert [h["id"] for h in store.search("docker network bridge")] == [res["id"]]
