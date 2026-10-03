@@ -48,20 +48,20 @@ def memory_write(
     key: str | None = None,
     links: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Write a memory. type: episode|fact|insight|skill; source: writing agent id; ns: '_shared' or 'agent-<name>'. key: stable id for fact/insight (enables conflict review). Returns the stored memory; `conflict: true` means a different version with the same key exists and a review entry was queued."""
+    """Write a memory. type: episode|fact|insight|skill; source: writing agent id; ns: '_shared' or 'agent-<name>'. key: stable id for fact/insight (enables conflict review). Write only stable facts (preferences, conventions, environment constraints, pitfalls), not session-temporary details; prefer reusing an existing key over a new entry. Returns the stored memory; `conflict: true` means a different version with the same key exists and a review entry was queued."""
     return _store_or_configure().write(content=content, type=type, source=source, ns=ns, key=key, links=links)
 
 
 @mcp.tool()
 def memory_search(query: str, ns: str = "_shared", top_k: int = 5, include_neighbors: bool = True) -> dict[str, Any]:
-    """Search memories. Fuses lexical (BM25) and, when the vec extra + model are installed, vector (BGE) recall via RRF; otherwise falls back to lexical only. Confidence/recency/type act only as a small tie-break. Default namespace is _shared. Each hit embeds up to 3 trimmed one-hop neighbors (active only) unless include_neighbors=False. Returns {'hits': [...]} sorted by score."""
+    """Search memories. Fuses lexical (BM25) and, when the vec extra + model are installed, vector (BGE) recall via RRF; otherwise falls back to lexical only. Confidence/recency/type act only as a small tie-break. Default namespace is _shared. Each hit embeds up to 3 trimmed one-hop neighbors (active only) unless include_neighbors=False. Returns {'hits': [...]} sorted by score. Compounding rule: after actually adopting a hit, call memory_feedback (agent = your source id) — skipped feedbacks leave the store static."""
     hits = _store_or_configure().search(query=query, ns=ns, top_k=top_k, include_neighbors=include_neighbors)
     return {"hits": hits, "count": len(hits)}
 
 
 @mcp.tool()
 def memory_get(mem_id: str, include_neighbors: bool = True) -> dict[str, Any]:
-    """Fetch a memory by id; one-hop link neighbors are included by default."""
+    """Fetch a memory by id; one-hop link neighbors are included by default. After adopting it, call memory_feedback (agent = your source id)."""
     return _store_or_configure().get(mem_id, include_neighbors=include_neighbors)
 
 
@@ -73,7 +73,7 @@ def memory_link(id_a: str, id_b: str) -> dict[str, Any]:
 
 @mcp.tool()
 def memory_feedback(mem_id: str, agent: str) -> dict[str, Any]:
-    """Report that a memory was actually used. Increments uses, raises confidence (+0.1; extra +0.15 when a different agent validates). Archiving is reversed on feedback. MUST be called after a memory is adopted."""
+    """Report that a memory was actually used. Increments uses, raises confidence (+0.1; extra +0.15 when a different agent validates). agent must be your own source agent id. Archiving is reversed on feedback. MUST be called after a memory is adopted — this closes the compounding loop."""
     return _store_or_configure().feedback(mem_id, agent)
 
 
