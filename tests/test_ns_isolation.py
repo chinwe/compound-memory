@@ -179,6 +179,75 @@ class TestReviveNamespaceRule:
         assert store.revive(old["id"], reader=OWNER)["archived"] is False
 
 
+class TestAttestation:
+    """进程侧身份证明：身份等于进程（COMPOUND_MEMORY_AGENT_ID），不等于自称。
+
+    三条裁决规则：缺省自动补进程身份（诚实缺省）、等价形式归一化、
+    矛盾响亮报错——连带关闭「_shared 伪造 source 污染跨 Agent 验证」的口子。
+    """
+
+    @pytest.fixture
+    def attested(self, tmp_path) -> MemoryStore:
+        from conftest import sandbox_safe_remove
+
+        return MemoryStore(
+            tmp_path / "attested", clock=lambda: CLOCK_DATE, remover=sandbox_safe_remove, agent_id=OWNER
+        )
+
+    def test_reader_auto_filled_for_owner_ns(self, attested: MemoryStore):
+        priv = attested.write("私有草稿", type="fact", source=OWNER, ns=PRIVATE_NS)
+        hits = attested.search("私有草稿", ns=PRIVATE_NS)  # 忘带 reader：自动补进程身份
+        assert [h["id"] for h in hits] == [priv["id"]]
+
+    def test_forged_reader_rejected(self, attested: MemoryStore):
+        attested.write("私有草稿", type="fact", source=OWNER, ns=PRIVATE_NS)
+        with pytest.raises(PermissionError, match="attested agent"):
+            attested.search("私有草稿", ns=PRIVATE_NS, reader=FOREIGN)
+
+    def test_foreign_ns_denied_even_with_autofill(self, attested: MemoryStore):
+        """自动补的是进程身份：读别人的私有 ns 依旧被属主门挡住。"""
+        mem, _ = attested._write_new(
+            "workbuddy 私密",
+            type="fact",
+            source=FOREIGN,
+            ns="agent-workbuddy",
+            key=None,
+            links=None,
+            created=None,
+            confidence=None,
+            origin=None,
+        )
+        with pytest.raises(PermissionError):
+            attested.search("workbuddy 私密", ns="agent-workbuddy")
+        with pytest.raises(PermissionError):
+            attested.get(mem.id)
+
+    def test_write_source_must_match_process(self, attested: MemoryStore):
+        """attestation 连带关闭 _shared 伪造 source 的口子；等价形式归一化。"""
+        with pytest.raises(PermissionError, match="attested agent"):
+            attested.write("x", type="fact", source=FOREIGN)
+        res = attested.write("y", type="fact", source="zcode")  # 短名等价
+        assert res["source"] == OWNER  # 落库归一化为进程身份
+
+    def test_feedback_agent_must_match_process(self, attested: MemoryStore):
+        mem = attested.write("x", type="fact", source=OWNER)
+        with pytest.raises(PermissionError, match="attested agent"):
+            attested.feedback(mem["id"], FOREIGN)
+        assert attested.feedback(mem["id"], "zcode")["validated_by"] == [OWNER]
+
+    def test_unattested_keeps_self_declared(self, store: MemoryStore):
+        """回归护栏：未启用 attestation 的 store 行为与旧版完全一致。"""
+        assert store.write("x", type="fact", source=FOREIGN)["source"] == FOREIGN
+
+    def test_cli_env_attestation(self, store: MemoryStore, monkeypatch, capsys):
+        priv_id, _ = _seed(store)
+        monkeypatch.setenv("COMPOUND_MEMORY_AGENT_ID", OWNER)
+        root = ["--root", str(store.root)]
+        assert cli_main(root + ["get", priv_id]) == 0  # reader 自动补进程身份
+        capsys.readouterr()
+        assert cli_main(root + ["get", priv_id, "--reader", FOREIGN]) == 2
+
+
 class TestCliReaderFlag:
     """CLI 缺 reader 时 fail-closed（exit 2），--reader 全称/短名都放行。"""
 

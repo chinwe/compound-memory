@@ -34,10 +34,12 @@ current_store: MemoryStore
 
 
 @asynccontextmanager
-async def make_client(root: Path, git_off: bool = False):
+async def make_client(root: Path, git_off: bool = False, agent_id: str | None = None):
     """配置 server store 并开内存 client；无 git 场景经 configure 注入探测 adapter。"""
     global current_store
-    current_store = cm_server.configure(root, git=True, git_probe=(lambda: False) if git_off else None)
+    current_store = cm_server.configure(
+        root, git=True, git_probe=(lambda: False) if git_off else None, agent_id=agent_id
+    )
     async with mcp.Client(cm_server.mcp) as c:
         yield c
 
@@ -309,6 +311,29 @@ class TestNamespacePermissions:
             assert res.is_error
             ok = call(await client.call_tool("memory_feedback", {"mem_id": priv["id"], "agent": "tars"}))
             assert ok["uses"] == 1
+
+
+class TestAttestationWiring:
+    """进程身份注入（configure 的 agent_id，生产来自 COMPOUND_MEMORY_AGENT_ID）经 tool 缝生效。"""
+
+    async def test_forged_identity_rejected(self, memroot):
+        async with make_client(memroot, agent_id="agent-zcode") as client:
+            res = await client.call_tool("memory_write", {
+                "content": "x", "type": "fact", "source": "agent-a",
+            })
+            assert res.is_error
+            ok = call(await client.call_tool("memory_write", {
+                "content": "x", "type": "fact", "source": "agent-zcode",
+            }))
+            assert ok["source"] == "agent-zcode"
+
+    async def test_reader_autofilled_from_process_identity(self, memroot):
+        async with make_client(memroot, agent_id="agent-zcode") as client:
+            priv = call(await client.call_tool("memory_write", {
+                "content": "私有自动补 reader", "type": "fact", "source": "agent-zcode", "ns": "agent-zcode",
+            }))
+            hits = call(await client.call_tool("memory_search", {"query": "私有自动补", "ns": "agent-zcode"}))
+            assert [h["id"] for h in hits["hits"]] == [priv["id"]]
 
 
 class TestWithoutGit:

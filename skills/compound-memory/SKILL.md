@@ -54,6 +54,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | 搜索为空 / 召回不全 | `stats` 看记忆量；怀疑索引损坏 `rebuild-index`（缓存可随时重建，检索降级不报错） |
 | SessionStart 没注入 | hook 任何异常都静默退出；手动跑 `~/.agents/memory/hooks/session_start.py` 查输出是否为合法 `{"additionalContext": ...}` JSON |
 | 写入/读取/反馈 `PermissionError` | ns 越权：日常写读 `_shared`；读私有 `agent-*` ns 要带 `reader`（`agent-<名>` 或 `<名>`） |
+| 报 `contradicts attested agent` | 宿主已注入进程身份（`COMPOUND_MEMORY_AGENT_ID`），自报身份与之矛盾：`source`/`agent` 改填自己的 agent id，`reader` 可直接省略（自动补真值）；仍报错则核对宿主 env 配置 |
 | 写入返回 `conflict: true` | 内容与既有版本不同，已入冲突队列；裁决后把废置版本归档（frontmatter `archived: true` 移入 `archive/` 并删活动文件）再 `rebuild-index` |
 
 架构与复利机制见仓库 `README.md`，术语见 `CONTEXT.md`。

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -19,8 +20,13 @@ def _emit(payload: Any) -> None:
 
 
 def _open_store(args: argparse.Namespace) -> MemoryStore:
-    # CLI 与 server 同权：vec extra + 模型就绪即启用向量路，否则自动降级纯词面
-    return MemoryStore(Path(args.root), embedder=auto_encoder())
+    # CLI 与 server 同权：vec extra + 模型就绪即启用向量路，否则自动降级纯词面；
+    # 环境注入的进程身份（若有）同样生效——未设置时保持自报身份模式
+    return MemoryStore(
+        Path(args.root),
+        embedder=auto_encoder(),
+        agent_id=os.environ.get("COMPOUND_MEMORY_AGENT_ID") or None,
+    )
 
 
 def cmd_init(args: argparse.Namespace) -> None:

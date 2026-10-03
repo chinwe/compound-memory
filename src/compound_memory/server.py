@@ -6,6 +6,7 @@ memory_feedback 是一等公民——复利闭环依赖它。
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -24,10 +25,15 @@ def configure(
     git: bool = True,
     git_probe: Callable[[], bool] | None = None,
     embedder: Callable[[list[str]], list[list[float]]] | None = None,
+    agent_id: str | None = None,
 ) -> MemoryStore:
     global _store
     _store = MemoryStore(
-        Path(root) if root is not None else default_root(), git=git, git_probe=git_probe, embedder=embedder
+        Path(root) if root is not None else default_root(),
+        git=git,
+        git_probe=git_probe,
+        embedder=embedder,
+        agent_id=agent_id,
     )
     return _store
 
@@ -87,8 +93,9 @@ def memory_feedback(mem_id: str, agent: str) -> dict[str, Any]:
 
 def main() -> None:
     if _store is None:
-        # 生产入口自动挂向量路（vec extra + 模型就绪才生效，否则静默降级纯词面）
-        configure(embedder=auto_encoder())
+        # 生产入口自动挂向量路（vec extra + 模型就绪才生效，否则静默降级纯词面）；
+        # 宿主经 COMPOUND_MEMORY_AGENT_ID 注入进程身份，未设置则保持自报身份模式
+        configure(embedder=auto_encoder(), agent_id=os.environ.get("COMPOUND_MEMORY_AGENT_ID") or None)
     mcp.run()
 
 

@@ -48,6 +48,7 @@ uv run --directory <仓库> compound-memory init
 
 - **`source` agent id**：WorkBuddy → `agent-workbuddy`；ZCode → `agent-zcode`；Claude Code → `agent-claude`；DeepSeek Harness → `agent-deepseek`。id 用宿主标识而非个性化名字（如 TARS），保证稳定不随命名变化；跨 Agent 验证加分依赖 id 互不相同。
 - **namespace**：默认写 `_shared`（全体可见）；`agent-<name>` 是私有区，仅属主可写、读/反馈也须属主身份（`reader`/`agent` 填自己的 agent id，缺省即拒绝）。日常任务一律用默认值即可。
+- **进程身份注入（建议必配）**：宿主配置的 `env` 加 `COMPOUND_MEMORY_AGENT_ID: <本宿主 agent id>`。注入后存储层以进程身份裁决一切自报身份（source/reader/agent）：缺省自动补真值、等价形式（`agent-x`/`x`）归一化、矛盾响亮拒绝——模型谎报身份失效，伪造 source 污染跨 Agent 验证的通道一并关闭。未注入则保持自报身份模式（协作边界，非安全边界）。
 - **写什么**：稳定事实（用户偏好、项目约定、环境限制、踩坑结论）才写；一次性、会话内临时信息不写。内容用中文，key 用稳定英文短横线标识（如 `user-tts`、`proj-xxx`）。
 
 > 这三条约定与「采纳后必须 feedback」铁律已内嵌在 5 个 MCP tool 的 description 里（server.py），宿主即便不注入本规范，agent 读工具说明也能维持复利闭环；注入规范用于进一步收紧写入质量。
@@ -66,7 +67,8 @@ uv run --directory <仓库> compound-memory init
       "command": "~/.local/bin/uv",
       "args": ["run", "--directory", "<仓库>", "compound-memory-server"],
       "env": {
-        "COMPOUND_MEMORY_ROOT": "~/.agents/memory"
+        "COMPOUND_MEMORY_ROOT": "~/.agents/memory",
+        "COMPOUND_MEMORY_AGENT_ID": "agent-workbuddy"
       }
     }
   }
@@ -97,7 +99,8 @@ uv run --directory <仓库> compound-memory init
         "command": "~/.local/bin/uv",
         "args": ["run", "--directory", "<仓库>", "compound-memory-server"],
         "env": {
-          "COMPOUND_MEMORY_ROOT": "~/.agents/memory"
+          "COMPOUND_MEMORY_ROOT": "~/.agents/memory",
+          "COMPOUND_MEMORY_AGENT_ID": "agent-zcode"
         }
       }
     }
@@ -156,7 +159,8 @@ claude mcp add compound-memory \
       "command": "~/.local/bin/uv",
       "args": ["run", "--directory", "<仓库>", "compound-memory-server"],
       "env": {
-        "COMPOUND_MEMORY_ROOT": "~/.agents/memory"
+        "COMPOUND_MEMORY_ROOT": "~/.agents/memory",
+        "COMPOUND_MEMORY_AGENT_ID": "agent-claude"
       }
     }
   }
@@ -182,6 +186,7 @@ dsh 通过 MCP client 插件 `@deepseek-ai/dsh-mcp-client` 接入，一个插件
       args: ['run', '--directory', '<仓库>', 'compound-memory-server']
       env:
         COMPOUND_MEMORY_ROOT: ~/.agents/memory
+        COMPOUND_MEMORY_AGENT_ID: agent-deepseek
       failOnStartupError: true
 ```
 

@@ -18,7 +18,7 @@ import subprocess
 import uuid
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, overload
 
 import yaml
 
@@ -115,6 +115,7 @@ class MemoryStore:
         remover: Callable[[Path], None] | None = None,
         git_probe: Callable[[], bool] | None = None,
         embedder: Callable[[list[str]], list[list[float]]] | None = None,
+        agent_id: str | None = None,
     ) -> None:
         self.root = Path(root)
         self.ns_root = self.root / "namespaces"
@@ -126,6 +127,10 @@ class MemoryStore:
         self.git_enabled = git and (git_probe or _git_available)()
         self._clock = clock
         self._remover = remover or _unlink_file
+        # 进程侧身份证明：agent_id 非空时（宿主经 COMPOUND_MEMORY_AGENT_ID 注入），
+        # 所有调用方自报身份（source/reader/agent）必须与其一致，缺省 reader 自动补真值。
+        # 只由 server/cli 入口显式传入，store 自身不读环境变量（测试与库调用保持确定性）。
+        self.agent_id = agent_id
         self._ensure_layout()
         if self.git_enabled and not (self.root / ".git").exists():
             # init commit 仅限首次创建：__init__ 在每次 CLI/MCP 启动都会执行，
@@ -254,6 +259,33 @@ class MemoryStore:
             f"Pass {role}={ns!r} or {role}={owner!r} if you are that host."
         )
 
+    @overload
+    def _resolve_identity(self, value: str, role: str) -> str: ...
+
+    @overload
+    def _resolve_identity(self, value: None, role: str) -> str | None: ...
+
+    def _resolve_identity(self, value: str | None, role: str) -> str | None:
+        """身份裁决：进程注入（agent_id）优先于调用方自报。
+
+        - 未启用 attestation（agent_id 为空）⇒ 原样放行，行为同旧版（自报身份）。
+        - 调用方缺省 ⇒ 自动补进程身份（诚实缺省，如 search 私有 ns 忘带 reader）。
+        - 调用方与进程身份等价（agent-x / x 两种形式）⇒ 归一化为 agent_id，
+          保证 validated_by 等记录字段去重一致。
+        - 调用方与进程身份矛盾 ⇒ 响亮报错（伪造/配错宿主都该炸，不该静默改写）。
+        """
+        if self.agent_id is None:
+            return value
+        if value is None:
+            return self.agent_id
+        accepted = {self.agent_id, self.agent_id.removeprefix("agent-")}
+        if value in accepted:
+            return self.agent_id
+        raise PermissionError(
+            f"{role} {value!r} contradicts attested agent {self.agent_id!r} "
+            f"(COMPOUND_MEMORY_AGENT_ID); the process identity wins"
+        )
+
     def write(
         self,
         content: str,
@@ -266,6 +298,7 @@ class MemoryStore:
         confidence: float | None = None,
         origin: str | None = None,
     ) -> dict[str, Any]:
+        source = self._resolve_identity(source, "source")
         mem, conflict_with = self._write_new(
             content,
             type=type,
@@ -329,6 +362,7 @@ class MemoryStore:
         return result
 
     def get(self, mem_id: str, include_neighbors: bool = True, reader: str | None = None) -> dict[str, Any]:
+        reader = self._resolve_identity(reader, "reader")
         mem = self.find(mem_id)
         if mem is None:
             return {"found": False}
@@ -348,6 +382,7 @@ class MemoryStore:
         return result
 
     def feedback(self, mem_id: str, agent: str) -> dict[str, Any]:
+        agent = self._resolve_identity(agent, "agent")
         mem = self.find(mem_id)
         if mem is None:
             return {"found": False}
@@ -408,6 +443,7 @@ class MemoryStore:
         与 write 的越权抛 PermissionError 对称）；ns=_shared 时忽略。
         """
         self._check_ns(ns)
+        reader = self._resolve_identity(reader, "reader")
         self._check_ns_owner(ns, reader)
         now = self._clock()
         q_tokens = tokenize(query)
@@ -491,6 +527,7 @@ class MemoryStore:
         return archived
 
     def revive(self, mem_id: str, reader: str | None = None) -> dict[str, Any]:
+        reader = self._resolve_identity(reader, "reader")
         mem = self.find(mem_id)
         if mem is None:
             return {"found": False}
@@ -539,6 +576,7 @@ class MemoryStore:
         reader：候选带正文返回，扫私有 ns 须属主（与 get/search 同规则）。
         """
         self._check_ns(ns)
+        reader = self._resolve_identity(reader, "reader")
         self._check_ns_owner(ns, reader)
         now = self._clock()
         cands: list[Memory] = []
@@ -599,6 +637,7 @@ class MemoryStore:
         源批量归档，收进一次 commit。源任一不存在 ⇒ 整体不落库（found: False）。
         产物与现存 fact/insight 的 key 冲突走既有 review 队列机制，不特殊对待。
         """
+        source = self._resolve_identity(source, "source")
         source_ids = list(dict.fromkeys(source_ids))  # 去重保序：重复源只归档一次
         sources = [self.find(mid) for mid in source_ids]
         missing = [mid for mid, mem in zip(source_ids, sources) if mem is None]
