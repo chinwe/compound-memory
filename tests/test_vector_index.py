@@ -142,13 +142,14 @@ class TestIncrementalReconcile:
         b = make_vec_store(tmp_path, embedder_b)
         a.write(content="redis persistence 配置要点", type="fact", source="agent-a")
         a.write(content="nginx buffer 大小调优", type="fact", source="agent-a")
-        # B 首查：db 缺失 ⇒ 无 diff 基线，全量重建（历史分支，保持不变）
+        # B 首查：db 缺失 ⇒ 无 diff 基线，全量重建（历史分支，保持不变）。
+        # 编码顺序 = scan_pairs 的文件名序（id 含随机 uuid 段），断言用集合不依赖顺序
         b.search("redis 持久化", include_neighbors=False)
-        assert [t.strip() for t in embedder_b.texts] == [
-            "redis 持久化",
+        assert embedder_b.texts[0] == "redis 持久化"
+        assert {t.strip() for t in embedder_b.texts[1:]} == {
             "redis persistence 配置要点",
             "nginx buffer 大小调优",
-        ]
+        }
         res = a.write(content="docker prune 清理策略", type="fact", source="agent-a")
         hits = b.search("容器磁盘清理", include_neighbors=False)
         assert embedder_b.texts[-1].strip() == "docker prune 清理策略"  # 对账只编码新增那条
