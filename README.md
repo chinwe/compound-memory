@@ -118,4 +118,4 @@ PyPI 版本不可重传，tag 必须与 `pyproject.toml` 的 `version` 一致（
 
 1. **一次性配置**（PyPI → 项目 → Publishing）：owner `chinwe`、repo `compound-memory`、workflow `release.yml`、environment `pypi`。首次发布时项目尚不存在，在 pypi.org 用"pending publisher"预注册即可。
 2. **发布**：`git tag v0.1.0 && git push origin v0.1.0` → `release.yml` 自动 build + `uv publish`。
-3. 发布后 `uvx compound-memory-server` 即为通用安装形态（MCP 配置里的 `command` 也可换成 `uvx`，不再依赖仓库克隆路径）。
+3. 发布后 `uvx --from compound-memory compound-memory-server` 即为通用安装形态（`uvx` 的参数是包名，script 名不同须用 `--from`；MCP 配置里的 `command` 换成 uvx 后不再依赖仓库克隆路径）。
