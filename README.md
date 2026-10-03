@@ -110,4 +110,12 @@ uv run pytest tests/ -q     # 85 tests（MCP tool 边界 + 蒸馏 + 生命周期
 uv run mypy src/compound_memory/
 ```
 
-测试缝：MCP tool 边界（`mcp.Client(server)` 内存直连，无子进程）+ 核心模块单测（scoring / index / store 运维面）。
+测试缝：MCP tool 边界（`mcp.Client(server)` 内存直连，无子进程）+ 核心模块单测（scoring / index / store 运维面）。CI 在 Python 3.11/3.12/3.13 矩阵上跑测试、类型检查与纯 wheel 安装冒烟。
+
+## 发布
+
+PyPI 版本不可重传，tag 必须与 `pyproject.toml` 的 `version` 一致（release workflow 有校验，不一致响亮失败）。发布走 GitHub Actions + PyPI Trusted Publisher（OIDC，免 token）：
+
+1. **一次性配置**（PyPI → 项目 → Publishing）：owner `chinwe`、repo `compound-memory`、workflow `release.yml`、environment `pypi`。首次发布时项目尚不存在，在 pypi.org 用"pending publisher"预注册即可。
+2. **发布**：`git tag v0.1.0 && git push origin v0.1.0` → `release.yml` 自动 build + `uv publish`。
+3. 发布后 `uvx compound-memory-server` 即为通用安装形态（MCP 配置里的 `command` 也可换成 `uvx`，不再依赖仓库克隆路径）。

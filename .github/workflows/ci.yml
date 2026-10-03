@@ -8,10 +8,16 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # requires-python 声称 >=3.11:矩阵让它成为被验证的承诺而非推断
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
 
       - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
         run: uv sync --extra dev
@@ -20,4 +26,18 @@ jobs:
         run: uv run pytest tests/ -q
 
       - name: Type check
+        # mypy 的 python_version 固定 3.13(见 pyproject),跑一次即可
+        if: matrix.python-version == '3.13'
         run: uv run mypy src/compound_memory/
+
+      - name: Wheel smoke test
+        # 发布标准的固化:纯 wheel(无 dev/vec extra)必须可安装、CLI 与 server 可跑
+        run: |
+          uv build
+          uv venv .smoke-venv
+          uv pip install --python .smoke-venv/bin/python dist/*.whl
+          export COMPOUND_MEMORY_ROOT=.smoke-root
+          .smoke-venv/bin/compound-memory init
+          .smoke-venv/bin/compound-memory write "ci smoke entry" episode agent-ci > /dev/null
+          .smoke-venv/bin/compound-memory search "ci smoke" | grep -q "ci smoke entry"
+          .smoke-venv/bin/compound-memory-server < /dev/null
