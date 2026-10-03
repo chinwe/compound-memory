@@ -313,6 +313,17 @@ class TestNamespacePermissions:
             assert ok["uses"] == 1
 
 
+class TestSingleCopySerialization:
+    """structured_output=False：载荷只走 text 一份，无 structuredContent 双份下发。"""
+
+    async def test_no_structured_content_duplication(self, memroot):
+        async with make_client(memroot) as client:
+            res = await client.call_tool("memory_search", {"query": "anything"})
+            assert res.structured_content is None
+            assert len(res.content) == 1
+            assert res.content[0].type == "text"
+
+
 class TestAttestationWiring:
     """进程身份注入（configure 的 agent_id，生产来自 COMPOUND_MEMORY_AGENT_ID）经 tool 缝生效。"""
 

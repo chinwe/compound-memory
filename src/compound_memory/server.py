@@ -2,6 +2,10 @@
 
 恰好 5 个 tool：memory_write / memory_search / memory_get / memory_link / memory_feedback。
 memory_feedback 是一等公民——复利闭环依赖它。
+
+所有 tool 声明 structured_output=False（单份序列化）：mcp 2.x 会从 `dict[str, Any]`
+注解推断 outputSchema，结构化载荷与文本回退同时下发双份，撑大宿主上下文；
+关闭后只走 text 一份 JSON，形状不变。
 """
 
 from __future__ import annotations
@@ -45,7 +49,7 @@ def _store_or_configure() -> MemoryStore:
     return _store
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def memory_write(
     content: str,
     type: str,
@@ -58,7 +62,7 @@ def memory_write(
     return _store_or_configure().write(content=content, type=type, source=source, ns=ns, key=key, links=links)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def memory_search(
     query: str,
     ns: str = "_shared",
@@ -73,19 +77,19 @@ def memory_search(
     return {"hits": hits, "count": len(hits)}
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def memory_get(mem_id: str, include_neighbors: bool = True, reader: str | None = None) -> dict[str, Any]:
     """Fetch a memory by id; one-hop link neighbors are included by default. reader: your own source agent id — required when the memory lives in a private 'agent-<name>' namespace (readable only by its owner host). After adopting it, call memory_feedback (agent = your source id)."""
     return _store_or_configure().get(mem_id, include_neighbors=include_neighbors, reader=reader)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def memory_link(id_a: str, id_b: str) -> dict[str, Any]:
     """Create a bidirectional link between two memories (compounding source #2: association). Both memories must live in the same namespace; cross-namespace links are rejected."""
     return _store_or_configure().link(id_a, id_b)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def memory_feedback(mem_id: str, agent: str) -> dict[str, Any]:
     """Report that a memory was actually used. Increments uses, raises confidence (+0.1; extra +0.15 when a different agent validates). agent must be your own source agent id. Memories in a private 'agent-<name>' namespace accept feedback only from the owner (agent = 'agent-<name>' or '<name>'). Archiving is reversed on feedback. MUST be called after a memory is adopted — this closes the compounding loop."""
     return _store_or_configure().feedback(mem_id, agent)
