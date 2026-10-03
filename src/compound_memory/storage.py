@@ -28,6 +28,14 @@ from .review_queue import ReviewQueue
 from .scoring import age_days, doc_text, dup_similarity_matrix, rank, recency_age, tokenize
 from .vector_index import VectorIndex
 
+# frontmatter 解析 loader：C 扩展（libyaml）快 ~5x 且与 SafeLoader 语义逐位一致
+# （perf-bench：scan_pairs 的 yaml parse 是对账/统计读路径的最大单项），
+# 无 C 扩展的安装回退纯 Python loader——行为不变，只慢
+try:
+    from yaml import CSafeLoader as _SafeLoader
+except ImportError:  # pragma: no cover - 取决于 PyYAML 是否带 C 扩展
+    from yaml import SafeLoader as _SafeLoader  # type: ignore[assignment]
+
 # 向量召回候选池：词面候选 ∪ 向量 KNN 前 VEC_POOL 条（ns/活性过滤后）
 VEC_POOL = 16
 
@@ -195,7 +203,7 @@ class MemoryStore:
         if not text.startswith("---\n"):
             raise ValueError(f"bad memory file (missing frontmatter): {path}")
         _, fm, body = text.split("---\n", 2)
-        meta = yaml.safe_load(fm) or {}
+        meta = yaml.load(fm, Loader=_SafeLoader) or {}
         meta["content"] = body.strip()
         defaults = {
             f.name: f.default

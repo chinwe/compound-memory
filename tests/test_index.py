@@ -222,3 +222,24 @@ class TestIncrementalReconcile:
         dst = store.ns_root / "_shared" / "episode" / src.name
         os.replace(src, dst)
         assert [h["id"] for h in store.search("docker network bridge")] == [res["id"]]
+
+
+class TestFrontmatterLoaderParity:
+    """C 扩展 loader 与纯 Python SafeLoader 语义逐位一致——换 loader 是纯性能改动。"""
+
+    # 覆盖 _save round-trip 的类型面：引号保护日期串、float/int、bool、
+    # 列表、null、含中文与冒号的值（safe_dump 会加引号）
+    SAMPLES = [
+        "id: 20261003_x\nns: _shared\ntype: fact\nsource: 'agent-zcode'\n"
+        "created: '2026-10-03'\nconfidence: 0.75\nuses: 3\nttl: 180\n",
+        "id: y\nlinks:\n- a\n- b\nvalidated_by:\n- agent-a\n- agent-b\narchived: true\n",
+        "id: z\nkey: 'proj/向量: 索引'\norigin: null\nlast_used: '2026-10-01'\nconfidence: 1.0\n",
+    ]
+
+    def test_c_loader_matches_safe_loader(self):
+        import yaml
+
+        if not yaml.__with_libyaml__:
+            pytest.skip("PyYAML built without libyaml (C loader absent)")
+        for fm in self.SAMPLES:
+            assert yaml.load(fm, Loader=yaml.CSafeLoader) == yaml.load(fm, Loader=yaml.SafeLoader)

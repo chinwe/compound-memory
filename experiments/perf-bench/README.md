@@ -83,14 +83,33 @@ yaml parse 才是每次 search 固定成本的大头——这也是宽查询（�
 快速路径（平面键值 frontmatter 跳过 safe_load，怪文件回退）或一次 search
 内两缓存共享一遍 scan。
 
+### parse 切 CSafeLoader 的对照（2026-10-03，全读路径受益）
+
+micro-bench 证实 `scan_pairs` 的大头是 `yaml.safe_load`（真实 frontmatter
+1.35ms/条，千条 1.35s；读文件本身仅 0.05ms/条）。换 libyaml 的
+`CSafeLoader`（语义逐位一致，缺失时回退纯 Python loader）后（N=1000）：
+
+| scenario | 上轮 | CSafeLoader |
+|---|---|---|
+| search lexical narrow, no neighbors | 460.2ms | 268.8ms（−42%） |
+| search lexical broad, default | 1771.6ms | 1011.3ms（−43%） |
+| search vector semantic, default | 123.5ms | 75.9ms（−39%） |
+| reconcile after oob write | 5469.7ms | 2974.4ms（−46%） |
+| stats full scan | 1.99s | 0.82s（−59%） |
+| seed n memories | 94.0s | 55.1s（−41%，write 的 key 冲突检查也走 parse） |
+
+（对照原基线，千条级累计：narrow −51%、broad −56%、semantic −64%、
+reconcile −51%。）
+
 ## 已知观察（基线暴露，待后续处理）
 
 - ~~向量召回的 mem 解析是 O(候选×N)~~ **已修**：直读 rel_path（见上方对照）。
   `_active_neighbors` 仍逐 hit `find()`（links 只存 id、无现成路径），5 hits
   成本约为 KNN 路的 1/3，暂留。
-- **reconcile 千条级 ~5.5s**：向量增量对账只编码 diff（P1 收益），但同一
-  读路径含两遍 `scan_pairs` 全库 parse（向量对账 + 词法对账各一遍）与全量
-  tokenize——scan 的 yaml parse 是压倒性大头，见上方词法对账对照一节。
+- **reconcile 千条级 ~3.0s**（CSafeLoader 后，原 6.1s）：剩余构成是两遍
+  scan（~0.5s）+ 全量 tokenize + 向量 diff 编码 + 查询编码；再往下压需要
+  两缓存共享一遍 scan（省 ~0.25s）或 token 缓存，收益已进入小头区间，
+  观察即可。
 - `write` 在 N=500 档高于 N=1000：git commit 时长抖动（5 样本中位数），
   非趋势，写入路径整体不随 N 显著增长。
 - `feedback` ~200ms 恒定：大头是 sqlite commit fsync + 词法缓存全量重写，
