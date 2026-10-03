@@ -179,20 +179,84 @@ class TestReviveNamespaceRule:
         assert store.revive(old["id"], reader=OWNER)["archived"] is False
 
 
+class TestDualChannelSearch:
+    """默认检索双通道（ns 缺省 = _shared ∪ 自有私有 ns）。
+
+    动机：私有条目被 ns 硬隔离后，调用方"忘记补搜私有 ns"已两次造成漏召回
+    （问自身称呼答错名字）。保障下沉到检索层：身份已知时默认搜索自动并入
+    自有私有 ns，不依赖调用方记得；身份未知退化为单 _shared（与旧版一致）；
+    显式传 ns 永远是单 ns 精确语义（含显式 _shared 不带私有）。
+    """
+
+    def test_attested_default_search_spans_shared_and_own_private(self, attested: MemoryStore):
+        attested.write("zcode 独有偏好", type="fact", source=OWNER, ns=PRIVATE_NS)
+        shared = attested.write("zcode 共享笔记", type="fact", source=OWNER)
+        foreign_mem, _ = attested._write_new(
+            "zcode 他家隐私", type="fact", source=FOREIGN, ns="agent-workbuddy",
+            key=None, links=None, created=None, confidence=None, origin=None,
+        )
+        hits = attested.search("zcode")  # 不传 ns：_shared ∪ agent-zcode
+        hit_ids = [h["id"] for h in hits]
+        assert shared["id"] in hit_ids
+        assert any(h["ns"] == PRIVATE_NS for h in hits)
+        assert foreign_mem.id not in hit_ids  # 别人的私有 ns 不因双通道而可见
+        assert all(h["ns"] in ("_shared", PRIVATE_NS) for h in hits)
+
+    def test_attested_reader_bare_form_same_channel(self, attested: MemoryStore):
+        """reader 短名（zcode）与全称（agent-zcode）派生出同一私有通道。"""
+        priv = attested.write("zcode 私有草稿", type="fact", source=OWNER, ns=PRIVATE_NS)
+        full = [h["id"] for h in attested.search("私有草稿", reader=OWNER)]
+        bare = [h["id"] for h in attested.search("私有草稿", reader=OWNER_BARE)]
+        assert full == bare == [priv["id"]]
+
+    def test_unattested_default_search_stays_shared(self, store: MemoryStore):
+        """回归护栏：无身份时默认检索与旧版完全一致（只搜 _shared）。"""
+        _seed(store)
+        hits = store.search("private draft")
+        assert all(h["ns"] == "_shared" for h in hits)
+
+    def test_explicit_shared_ns_excludes_private_even_attested(self, attested: MemoryStore):
+        """显式 ns 是精确语义：显式 _shared 即便有身份也不并私有通道。"""
+        attested.write("zcode 私有草稿", type="fact", source=OWNER, ns=PRIVATE_NS)
+        hits = attested.search("私有草稿", ns="_shared")
+        assert hits == []
+
+    def test_neighbor_recall_follows_dual_channel_for_owner(self, attested: MemoryStore):
+        """邻居召回的 ns 过滤同样走通道集合：属主默认搜索可带出自有私有邻居，
+        别人的私有邻居不可见（跨 ns 链只能以遗留数据方式存在）。"""
+        priv = attested.write("zcode 私有关联笔记", type="fact", source=OWNER, ns=PRIVATE_NS)
+        bridge = attested.write("zcode 桥接笔记", type="episode", source=OWNER)
+        foreign_mem, _ = attested._write_new(
+            "workbuddy 私有关联", type="fact", source=FOREIGN, ns="agent-workbuddy",
+            key=None, links=None, created=None, confidence=None, origin=None,
+        )
+        _add_legacy_link(attested, bridge["id"], priv["id"])
+        _add_legacy_link(attested, bridge["id"], foreign_mem.id)
+        attested.rebuild_index()
+        hits = attested.search("桥接笔记")
+        # 「笔记」bigram 也会直接命中私有记忆本体（双通道预期内），按 id 定位桥接条
+        bridge_hit = next(h for h in hits if h["id"] == bridge["id"])
+        neighbor_ids = [n["id"] for n in bridge_hit["neighbors"]]
+        assert priv["id"] in neighbor_ids
+        assert foreign_mem.id not in neighbor_ids
+
+
+@pytest.fixture
+def attested(tmp_path) -> MemoryStore:
+    """进程身份已证明的 store：TestAttestation 与 TestDualChannelSearch 共用。"""
+    from conftest import sandbox_safe_remove
+
+    return MemoryStore(
+        tmp_path / "attested", clock=lambda: CLOCK_DATE, remover=sandbox_safe_remove, agent_id=OWNER
+    )
+
+
 class TestAttestation:
     """进程侧身份证明：身份等于进程（COMPOUND_MEMORY_AGENT_ID），不等于自称。
 
     三条裁决规则：缺省自动补进程身份（诚实缺省）、等价形式归一化、
     矛盾响亮报错——连带关闭「_shared 伪造 source 污染跨 Agent 验证」的口子。
     """
-
-    @pytest.fixture
-    def attested(self, tmp_path) -> MemoryStore:
-        from conftest import sandbox_safe_remove
-
-        return MemoryStore(
-            tmp_path / "attested", clock=lambda: CLOCK_DATE, remover=sandbox_safe_remove, agent_id=OWNER
-        )
 
     def test_reader_auto_filled_for_owner_ns(self, attested: MemoryStore):
         priv = attested.write("私有草稿", type="fact", source=OWNER, ns=PRIVATE_NS)

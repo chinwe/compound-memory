@@ -65,12 +65,12 @@ def memory_write(
 @mcp.tool(structured_output=False)
 def memory_search(
     query: str,
-    ns: str = "_shared",
+    ns: str | None = None,
     top_k: int = 5,
     include_neighbors: bool = True,
     reader: str | None = None,
 ) -> dict[str, Any]:
-    """Search memories. Fuses lexical (BM25) and, when the vec extra + model are installed, vector (BGE) recall via RRF; otherwise falls back to lexical only. Confidence/recency/type act only as a small tie-break. Default namespace is _shared. Each hit embeds up to 3 trimmed one-hop neighbors (active only) unless include_neighbors=False. reader: your own source agent id — REQUIRED when ns is 'agent-<name>' (private namespace, readable only by its owner host); ignored for _shared. Returns {'hits': [...]} sorted by score. Compounding rule: after actually adopting a hit, call memory_feedback (agent = your source id) — skipped feedbacks leave the store static."""
+    """Search memories. Fuses lexical (BM25) and, when the vec extra + model are installed, vector (BGE) recall via RRF; otherwise falls back to lexical only. Confidence/recency/type act only as a small tie-break. Default scope is _shared PLUS your own private 'agent-<name>' namespace (when your identity is known via attested process id or explicit reader) — private hits surface automatically, no extra query needed. Pass ns explicitly ('_shared' or 'agent-<name>') to search a single namespace. Each hit embeds up to 3 trimmed one-hop neighbors (active only) unless include_neighbors=False. reader: your own source agent id — REQUIRED when ns is 'agent-<name>' (private namespace, readable only by its owner host). Returns {'hits': [...]} sorted by score. Compounding rule: after actually adopting a hit, call memory_feedback (agent = your source id) — skipped feedbacks leave the store static."""
     hits = _store_or_configure().search(
         query=query, ns=ns, top_k=top_k, include_neighbors=include_neighbors, reader=reader
     )

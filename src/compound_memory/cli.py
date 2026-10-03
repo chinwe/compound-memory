@@ -135,7 +135,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_write)
 
     p = sub.add_parser("search")
-    p.add_argument("query"); p.add_argument("--ns", default="_shared"); p.add_argument("--top-k", type=int, default=5)
+    p.add_argument("query")
+    p.add_argument("--ns", default=None,
+                   help="scope: '_shared', 'agent-<name>', or omit for _shared + your own private ns")
+    p.add_argument("--top-k", type=int, default=5)
     p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
     p.add_argument("--no-neighbors", dest="include_neighbors", action="store_false",
                    help="omit embedded one-hop neighbors from hits")

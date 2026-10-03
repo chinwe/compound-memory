@@ -39,7 +39,7 @@ uv run --directory <仓库> compound-memory init
 | Tool | 用途 | 关键点 |
 |---|---|---|
 | `memory_write` | 写入记忆 | `type`: episode/fact/insight/skill；`source`: 写入方 agent id；fact/insight 建议带稳定 `key` |
-| `memory_search` | 检索 | 返回 `{"hits": [...]}` 按分数排序；命中自动内嵌最多 3 条一度邻居；`include_neighbors=False` 可关。查私有 `agent-*` ns 时必带 `reader`（自己的 agent id），缺省即拒绝 |
+| `memory_search` | 检索 | 返回 `{"hits": [...]}` 按分数排序；命中自动内嵌最多 3 条一度邻居；`include_neighbors=False` 可关。不传 `ns` 时双通道检索：`_shared` + 调用方自有私有 ns（身份已知时，私有条目自动带出）；显式传 `ns` 只搜该 ns，查 `agent-*` 时必带 `reader`（自己的 agent id），缺省即拒绝 |
 | `memory_get` | 按 id 取回 | 恒含 `found` 键；默认带一度邻居；目标在私有 ns 时必带 `reader`，缺省即拒绝 |
 | `memory_link` | 双向关联两条记忆 | 复利来源②：关联带出；两条记忆必须同 ns，跨 ns 链被拒绝 |
 | `memory_feedback` | 上报"这条记忆被实际采纳了" | uses+1、conf+0.1；**跨 Agent 验证额外 +0.15**；归档记忆被 feedback 自动复活；私有 ns 记忆仅属主可反馈。**采纳后必须调用** |
@@ -47,7 +47,7 @@ uv run --directory <仓库> compound-memory init
 ### 统一约定（各宿主必须一致）
 
 - **`source` agent id**：WorkBuddy → `agent-workbuddy`；ZCode → `agent-zcode`；Claude Code → `agent-claude`；DeepSeek Harness → `agent-deepseek`。id 用宿主标识而非个性化名字（如 TARS），保证稳定不随命名变化；跨 Agent 验证加分依赖 id 互不相同。
-- **namespace**：默认写 `_shared`（全体可见）；`agent-<name>` 是私有区，仅属主可写、读/反馈也须属主身份（`reader`/`agent` 填自己的 agent id，缺省即拒绝）。日常任务一律用默认值即可。
+- **namespace**：默认写 `_shared`（全体可见）；`agent-<name>` 是私有区，仅属主可写、读/反馈也须属主身份（`reader`/`agent` 填自己的 agent id，缺省即拒绝）。检索不传 `ns` 时自动并搜自有私有区（双通道）。日常任务一律用默认值即可。
 - **进程身份注入（建议必配）**：宿主配置的 `env` 加 `COMPOUND_MEMORY_AGENT_ID: <本宿主 agent id>`。注入后存储层以进程身份裁决一切自报身份（source/reader/agent）：缺省自动补真值、等价形式（`agent-x`/`x`）归一化、矛盾响亮拒绝——模型谎报身份失效，伪造 source 污染跨 Agent 验证的通道一并关闭。未注入则保持自报身份模式（协作边界，非安全边界）。
 - **写什么**：稳定事实（用户偏好、项目约定、环境限制、踩坑结论）才写；一次性、会话内临时信息不写。内容用中文，key 用稳定英文短横线标识（如 `user-tts`、`proj-xxx`）。
 

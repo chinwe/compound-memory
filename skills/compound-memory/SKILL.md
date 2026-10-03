@@ -9,7 +9,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 
 ## 三个必做动作（复利闭环）
 
-1. **任务开始先检索**：接到非琐碎任务，先 `memory_search` 按任务关键词查相关记忆（用户偏好、项目背景、环境坑）。
+1. **任务开始先检索**：接到非琐碎任务，先 `memory_search` 按任务关键词查相关记忆（用户偏好、项目背景、环境坑）。默认检索即双通道：`_shared` + 本宿主私有 ns（身份已知时自动并入，私有条目无需单独补搜）；显式传 `ns` 则只搜该 ns（精确语义）。
 2. **采纳即反馈**：命中且**实际采纳**后必须调 `memory_feedback`（`agent` 填本宿主 source id）——复利闭环的核心动作，漏掉它记忆库就不增值。归档记忆被 feedback 自动复活。
 3. **任务结束沉淀**：会话确认的稳定事实（用户偏好、项目约定、环境限制、踩坑结论）用 `memory_write` 写入，判据见下表；一次性、会话内临时信息只存在于会话。
 
@@ -22,7 +22,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | `type` | `fact` 客观事实（配置、账号、环境参数）；`insight` 经验教训；`skill` 可复用操作方法；`episode` 事件经历 |
 | `key` | fact/insight 用稳定英文短横线标识（`user-tts`、`proj-xxx`）；更新既有事实复用同 key，新版本与旧版内容不同时返回 `conflict: true` 并入冲突队列 |
 | `source` | 宿主标识：`agent-workbuddy` / `agent-zcode` / `agent-claude` / `agent-deepseek` |
-| `ns` | 默认 `_shared`；`agent-*` 是私有区，写/读/反馈都只认属主——读私有 ns 须带 `reader`（自己的 agent id，缺省即拒绝），越权抛 `PermissionError` |
+| `ns` | 默认 `_shared`；`agent-*` 是私有区，写/读/反馈都只认属主——读私有 ns 须带 `reader`（自己的 agent id，缺省即拒绝），越权抛 `PermissionError`。`memory_search` 不传 `ns` 时自动并搜自有私有区（双通道，见必做动作①） |
 | 内容 | 中文，与库内既有条目一致 |
 
 读取语义：按 id 的 `memory_get` 恒含 `found` 键，目标不存在返回 `{"found": false}`；目标在私有 ns 时必带 `reader`；归档记忆仍可 get，对它 `memory_feedback` 或 CLI `revive`（私有 ns 带 `--reader`）即恢复可检索。

@@ -429,7 +429,7 @@ class MemoryStore:
     def search(
         self,
         query: str,
-        ns: str = "_shared",
+        ns: str | None = None,
         top_k: int = 5,
         include_neighbors: bool = True,
         reader: str | None = None,
@@ -439,28 +439,42 @@ class MemoryStore:
         embedder 可用时叠加向量召回：候选 = 词面命中 ∪ 向量 KNN（ns/活性过滤），
         两路 rank 在 rank 内 RRF 融合；向量路任何故障都降级纯词面（宁缺勿炸）。
 
+        ns=None（缺省）为双通道检索：_shared ∪ 调用方自有私有 ns（agent-<reader>，
+        身份已知时）——私有条目天然出现在结果里，保障不依赖调用方记得显式补搜
+        （无身份时退化为单 _shared，与旧版缺省一致）；显式传 ns 保持单 ns 精确语义。
         reader 是调用方身份，ns=agent-* 时必填且须为属主（读侧 owner 校验，
-        与 write 的越权抛 PermissionError 对称）；ns=_shared 时忽略。
+        与 write 的越权抛 PermissionError 对称）。
         """
-        self._check_ns(ns)
-        reader = self._resolve_identity(reader, "reader")
-        self._check_ns_owner(ns, reader)
+        if ns is None:
+            reader = self._resolve_identity(reader, "reader")
+            scopes = ["_shared"]
+            if reader:
+                private = f"agent-{reader.removeprefix('agent-')}"
+                # 私有侧派生自 reader，属主校验恒真但按"读正文先过门"的不变量照走，
+                # 防未来派生逻辑变化时静默放行
+                self._check_ns_owner(private, reader)
+                scopes.append(private)
+        else:
+            self._check_ns(ns)
+            reader = self._resolve_identity(reader, "reader")
+            self._check_ns_owner(ns, reader)
+            scopes = [ns]
         now = self._clock()
         q_tokens = tokenize(query)
         if not q_tokens:
             return []
-        vec_sims, vec_rels = self._vector_recall(query, ns)
+        vec_sims, vec_rels = self._vector_recall(query, set(scopes))
         return rank(
             query,
-            self._candidates(q_tokens, ns, vec_rels),
+            self._candidates(q_tokens, set(scopes), vec_rels),
             now=now,
             top_k=top_k,
-            neighbor_lookup=(lambda mid: self._active_neighbors(mid, ns)) if include_neighbors else None,
+            neighbor_lookup=(lambda mid: self._active_neighbors(mid, set(scopes))) if include_neighbors else None,
             vec_sims=vec_sims,
         )
 
-    def _vector_recall(self, query: str, ns: str) -> tuple[dict[str, float] | None, list[str]]:
-        """向量召回：查询编码 + KNN（大池取回后按 ns/去重收敛到 VEC_POOL）。
+    def _vector_recall(self, query: str, nss: set[str]) -> tuple[dict[str, float] | None, list[str]]:
+        """向量召回：查询编码 + KNN（大池取回后按 ns 集合/去重收敛到 VEC_POOL）。
 
         返回 (vec_sims, vec_rels)；embedder 未注入或任何故障 ⇒ (None, []) 纯词面降级。
         """
@@ -483,7 +497,7 @@ class MemoryStore:
                 if not path.exists():
                     continue
                 mem = self.parse(path)
-                if mem.archived or mem.ns != ns:
+                if mem.archived or mem.ns not in nss:
                     continue
                 sims[mem_id] = cos
                 rels.append(rel_path)
@@ -491,11 +505,12 @@ class MemoryStore:
         except Exception:
             return None, []
 
-    def _active_neighbors(self, mem_id: str, ns: str = "_shared") -> list[Memory]:
+    def _active_neighbors(self, mem_id: str, nss: set[str]) -> list[Memory]:
         """邻居召回的数据源：hit 的一度 links，归档邻居不召回（截断/上限/去环归 rank）。
 
-        ns 过滤是访问控制的一部分，不可省：_shared 记忆若链到agent-* 私有记忆，
-        邻居会把私有正文带进 _shared 的检索结果（2026-10-03 实测泄漏）。
+        ns 集合过滤是访问控制的一部分，不可省：_shared 记忆若链到 agent-* 私有记忆，
+        邻居会把私有正文带进调用方不可见的检索结果（2026-10-03 实测泄漏）；
+        集合由 search 按"调用方可见的 ns"圈定（双通道 = _shared ∪ 自有私有 ns）。
         """
         mem = self.find(mem_id)
         if mem is None:
@@ -503,7 +518,7 @@ class MemoryStore:
         out: list[Memory] = []
         for link_id in mem.links:
             neighbor = self.find(link_id)
-            if neighbor is not None and not neighbor.archived and neighbor.ns == ns:
+            if neighbor is not None and not neighbor.archived and neighbor.ns in nss:
                 out.append(neighbor)
         return out
 
@@ -693,9 +708,9 @@ class MemoryStore:
         counts.update(self.vector_index.rebuild(self._scan_pairs()))
         return counts
 
-    def _candidates(self, q_tokens: list[str], ns: str, vec_rels: list[str] | None = None) -> list[Memory]:
+    def _candidates(self, q_tokens: list[str], nss: set[str], vec_rels: list[str] | None = None) -> list[Memory]:
         """Indexed lookup: 索引活性（跨进程重载/带外重建）由各缓存内部自愈，
-        这里全信索引命中，只逐一复查文件存在性与 ns/archived——防的是索引
+        这里全信索引命中，只逐一复查文件存在性与 ns 集合/活性——防的是索引
         词条与手编文件内容的漂移（改内容不改目录 mtime，那条路走显式 rebuild）。
         vec_rels 非空时，向量 KNN 命中（rel_path 由向量缓存给出）并入候选并集。"""
         rels = list(self.index.candidates(q_tokens))
@@ -707,7 +722,7 @@ class MemoryStore:
             path = self.root / rel
             if path.exists():
                 mem = self.parse(path)
-                if mem.ns == ns and not mem.archived:
+                if mem.ns in nss and not mem.archived:
                     out.append(mem)
         return out
 
