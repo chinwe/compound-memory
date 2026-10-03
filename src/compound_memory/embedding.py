@@ -1,21 +1,34 @@
 """BGE-small-zh 本地 embedding 编码器（向量召回路的模型缝）。
 
-- 模型：Xenova/bge-small-zh-v1.5 ONNX int8（24MB，经 hf-mirror 下载到 HF 缓存，
+- 模型：默认 Xenova/bge-small-zh-v1.5 ONNX int8（24MB，经 hf-mirror 下载到 HF 缓存，
   本地推理全程无外发，spec story 17）。缓存缺失时构造即失败——不自动联网下载。
+  repo id 与输出维度可经环境变量覆盖（换模型属运维动作，改后需显式 rebuild-index）：
+  - COMPOUND_MEMORY_EMBEDDING_MODEL：HF repo id（默认 Xenova/bge-small-zh-v1.5）；
+  - COMPOUND_MEMORY_EMBEDDING_DIM：模型输出维度（默认 512，须与模型一致）。
 - 依赖：属可选 extra `vec`（onnxruntime/tokenizers/numpy）。本模块 import 任何
   失败都置 VEC_AVAILABLE=False，由调用方降级为纯词面检索（检索降级不报错）。
-- 编码语义（与 vec-spike 验证一致）：[CLS] 表示 + L2 归一化，512 维，
-  truncation 512。单条长文档实测 ~400ms，查询短文本 ~15ms。
+- 编码语义（与 vec-spike 验证一致）：[CLS] 表示 + L2 归一化，truncation 512。
+  单条长文档实测 ~400ms，查询短文本 ~15ms。
 """
 
 from __future__ import annotations
 
 import glob
+import os
 from pathlib import Path
 from typing import Callable
 
-EMBED_DIM = 512
-_MODEL_GLOB = ".cache/huggingface/hub/models--Xenova--bge-small-zh-v1.5/snapshots/*"
+# 模型与维度的单一定义点：vector_index 建表维度也从这里 import，勿另设常量
+MODEL_REPO_ID = os.environ.get("COMPOUND_MEMORY_EMBEDDING_MODEL", "Xenova/bge-small-zh-v1.5")
+EMBED_DIM = int(os.environ.get("COMPOUND_MEMORY_EMBEDDING_DIM", "512"))
+
+
+def _cache_glob(repo_id: str) -> str:
+    """HF 缓存目录 glob：repo id 的 "/" 替换为 "--"（如 a/b → models--a--b）。"""
+    return f".cache/huggingface/hub/models--{repo_id.replace('/', '--')}/snapshots/*"
+
+
+_MODEL_GLOB = _cache_glob(MODEL_REPO_ID)
 
 try:
     import numpy as np
@@ -51,7 +64,7 @@ class BgeEncoder:
         snaps = sorted(glob.glob(str(base / _MODEL_GLOB)))
         if not snaps:
             raise ModelMissingError(
-                "BGE-small-zh ONNX model not found in HF cache; "
+                f"{MODEL_REPO_ID} ONNX model not found in HF cache; "
                 "download via hf-mirror.com (see docs/specs/0001-compound-memory-spec.md)"
             )
         snap = Path(snaps[-1])

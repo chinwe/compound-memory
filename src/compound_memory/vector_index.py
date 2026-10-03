@@ -11,6 +11,8 @@
 重建，宁缺勿炸 write）；重建本身再失败才保持 no-op，等待下次读路径重试。
 
 换 embedding 模型属运维动作：需显式 `rebuild-index`（hash 只校验内容，不校验模型）。
+模型 repo id 与输出维度（建表维度）经 embedding.py 的环境变量解析（单一定义点），
+换模型须同步 COMPOUND_MEMORY_EMBEDDING_DIM。
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import sqlite3
 from pathlib import Path
 from typing import Callable
 
+from .embedding import EMBED_DIM
 from .model import Memory
 from .scoring import doc_text
 
@@ -30,7 +33,6 @@ try:
 except ImportError:  # pragma: no cover - 取决于安装环境是否带 vec extra
     SQLITE_VEC_OK = False
 
-EMBED_DIM = 512
 DB_NAME = "vectors.db"
 # 带外增删检测的目录 mtime 粒度与词法 Index 一致（新增/删除 .md 会更新 ns/type 目录 mtime）
 
