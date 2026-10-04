@@ -10,9 +10,10 @@ transcript 解析支持两种宿主格式，按内容形状分发（不靠文件
    消息（type=message / role / content[].text）。真实用户话被 `<user_query>` 或
    `<session>` 包裹，同块内混着注入块（user-context / team-context / 队友消息 /
    上下文压缩摘要）——壳剥掉、注入块整块跳过。
-2. **model-io jsonl**（ZCode）：每行是一次 API 调用快照（完整 messages 历史），
-   user content 为块列表且首个 text 块多为 system-reminder/hook 注入；跨快照
-   重复的用户话保序去重。
+2. **ZCode 会话库**（`~/.zcode/cli/db/db.sqlite`）：全量对话在 SQLite 里
+   （message+part 表，正文在 part 的 text 块）。rollout/model-io jsonl 快照
+   已退役不接——它只剩最近几个会话，只接快照会产出"看似扫过、实则只盖住
+   冰山一角"的假阴性，与 trace 同等对待。
 
 **刻意不支持 trace**（`~/.workbuddy/traces/<pid>/trace_*.json`）：generation
 span 的 toolInput 是请求快照，但被**头部**硬截到 100000 字符，整段解析必抛；
@@ -31,6 +32,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -126,16 +128,40 @@ def _dedupe(texts: list[str]) -> list[str]:
     return list(dict.fromkeys(texts))
 
 
-def user_texts_from_model_io(path: Path) -> list[str]:
-    """ZCode model-io jsonl → 真实用户话（保序去重）。
+def user_texts_from_zcode_db(path: Path) -> list[str]:
+    """ZCode 会话库（SQLite）→ 真实用户话（保序去重）。
 
-    每行一个快照、每快照带全量历史，因此同一句话会出现多次——dict.fromkeys
-    保序去重；注入块（system-reminder/hook/通知）整块跳过。
+    db 是活动 ZCode 进程的 WAL 库，只读打开（mode=ro）绝不写。用户消息由
+    message.data.role=='user' 定位，正文是 part 表 text 块；synthetic 与
+    model-only 的块是运行时注入（todo 提醒、hook），连同 system-reminder 等
+    注入标记一并滤掉——注入过滤复用 _unwrap_user_text（与 WorkBuddy 同一堵墙）。
     """
+    con = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        rows = con.execute(
+            """
+            SELECT p.data
+            FROM message m JOIN part p ON p.message_id = m.id
+            WHERE json_valid(m.data) AND json_valid(p.data)
+              AND json_extract(m.data, '$.role') = 'user'
+              AND json_extract(p.data, '$.type') = 'text'
+            ORDER BY m.session_id, m.time_created, p.sequence
+            """
+        ).fetchall()
+    finally:
+        con.close()
     texts: list[str] = []
-    for event in _iter_json_lines(path):
-        body = ((event.get("request") or {}).get("body") or {}) if isinstance(event, dict) else {}
-        texts.extend(_texts_from_messages(body.get("messages") or []))
+    for (raw,) in rows:
+        # json_valid + '$.type'='text' 已在 SQL 侧保证只剩合法 JSON 的 object
+        # 形状行（非 object 的 json_extract 返回 NULL，被 WHERE 过滤）——这里
+        # 只再做注入块的语义过滤；metadata 形状仍防御一次（宁跳过不崩扫描）
+        part: Any = json.loads(raw)
+        metadata = part.get("metadata")
+        if part.get("synthetic") or (isinstance(metadata, dict) and metadata.get("visibility") == "model-only"):
+            continue
+        cleaned = _unwrap_user_text((part.get("text") or "").strip())
+        if cleaned:
+            texts.append(cleaned)
     return _dedupe(texts)
 
 
@@ -240,22 +266,39 @@ def scan_texts(
 
 DETECT_HEAD_CHARS = 65536  # 形态探测只读文件头：足够看清结构，避开大文件全读
 DETECT_MAX_LINES = 20  # 最多探这么行（较新会话以多条 session-meta 开头）
+SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+def _is_zcode_db(path: Path) -> bool:
+    """SQLite 魔数之外再验形状：必须有 message+part 两表（ZCode 会话库形状）。"""
+    con: sqlite3.Connection | None = None
+    try:
+        con = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        names = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    except sqlite3.Error:
+        return False
+    finally:
+        if con is not None:
+            con.close()
+    return {"message", "part"} <= names
 
 
 def detect_transcript_kind(path: Path) -> str:
-    """按内容形状判定 transcript 形态：session-log / model-io / unsupported。
+    """按内容形状判定 transcript 形态：session-log / zcode-db / unsupported。
 
-    不靠文件名约定——两种宿主都把日志叫 .jsonl。也不只看第一行：较新会话以
-    session-meta 事件开头（实测 92 个真实会话里 16 个如此，且恰好是最近的），
-    只看首行会把它们全判成 unsupported 静默跳过。
+    不靠文件名约定——两种宿主都把日志叫 .jsonl / .sqlite。也不只看第一行：
+    较新会话以 session-meta 事件开头（实测 92 个真实会话里 16 个如此，且恰好
+    是最近的），只看首行会把它们全判成 unsupported 静默跳过。
 
-    trace 显式判为 unsupported（而非 unknown）：它的 toolInput 头部截断到
-    100000 字符，单快照只剩首轮 user 消息，接进来是"看似扫过、实则大面积漏"。
-    给出明确不支持的理由，报错直接指向唯一受支持的主源。
+    SQLite 按魔数识别，再验 message/part 表形状；model-io 快照与 trace 是
+    retired 源（只剩最近几个会话 / 首轮 user 消息），判 unsupported 而非
+    unknown——给出行内理由并指向受支持源，避免"看似扫过、实则大面积漏"。
     """
-    head = path.read_text(encoding="utf-8", errors="replace")[:DETECT_HEAD_CHARS]
-    if '"spans"' in head and '"trace"' in head:
-        return "unsupported"
+    with open(path, "rb") as fh:
+        raw = fh.read(DETECT_HEAD_CHARS)
+    if raw.startswith(SQLITE_MAGIC):
+        return "zcode-db" if _is_zcode_db(path) else "unsupported"
+    head = raw.decode("utf-8", errors="replace")
     for line in head.splitlines()[:DETECT_MAX_LINES]:
         line = line.strip()
         if not line.startswith("{"):
@@ -268,21 +311,20 @@ def detect_transcript_kind(path: Path) -> str:
             continue
         if event.get("type") == "message":
             return "session-log"
-        if "request" in event:
-            return "model-io"
     return "unsupported"
 
 
 PARSERS = {
     "session-log": user_texts_from_session_log,
-    "model-io": user_texts_from_model_io,
+    "zcode-db": user_texts_from_zcode_db,
 }
 
 UNSUPPORTED_HINT = (
     "不支持的 transcript 形态：{path}。受支持的源有——"
-    "WorkBuddy session log（~/.workbuddy/projects/<项目>/<sessionId>.jsonl）"
-    "或 ZCode model-io jsonl；传目录则批量扫全部 session log。"
-    "WorkBuddy traces/ 不接入（toolInput 头部截断，只剩首轮用户话）。"
+    "WorkBuddy session log（~/.workbuddy/projects/<项目>/<sessionId>.jsonl，传目录批量扫）"
+    "或 ZCode 会话库（~/.zcode/cli/db/db.sqlite）。"
+    "WorkBuddy traces/ 与 ZCode rollout/model-io 快照不接入：前者只剩首轮、后者只剩最近几个会话，"
+    "接进来是'看似扫过、实则大面积漏'的假阴性。"
 )
 
 

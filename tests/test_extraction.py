@@ -10,6 +10,7 @@ extract/ 目录的 gitignore 归属（运行时工件，含会话摘录，不入
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 from compound_memory.cli import main as cli_main
@@ -19,8 +20,8 @@ from compound_memory.extraction import (
     extract,
     extract_dir,
     scan_texts,
-    user_texts_from_model_io,
     user_texts_from_session_log,
+    user_texts_from_zcode_db,
 )
 from compound_memory.storage import MemoryStore
 
@@ -46,31 +47,75 @@ def _text_block(text: str) -> dict:
     return {"type": "text", "text": text}
 
 
-def test_model_io_user_texts_filtered_and_deduped(tmp_path: Path) -> None:
-    """解析契约：注入块（system-reminder 等）滤掉、跨快照重复的用户话去重、
-    只剩真实用户输入——扫描器的输入质量由这一层决定。"""
-    transcript = tmp_path / "model-io-sess_test.jsonl"
-    transcript.write_text(
-        "\n".join(
-            [
-                _model_io_line(
-                    [
-                        _text_block("<system-reminder>\n# agentsMd\n注入内容"),
-                        _text_block("我用 uv 管理这个项目"),
-                    ]
-                ),
-                _model_io_line(
-                    [
-                        _text_block("我用 uv 管理这个项目"),
-                        _text_block("部署在 Vercel 上，注意 10 秒超时"),
-                    ]
-                ),
-            ]
-        ),
-        encoding="utf-8",
+# --- ZCode 宿主解析层 -------------------------------------------------------
+# 真实形态（实测 ~/.zcode/cli/db/db.sqlite）：全量对话在 SQLite 库里，
+# message.data.role=='user' 过滤用户消息，正文在 part 表 text 块；
+# rollout/model-io jsonl 只剩最近几个会话的 API 快照，已退役不接。
+
+
+def _zcode_db(path: Path, messages: list[tuple[str, list[dict | str]]]) -> Path:
+    """构建最小 ZCode 会话库 fixture：message+part 两表，data 存 JSON 字符串。
+
+    messages: (role, part payloads)——payload 是 part.data 的 JSON 字典，
+    或坏 JSON 字符串（坏行容错路径）。
+    """
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT)")
+    con.execute(
+        "CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,"
+        " time_created INTEGER, sequence INTEGER, data TEXT)"
     )
-    texts = user_texts_from_model_io(transcript)
-    assert texts == ["我用 uv 管理这个项目", "部署在 Vercel 上，注意 10 秒超时"]
+    for i, (role, payloads) in enumerate(messages):
+        mid = f"msg_{i}"
+        con.execute(
+            "INSERT INTO message VALUES (?, ?, ?, ?)",
+            (mid, f"sess_{i % 2}", 1786000000000 + i, json.dumps({"role": role}, ensure_ascii=False)),
+        )
+        for j, payload in enumerate(payloads):
+            con.execute(
+                "INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    f"part_{i}_{j}",
+                    mid,
+                    f"sess_{i % 2}",
+                    1786000000000 + i,
+                    j,
+                    payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False),
+                ),
+            )
+    con.commit()
+    con.close()
+    return path
+
+
+def test_zcode_db_user_texts_filtered_and_deduped(tmp_path: Path) -> None:
+    """解析契约：synthetic / model-only 注入块滤掉、system-reminder 块滤掉、
+    assistant 话不进输入、坏 JSON 行跳过、跨会话复述去重——db 是活动 ZCode
+    进程的 WAL 库，解析必须只读打开（fixture 建完即关闭连接）。"""
+    db = _zcode_db(
+        tmp_path / "db.sqlite",
+        [
+            (
+                "user",
+                [
+                    {"type": "text", "text": "<system-reminder>\n# agentsMd\n注入内容"},
+                    {"type": "text", "text": "我用 uv 管理这个项目"},
+                ],
+            ),
+            ("assistant", [{"type": "text", "text": "记住了"}]),
+            (
+                "user",
+                [
+                    {"type": "text", "text": "todo 提醒", "synthetic": True},
+                    {"type": "text", "text": "hook 注入", "metadata": {"visibility": "model-only"}},
+                ],
+            ),
+            ("user", ["{ broken json"]),
+            ("user", [{"type": "text", "text": "部署在 Vercel 上，注意 10 秒超时"}]),
+            ("user", [{"type": "text", "text": "我用 uv 管理这个项目"}]),
+        ],
+    )
+    assert user_texts_from_zcode_db(db) == ["我用 uv 管理这个项目", "部署在 Vercel 上，注意 10 秒超时"]
 
 
 def test_scan_matches_statement_and_pitfall_skips_noise() -> None:
@@ -110,28 +155,20 @@ def test_scan_dedup_marks_existing_memory(store: MemoryStore) -> None:
 def test_extract_writes_manifest_and_gitignores_dir(store: MemoryStore, tmp_path: Path) -> None:
     """清单落 <root>/extract/last-candidates.json（含溯源与候选），
     extract/ 由 _ensure_layout 统一进 .gitignore（含会话摘录，不入审计史）。"""
-    transcript = tmp_path / "model-io-sess_test.jsonl"
-    transcript.write_text(
-        _model_io_line([_text_block("我用 edge-tts 生成中文音频，晓晓语音")]),
-        encoding="utf-8",
-    )
-    result = extract(transcript, store)
+    db = _zcode_db(tmp_path / "db.sqlite", [("user", [{"type": "text", "text": "我用 edge-tts 生成中文音频，晓晓语音"}])])
+    result = extract(db, store)
     assert result["candidates"] >= 1
     manifest = json.loads((store.root / "extract" / "last-candidates.json").read_text(encoding="utf-8"))
-    assert manifest["source"] == str(transcript)
+    assert manifest["source"] == str(db)
     assert manifest["candidates"][0]["suggested_type"] == "fact"
     assert "extract/" in (store.root / ".gitignore").read_text(encoding="utf-8")
 
 
 def test_cli_extract_roundtrip(tmp_path: Path, capsys) -> None:
     """CLI 缝：extract 子命令产清单并打印摘要。"""
-    transcript = tmp_path / "model-io-sess_test.jsonl"
-    transcript.write_text(
-        _model_io_line([_text_block("记住：部署窗口是周五")]),
-        encoding="utf-8",
-    )
+    db = _zcode_db(tmp_path / "db.sqlite", [("user", [{"type": "text", "text": "记住：部署窗口是周五"}])])
     root = tmp_path / "memroot"
-    assert cli_main(["--root", str(root), "extract", str(transcript)]) == 0
+    assert cli_main(["--root", str(root), "extract", str(db)]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["candidates"] >= 1
     assert (root / "extract" / "last-candidates.json").exists()
@@ -228,17 +265,27 @@ def test_detect_handles_leading_session_meta_lines(tmp_path: Path) -> None:
     assert user_texts_from_session_log(log) == ["我默认用 uv"]
 
 
-def test_detect_model_io_and_reject_trace(tmp_path: Path, store: MemoryStore) -> None:
-    """形态判别：model-io 快照行独立判据；**trace 不再是受支持的源**。
+def test_detect_zcode_db_retired_model_io_and_trace(tmp_path: Path, store: MemoryStore) -> None:
+    """形态判别：ZCode 会话库按 SQLite 魔数 + message/part 表判定；
+    **model-io jsonl 已退役**——rollout/ 只剩最近几个会话的 API 快照，
+    db 才是全量主源，接快照会产出"看起来扫过、实际只盖住冰山一角"的假阴性；
+    **trace 同样不是受支持的源**（generation span toolInput 被头部硬截到
+    100000 字符，单快照只剩首轮 user 消息）。退役源一律判 unsupported 并
+    指向受支持源，而不是静默扫个残缺。"""
+    db = _zcode_db(tmp_path / "db.sqlite", [("user", [{"type": "text", "text": "我用 uv 管理这个项目"}])])
+    assert detect_transcript_kind(db) == "zcode-db"
 
-    trace 的 generation span toolInput 被头部硬截到 100000 字符，单快照只剩
-    首轮 user 消息——作为抽取源会产出"看起来扫描过、实际漏掉大部分会话"的
-    假阴性，比明确不支持更有害。真实主源是 session log（完整逐轮），
-    traces/ 目录不接入。
-    """
+    # 有 SQLite 魔数但不是 ZCode 会话库形状（缺 message/part 表）→ unsupported
+    other_sqlite = tmp_path / "other.sqlite"
+    con = sqlite3.connect(other_sqlite)
+    con.execute("CREATE TABLE t (x TEXT)")
+    con.commit()
+    con.close()
+    assert detect_transcript_kind(other_sqlite) == "unsupported"
+
     model_io = tmp_path / "m.jsonl"
     model_io.write_text(_model_io_line([_text_block("我用的是 uv")]), encoding="utf-8")
-    assert detect_transcript_kind(model_io) == "model-io"
+    assert detect_transcript_kind(model_io) == "unsupported"
 
     trace = tmp_path / "trace_x.json"
     trace.write_text(
@@ -263,24 +310,21 @@ def test_detect_model_io_and_reject_trace(tmp_path: Path, store: MemoryStore) ->
     try:
         extract(trace, store)
     except ValueError as exc:
-        assert "session log" in str(exc), "报错要指向唯一受支持的主源，别让用户猜"
+        assert "session log" in str(exc), "报错要指向受支持的主源，别让用户猜"
     else:
         raise AssertionError("trace 不应被当作受支持的 transcript 源")
 
 
 def test_extract_dispatches_by_transcript_shape(tmp_path: Path, store: MemoryStore) -> None:
     """extract 入口按内容形状分发解析器（不靠文件名约定）：session log 走
-    WorkBuddy 主源，model-io 走 ZCode，两者都认不出时抛 ValueError 而非静默产空清单。"""
+    WorkBuddy 主源，sqlite 走 ZCode 会话库；两者都认不出时抛 ValueError
+    而非静默产空清单。"""
     log = tmp_path / "sess_x.jsonl"
     log.write_text(_session_line("user", "<user_query>我用 uv 管理这个项目</user_query>"), encoding="utf-8")
     assert extract(log, store)["parser"] == "session-log"
 
-    model_io = tmp_path / "mio_x.jsonl"
-    model_io.write_text(
-        _model_io_line([_text_block("部署在 Vercel 上，注意 10 秒超时")]),
-        encoding="utf-8",
-    )
-    assert extract(model_io, store)["parser"] == "model-io"
+    db = _zcode_db(tmp_path / "db.sqlite", [("user", [{"type": "text", "text": "部署在 Vercel 上，注意 10 秒超时"}])])
+    assert extract(db, store)["parser"] == "zcode-db"
 
     junk = tmp_path / "junk.txt"
     junk.write_text("完全不是 transcript", encoding="utf-8")
