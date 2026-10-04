@@ -1,0 +1,22 @@
+{
+  "questions": 50,
+  "vector": false,
+  "topk": 20,
+  "wall_secs": 162.7,
+  "search_secs": 162.6,
+  "overall": {
+    "recall@5": 1.0,
+    "recall@10": 1.0,
+    "recall@20": 1.0,
+    "mrr@20": 0.914
+  },
+  "by_type": {
+    "single-session-user": {
+      "n": 50,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "recall@20": 1.0,
+      "mrr@20": 0.914
+    }
+  }
+}

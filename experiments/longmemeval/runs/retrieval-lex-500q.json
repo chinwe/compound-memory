@@ -1,0 +1,57 @@
+{
+  "questions": 500,
+  "vector": false,
+  "topk": 20,
+  "wall_secs": 252.0,
+  "search_secs": 252.0,
+  "overall": {
+    "recall@5": 0.966,
+    "recall@10": 0.98,
+    "recall@20": 0.994,
+    "mrr@20": 0.8886
+  },
+  "by_type": {
+    "knowledge-update": {
+      "n": 78,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "recall@20": 1.0,
+      "mrr@20": 0.9498
+    },
+    "multi-session": {
+      "n": 133,
+      "recall@5": 0.9624,
+      "recall@10": 0.985,
+      "recall@20": 0.9925,
+      "mrr@20": 0.8811
+    },
+    "single-session-assistant": {
+      "n": 56,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "recall@20": 1.0,
+      "mrr@20": 1.0
+    },
+    "single-session-preference": {
+      "n": 30,
+      "recall@5": 0.8333,
+      "recall@10": 0.8333,
+      "recall@20": 0.9667,
+      "mrr@20": 0.5504
+    },
+    "single-session-user": {
+      "n": 70,
+      "recall@5": 0.9857,
+      "recall@10": 1.0,
+      "recall@20": 1.0,
+      "mrr@20": 0.8882
+    },
+    "temporal-reasoning": {
+      "n": 133,
+      "recall@5": 0.9549,
+      "recall@10": 0.9774,
+      "recall@20": 0.9925,
+      "mrr@20": 0.8897
+    }
+  }
+}

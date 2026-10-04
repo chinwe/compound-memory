@@ -17,3 +17,6 @@ __pycache__/
 
 # WorkBuddy
 .workbuddy/
+
+# LongMemEval experiment dataset & ephemeral stores (download-only, not committed)
+experiments/longmemeval/data/
