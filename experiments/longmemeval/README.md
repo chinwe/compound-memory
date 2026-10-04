@@ -49,25 +49,34 @@ uv run python experiments/longmemeval/eval_retrieval.py \
 
 ## 结果
 
-**阶段 A 词面全量（500 题 / 23,867 会话，纯 BM25，`runs/retrieval-lex-500q.json`）**：
+**阶段 A 词面全量（500 题 / 23,867 会话，纯 BM25，`runs/retrieval-lex-500q.json`）**
+与 **向量路全量（RRF 融合，分块编码 101 分钟，`runs/retrieval-vec-500q.json`）**：
 
-| 指标 | overall | knowledge-update | temporal-reasoning | multi-session | single-session-* |
-|---|---|---|---|---|---|
-| recall@5 | 0.966 | 1.000 | 0.955 | 0.962 | 0.833–0.986 |
-| recall@10 | 0.980 | 1.000 | 0.977 | 0.985 | 0.833–1.000 |
-| recall@20 | 0.994 | 1.000 | 0.993 | 0.993 | 0.967–1.000 |
-| MRR@20 | 0.889 | 0.950 | 0.890 | 0.881 | 0.550–1.000 |
+| 指标 | 词面 | 向量（RRF） | 差值 |
+|---|---|---|---|
+| recall@5 | 0.966 | 0.968 | +0.002 |
+| recall@10 | 0.980 | 0.982 | +0.002 |
+| recall@20 | 0.994 | 0.996 | +0.002 |
+| MRR@20 | 0.889 | 0.891 | +0.002 |
 
-- 最弱项是 `single-session-preference`（MRR 0.550）：偏好类证据会话能进 top-20
-  （recall@20 0.967）但排位靠后——与 recency-audit 的马太效应同型，向量路 tie-break 是候选药方。
+分题型（向量 vs 词面的 MRR@20）：knowledge-update 0.958 vs 0.950、multi-session
+0.894 vs 0.881、single-session-user 0.883 vs 0.888、temporal-reasoning 0.878 vs 0.890、
+single-session-preference 0.570 vs 0.550（recall@5 0.867 vs 0.833，recall@20 1.000 vs 0.967）。
+
+- **向量路在 LongMemEval 上增益很小**（overall +0.002）：问题与证据会话的词面
+  重叠天然高，BM25 已近天花板（recall@20 0.994），向量只剩尾部 tie-break 价值。
+  唯一实质受益是 preference 题（recall@5 +3.3pp、recall@20 补到满）。
+  与 vec-spike 内部审计（中文短查询 MRR 0.79→0.95）不矛盾：中文真实记忆场景的
+  词面盲区远大于英文 QA 数据集——向量路的价值随「查询-文档词面重叠度」下降而上升。
+- 最弱项仍是 `single-session-preference`（MRR 0.570）：证据在 top-20 内但排位靠后，
+  与 recency-audit 的马太效应同型。
 - `knowledge-update` 检索层满血（1.000）：新旧并存时证据必然命中——瓶颈在生成段的
-  "用哪一版"，即阶段 B 与 valid_until 时态标注的用武之地。
-- 500 查询共 252s（0.5s/查询）。灌库暴露并顺手修了一个规模化瓶颈：
+  「用哪一版」，即阶段 B 与 valid_until 时态标注的用武之地。
+- 500 查询检索 252s（词面）/ 228s（向量）。灌库暴露并顺手修了一个规模化瓶颈：
   `_candidates` 的 ns 过滤原来发生在 parse 之后，常见词命中近全库时浪费巨大；
   已改为 rel-path ns 前缀在 parse 前剪枝（`storage.py`，语义不变）。
-- 向量路 pilot 受环境限制未完成：BGE 编码在长会话文本上的吞吐远低于写入路径的
-  实测值（960 条 >25 分钟未完成），且本环境会 SIGKILL 约 10 分钟以上的后台进程
-  （exit 137，非 OOM）。复现需在沙箱外跑 `--vector` 两步命令。
+- 编码耗时实测：全库 23,867 条分块编码 6,056s（~253ms/条，512-token 长会话
+  padding 主导；巨批单 run 形态下同任务不可完成——issue #16 修复的前提）。
 
 ## 阶段 B（端到端 QA，未跑）
 
