@@ -10,7 +10,7 @@ compound-memory 是本地多 Agent 共享记忆库（存储 `~/.agents/memory`�
 |---|---|---|---|
 | WorkBuddy | ✅ 已接入 | `~/.workbuddy/mcp.json` | `~/.workbuddy/MEMORY.md`（用户级记忆，每会话自动注入） |
 | ZCode | ✅ 已接入 | `~/.zcode/cli/config.json` | SessionStart hook 自动注入 + `~/.zcode/AGENTS.md` |
-| Claude Code | ⬜ 待接入 | `~/.claude.json` 或项目 `.mcp.json` | `CLAUDE.md` |
+| Claude Code | ✅ 已接入 | `~/.claude.json`（用户级） | `~/.claude/CLAUDE.md` + 分发 skill |
 | DeepSeek Harness (dsh) | ⬜ 待接入 | `~/.dsh/profiles/web/cordis.patch.yml` | agent 指令文件 |
 
 ---
