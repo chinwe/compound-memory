@@ -250,6 +250,11 @@ class VectorIndex:
         except (sqlite3.DatabaseError, RuntimeError, OSError):
             return {"skipped": 1}
 
+    def close(self) -> None:
+        """显式释放缓存连接。Windows 上持有句柄会锁住 db 文件，
+        需要删/挪 db 的调用方（测试模拟 db 丢失）先关再动。"""
+        self._discard(self._db)
+
     # ---------- 内部 ----------
 
     def _upsert(self, db: sqlite3.Connection, mem: Memory, rel_path: str) -> None:

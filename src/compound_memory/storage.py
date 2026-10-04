@@ -586,7 +586,7 @@ class MemoryStore:
 
     def _archive(self, mem: Memory) -> None:
         src = self._active_path(mem)
-        old_rel = str(src.relative_to(self.root))
+        old_rel = src.relative_to(self.root).as_posix()
         mem.archived = True
         self._save(mem)
         self._remover(src)
@@ -719,7 +719,9 @@ class MemoryStore:
     # ---------- 索引（可重建缓存；机制在 index.Index 与 vector_index.VectorIndex） ----------
 
     def _active_rel(self, mem: Memory) -> str:
-        return str(self._active_path(mem).relative_to(self.root))
+        # 统一 POSIX 分隔符：消费端（_candidates 的 ns 前缀剪枝）按 "/" 匹配，
+        # Windows 上 str(relative_to) 产出 "\" 会让检索候选被整体剪掉
+        return self._active_path(mem).relative_to(self.root).as_posix()
 
     def _sync_indexes(self, mem: Memory, rel_path: str) -> None:
         """全部写路径的索引收口：词法 + 向量两份缓存一起保活（向量侧 hash 未变时零编码）。"""
@@ -729,7 +731,7 @@ class MemoryStore:
     def _scan_pairs(self) -> list[tuple[Memory, str]]:
         """扫描活动区供 Index 全量重建（注入回调，惰性调用）。"""
         return [
-            (self.parse(path), str(path.relative_to(self.root)))
+            (self.parse(path), path.relative_to(self.root).as_posix())
             for path in sorted(self.ns_root.rglob("*.md"))
         ]
 

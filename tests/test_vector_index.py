@@ -86,6 +86,7 @@ class TestVectorIndexInvariants:
         res = vec_store.write(content="docker prune 清理策略", type="fact", source="agent-a")
         db = tmp_path / "memroot" / "index" / "vectors.db"
         assert db.exists()
+        vec_store.vector_index.close()  # Windows：持有连接时无法 rename，先释放句柄
         sandbox_safe_remove(db)
         assert [h["id"] for h in vec_store.search("容器磁盘清理")] == [res["id"]]
 
