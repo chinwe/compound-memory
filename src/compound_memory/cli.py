@@ -12,7 +12,7 @@ from typing import Any
 
 from . import __version__
 from .embedding import auto_encoder
-from .extraction import extract
+from .extraction import extract, extract_dir
 from .storage import DISTILL_DUP_SIM_THRESHOLD, MEMORY_TYPES, MemoryStore, PROMOTION_USES_THRESHOLD, default_root
 
 
@@ -129,7 +129,11 @@ def cmd_distill_apply(args: argparse.Namespace) -> None:
 
 
 def cmd_extract(args: argparse.Namespace) -> None:
-    _emit(extract(Path(args.transcript), _open_store(args)))
+    target = Path(args.transcript)
+    if target.is_dir():
+        _emit(extract_dir(target, _open_store(args)))
+    else:
+        _emit(extract(target, _open_store(args)))
 
 
 def cmd_git_log(args: argparse.Namespace) -> None:
@@ -213,12 +217,18 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "extract",
         help="scan a session transcript for memory candidates (deterministic pass, no LLM)",
-        description="Deterministic candidate extraction from a ZCode model-io jsonl transcript. "
+        description="Deterministic candidate extraction from a session transcript. Two transcript shapes are "
+        "auto-detected by content (not filename): WorkBuddy session log jsonl (primary source, complete turns) "
+        "and ZCode model-io jsonl. WorkBuddy traces/ is deliberately unsupported — its toolInput is hard-truncated "
+        "at 100k chars from the head, so a snapshot keeps only the first user turn; accepting it would look like "
+        "a scan while silently dropping most of the session. "
+        "Pass a directory to batch-scan every session log under it (subagents/ skipped — their role:user is "
+        "the team-lead agent's task brief, not the human's own statement). "
         "Pattern matching only (statement -> fact, pitfall -> insight); the manifest lands in "
         "<root>/extract/last-candidates.json. Writing stays with the agent: confirm each candidate "
         "via memory_write (same-key conflicts still enter the review queue).",
     )
-    p.add_argument("transcript", help="path to a model-io-sess_*.jsonl transcript")
+    p.add_argument("transcript", help="path to a session log / model-io transcript, or a directory of session logs")
     p.set_defaults(func=cmd_extract)
     return parser
 

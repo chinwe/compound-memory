@@ -40,11 +40,13 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | `decay` | 衰减归档，长期未用且少用才动（定时任务跑） |
 | `revive <id>` | 复活归档记忆（私有 ns 记忆加 `--reader`） |
 | `git-log` | 审计轨迹（每次写入自动 commit） |
-| `extract <transcript>` | 会话抽取清单（P0）：确定性扫描 model-io jsonl，候选写 `extract/last-candidates.json`（一次性快照，下次扫描覆盖） |
+| `extract <transcript\|dir>` | 会话抽取清单（P0）：确定性扫描，候选写 `extract/last-candidates.json`（一次性快照，下次扫描覆盖）。两种 transcript 按内容自动判别：WorkBuddy session log（主源，完整逐轮）、ZCode model-io jsonl。传目录则批量扫全部会话（`~/.workbuddy/traces/` 不接入，理由见下） |
 
 ### 抽取清单确认（P0：扫描只发现候选，写库仍走协议）
 
 会话 transcript 经 `extract` 确定性扫描（模式匹配、零 LLM）产出疑似值得沉淀的用户陈述清单。Agent 读清单**逐条判断**：值得写就 `memory_write`（key 自己定、优先复用 `likely_dup_of` 指向的既有条目 key；同 key 冲突照常进 review 队列），不值得就丢弃——扫描器不做丢弃决策，也不直接写库。清单为空属正常（宁缺勿滥）：当前模式表只覆盖中文用户话的声明/踩坑句式，Agent 复述与命令粘贴不在扫描范围。
+
+**WorkBuddy 批量扫描**：`extract ~/.workbuddy/projects` 一次吃全部会话。实测 91 个真实会话 / 200 轮用户话只出 4 条候选——**用户话中位数仅 11 字符，多是任务请求而非陈述**（「帮我做个…」「支持哪些主题」），这是宿主交互形态决定的，不是解析缺陷（解析层已验证召回完整：216 轮全解析）。因此清单天然稀少，不要靠放宽模式表硬凑——宁可空清单，也不要噪声清单。另注两点：`subagents/` 下的 `role:user` 是 team-lead agent 的派活文本（第三人称转述用户），批量模式已跳过；`~/.workbuddy/traces/` **不接入**——trace 的 `toolInput` 被头部硬截到 100000 字符，单快照只剩首轮用户话，接进来是"看似扫过、实则大面积漏"，该目录只作排障线索。
 
 ### 蒸馏工作流（判断段归调用方 Agent）
 

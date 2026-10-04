@@ -63,6 +63,7 @@
 - **Git 集成**：每次写入自动 commit；仓库仅留本地或推私有 remote。
 - **技术选型**：Python（managed runtime 3.13）实现 stdio MCP server；蒸馏准备定时调度三选一——macOS launchd LaunchAgent（`scripts/` 安装物，睡眠错过补跑）、Linux systemd user timer（`Persistent=true` 同样补跑）、cron（最通用但不补跑），三者共用平台无关的 `scripts/distill-prepare.sh`；判断段由调用方 Agent 按需完成。
 - **抽取管线（P0，2026-10-04）**：会话 transcript → 确定性扫描（模式匹配，零 LLM）→ 候选清单（`extract/last-candidates.json`，运行时工件不入审计史）→ Agent 逐条确认走既有 memory_write。蒸馏三段式的第二应用——扫描只发现候选、写库权留在协议层（不静默原则不变）；清单为一次性快照（下次扫描覆盖），不做处理状态登记；去重标注用查询 token 覆盖率（normalized BM25 对长句查询结构性偏低）。模式表面向中文宿主用户话（statement→fact / pitfall→insight），Agent 复述与命令粘贴不扫；召回不足时先扩模式表，再考虑加一次廉价 LLM 分类（仍不做写库决策）。
+- **抽取管线接入 WorkBuddy（2026-10-04）**：transcript 形态按内容自动判别（不靠文件名、不只看首行——较新会话以 `session-meta` 开头，只探首行会静默丢掉最近的会话）。两个受支持源：① **session log**（`~/.workbuddy/projects/<project>/<sessionId>.jsonl`，WorkBuddy 主源，完整逐轮 `type=message`/`role=user`/`input_text` 块，真实用户话被 `<user_query>` 或 `<session>` 包裹，剥壳后再判注入）；② ZCode model-io jsonl。**`~/.workbuddy/traces/` 刻意不接入**：generation span 的 `toolInput` 被头部硬截到 100000 字符，单快照只剩首轮 user 消息，即便逐条 `raw_decode` 抢救（实测 845/845 span 成功）也属"看似扫过、实则大面积漏"的假阴性——该目录只作排障线索。批量模式传目录，跳过 `subagents/`（其 `role:user` 是 team-lead agent 的派活文本，第三人称转述用户，实测候选 3/3 全噪声）。**宿主交互形态决定召回上限**：WorkBuddy 91 个真实会话 / 200 轮用户话只出 4 条候选，用户话中位数 11 字符、多为任务请求而非陈述——解析层已验证完整（非缺陷），故不放宽模式表硬凑，宁可空清单不要噪声清单。
 - **落地节奏**：P0 纯文件约定 + ripgrep 检索脚本（半天）→ P1 MCP server + 向量索引（1–2 天）→ P2 复利引擎：feedback 闭环 + 定时蒸馏 + 衰减归档（2–3 天）。P2 之前只是"开户"，复利从 P2 开始。
 
 ## Testing Decisions
