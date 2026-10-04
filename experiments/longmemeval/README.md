@@ -78,6 +78,31 @@ single-session-preference 0.570 vs 0.550（recall@5 0.867 vs 0.833，recall@20 1
 - 编码耗时实测：全库 23,867 条分块编码 6,056s（~253ms/条，512-token 长会话
   padding 主导；巨批单 run 形态下同任务不可完成——issue #16 修复的前提）。
 
+## Windows 11 复测（2026-10-04）
+
+同协议同数据全量复现（500 题 / 23,867 会话），环境与代码基线同
+`experiments/perf-bench/README.md` 的 Windows 复测小节（当前 HEAD，
+含 Windows rel_path POSIX 归一修复）。产物：`runs/retrieval-lex-500q-win.json`
+与 `runs/retrieval-vec-500q-win.json`（mapping 同后缀，`ingest.py` 新增
+`--mapping-out` 避免覆盖既有产物）。
+
+| 指标 | 词面 | 向量（RRF） | 差值 |
+|---|---|---|---|
+| recall@5 | 0.968 | 0.968 | 0 |
+| recall@10 | 0.982 | 0.982 | 0 |
+| recall@20 | 0.996 | 0.996 | 0 |
+| MRR@20 | 0.8919 | 0.8926 | +0.0007 |
+
+- 与 macOS 结果逐位级一致（各指标差异 ≤0.004，可归因 recency 先验的
+  真实日期差——两机跑的日期不同，个别 tie-break 排位微移）；「向量增益
+  微小」的结论跨平台复现：knowledge-update MRR 0.939→0.965（macOS
+  0.950→0.958 同向），preference 仍最弱（0.575）。
+- 时长：词面检索 87.6s（macOS 252s，~2.9x）；**向量检索 238.5s（macOS
+  228s，持平）**——词面路随 CPU 快，向量路瓶颈在 sqlite-vec KNN 的
+  C 层全表扫描，平台差距被摊薄；向量灌库 rebuild 1,697s（~71ms/条，
+  macOS 6,056s 的 ~3.6x——长会话 512-token padding 主导，短文本场景
+  的 6x 差距在此收敛）。
+
 ## 阶段 B（端到端 QA，未跑）
 
 标准 LongMemEval 报的是端到端 QA 准确率（LLM 生成 + LLM judge），需要 OpenAI 兼容

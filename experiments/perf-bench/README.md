@@ -101,6 +101,33 @@ micro-bench 证实 `scan_pairs` 的大头是 `yaml.safe_load`（真实 frontmatt
 （对照原基线，千条级累计：narrow −51%、broad −56%、semantic −64%、
 reconcile −51%。）
 
+## Windows 11 复测（2026-10-04，vec 模式，Ryzen 5 3600 / BGE CPU）
+
+代码为当前 HEAD（已含直读 rel_path 与 CSafeLoader 两项优化，与上方 macOS
+「优化后」列同代码基线）。环境：Windows 11 x64，AMD Ryzen 5 3600（6C12T）/
+16GB，Python 3.12.11，BGE-small-zh int8 CPU 推理。
+
+| scenario | N=100 | N=500 | N=1000 |
+|---|---|---|---|
+| seed n memories (total) | 1.3s | 11.8s | 31.2s |
+| search lexical narrow, no neighbors | 29.9ms | 67.4ms | 112.2ms |
+| search lexical narrow, default neighbors | 47.6ms | 81.6ms | 139.0ms |
+| search lexical broad, default | 70.2ms | 216.8ms | 425.3ms |
+| search vector semantic, default | 42.9ms | 45.8ms | 56.0ms |
+| write + sync encode + git commit | 322.3ms | 360.1ms | 355.8ms |
+| feedback, no re-encode | 286.4ms | 320.0ms | 391.8ms |
+| reconcile after oob write | 182.1ms | 697.8ms | 1303.6ms |
+| stats full scan (total) | 0.04s | 0.19s | 0.38s |
+| full rebuild-index (total) | 793.7ms | 4014.8ms | 7725.1ms |
+
+观察（N=1000，对照 macOS 优化后）：检索路径全面快 2–4x（narrow
+268.8→112.2ms、broad 1011.3→425.3ms、reconcile 2974.4→1303.6ms、stats
+0.82→0.38s）；全量编码快 ~6x（rebuild 46.4s→7.7s，对照 macOS 原始基线，
+优化后未复测该项）。**write（~356ms）与 feedback（~392ms）反而高于
+macOS 原始基线（291/220ms）**——Windows 的 git commit 与 sqlite fsync
+开销，量级仍远低于交互阈值，观察即可。规模趋势与 macOS 一致：reconcile
+随 N 线性、broad 随候选集放大、semantic 基本平坦（编码底噪主导）。
+
 ## 已知观察（基线暴露，待后续处理）
 
 - ~~向量召回的 mem 解析是 O(候选×N)~~ **已修**：直读 rel_path（见上方对照）。

@@ -44,6 +44,7 @@ def main() -> None:
     ap.add_argument("--root", type=Path, required=True, help="ephemeral store root (gitignored)")
     ap.add_argument("--limit", type=int, default=None, help="只灌前 N 题（pilot）")
     ap.add_argument("--vector", action="store_true", help="灌库后用真实 embedding 重建向量缓存")
+    ap.add_argument("--mapping-out", type=Path, default=None, help="mapping 落盘路径（缺省 runs/ 自动命名）")
     args = ap.parse_args()
 
     with open(args.data, encoding="utf-8") as fh:
@@ -83,7 +84,7 @@ def main() -> None:
 
     runs_dir = Path(__file__).parent / "runs"
     runs_dir.mkdir(exist_ok=True)
-    out = runs_dir / f"mapping{'-vec' if args.vector else ''}-{len(questions)}q.json"
+    out = args.mapping_out or runs_dir / f"mapping{'-vec' if args.vector else ''}-{len(questions)}q.json"
     out.write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")
     print(f"mapping: {out}")
 
