@@ -10,8 +10,12 @@ extract/ 目录的 gitignore 归属（运行时工件，含会话摘录，不入
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from compound_memory.cli import main as cli_main
 from compound_memory.extraction import (
@@ -20,10 +24,15 @@ from compound_memory.extraction import (
     extract,
     extract_dir,
     scan_texts,
+    user_texts_from_claude_log,
+    user_texts_from_dsh_session,
     user_texts_from_session_log,
     user_texts_from_zcode_db,
 )
 from compound_memory.storage import MemoryStore
+
+ZSTD_AVAILABLE = shutil.which("zstd") is not None
+requires_zstd = pytest.mark.skipif(not ZSTD_AVAILABLE, reason="zstd CLI not available")
 
 
 def _model_io_line(user_blocks: list[dict]) -> str:
@@ -116,6 +125,137 @@ def test_zcode_db_user_texts_filtered_and_deduped(tmp_path: Path) -> None:
         ],
     )
     assert user_texts_from_zcode_db(db) == ["我用 uv 管理这个项目", "部署在 Vercel 上，注意 10 秒超时"]
+
+
+# --- Claude Code 宿主解析层 --------------------------------------------------
+# 真实形态（实测 ~/.claude/projects/<slug>/<uuid>.jsonl）：首行是 mode /
+# permission-mode / file-history-snapshot 等元事件；真实输入 = type=='user' 的
+# message.content（字符串或 text 块），isMeta 是 UI 回显/命令展开、isSidechain
+# 是子 agent 转述、tool_result 块与 <command-*>/<local-command-stdout> 包装、
+# "[Request interrupted by user]" 系统提示都不是用户话。
+
+
+def _claude_user(content: str | list[dict], *, is_meta: bool = False, sidechain: bool = False) -> str:
+    event: dict = {
+        "parentUuid": None,
+        "isSidechain": sidechain,
+        "type": "user",
+        "message": {"role": "user", "content": content},
+        "uuid": "u",
+        "sessionId": "s",
+    }
+    if is_meta:
+        event["isMeta"] = True
+    return json.dumps(event, ensure_ascii=False)
+
+
+def test_claude_log_user_texts_filtered_and_deduped(tmp_path: Path) -> None:
+    """解析契约：isMeta / isSidechain / tool_result / 命令包装 / 系统提示全滤掉，
+    字符串与 text 块两种 content 形态都收，跨行重复去重。"""
+    log = tmp_path / "sess_test.jsonl"
+    log.write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "mode", "mode": "normal", "sessionId": "s"}),
+                _claude_user("我用 uv 管理这个项目"),
+                _claude_user("<system-reminder>\n# agentsMd\n注入内容"),
+                _claude_user("<command-message>doctor</command-message>\n<command-name>/doctor</command-name>"),
+                _claude_user("<local-command-stdout>Bye!</local-command-stdout>"),
+                _claude_user("[glm-5.2] ░░░░░░░░░░ 0% | project", is_meta=True),
+                _claude_user([{"type": "tool_result", "tool_use_id": "t1", "content": "out"}]),
+                _claude_user([{"type": "text", "text": "[Request interrupted by user]"}]),
+                _claude_user([{"type": "text", "text": "部署在 Vercel 上，注意 10 秒超时"}]),
+                _claude_user("我用 uv 管理这个项目", sidechain=True),
+                json.dumps({"type": "assistant", "message": {"role": "assistant", "content": "ok"}}),
+                _claude_user("我用 uv 管理这个项目"),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    assert user_texts_from_claude_log(log) == ["我用 uv 管理这个项目", "部署在 Vercel 上，注意 10 秒超时"]
+
+
+# --- DeepSeek Harness 宿主解析层 ---------------------------------------------
+# 真实形态（实测 ~/.dsh/sessions/<slug>/<会话>/session.jsonl.zstd）：文件是
+# zstd 压缩的 JSONL；真实输入 = user/message 且 data.source.kind=='user'
+# （runtime-context 快照 / 技能注入 / 审批通知走别的 source.kind）；session
+# 事件 origin=='subagent' 的是主 agent 派生的子会话（第三人称派活文本）。
+
+
+def _dsh_user_message(text: str, *, source_kind: str | None = "user") -> str:
+    data: dict = {"content": [{"type": "text", "text": text}], "role": "user"}
+    if source_kind is not None:
+        data["source"] = {"kind": source_kind}
+    return json.dumps({"type": "user/message", "seq": 0, "time": 0, "data": data}, ensure_ascii=False)
+
+
+def _write_dsh_session(tmp_path: Path, lines: list[str]) -> Path:
+    src = tmp_path / "session.jsonl"
+    src.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    dest = tmp_path / "session.jsonl.zstd"
+    subprocess.run(["zstd", "-f", "-q", "-o", str(dest), str(src)], check=True)
+    return dest
+
+
+@requires_zstd
+def test_dsh_session_user_texts_filtered_and_deduped(tmp_path: Path) -> None:
+    """解析契约：source.kind=='user' 才是真人输入（plugin 通知、无 source 的
+    runtime 快照、system-reminder 技能注入全滤），坏行跳过、重复去重。"""
+    dsh = _write_dsh_session(
+        tmp_path,
+        [
+            json.dumps({"type": "session", "version": 0, "id": "s", "createdAt": 0, "cwd": "/tmp"}),
+            _dsh_user_message("我用 uv 管理这个项目"),
+            _dsh_user_message('The approval policy changed from "ask" to "never".', source_kind="plugin"),
+            _dsh_user_message("Current runtime context. This snapshot supersedes earlier runtime-context snapshots.", source_kind=None),
+            _dsh_user_message("<system-reminder>\nA skill is a reusable set of task-specific instructions."),
+            _dsh_user_message("部署在 Vercel 上，注意 10 秒超时"),
+            "{ broken json",
+            _dsh_user_message("我用 uv 管理这个项目"),
+        ],
+    )
+    assert user_texts_from_dsh_session(dsh) == ["我用 uv 管理这个项目", "部署在 Vercel 上，注意 10 秒超时"]
+
+
+@requires_zstd
+def test_dsh_subagent_session_yields_nothing(tmp_path: Path) -> None:
+    """session.origin=='subagent' 的子会话是主 agent 的派活文本（第三人称转述，
+    与 WorkBuddy subagents/ 同型噪声），整场返回空——宁可不扫，不可污染清单。"""
+    dsh = _write_dsh_session(
+        tmp_path,
+        [
+            json.dumps(
+                {"type": "session", "version": 0, "id": "s", "createdAt": 0, "cwd": "/tmp", "origin": "subagent"}
+            ),
+            _dsh_user_message("用户想要一个宣传海报，请分析图片"),
+        ],
+    )
+    assert user_texts_from_dsh_session(dsh) == []
+
+
+@requires_zstd
+def test_extract_dir_covers_dsh_v3_files(tmp_path: Path, store: MemoryStore) -> None:
+    """回归：dsh 会话文件有两代文件名（session.jsonl.zstd / session.v3.jsonl.zstd），
+    事件形态相同。批量 glob 若只认旧名会静默漏掉一半会话（实测 25 个里 14 个是
+    v3）——WorkBuddy「session-meta 开头」教训的同型坑。"""
+    root = tmp_path / "sessions"
+    for name in ("session.jsonl.zstd", "session.v3.jsonl.zstd"):
+        d = root / "proj-x" / f"sid-{name.split('.')[1]}"
+        d.mkdir(parents=True)
+        src = d / "tmp.jsonl"
+        src.write_text(
+            "\n".join(
+                [
+                    json.dumps({"type": "session", "version": 0, "id": "s", "createdAt": 0, "cwd": "/tmp"}),
+                    _dsh_user_message("记住：部署窗口是周五"),
+                ]
+            ),
+            encoding="utf-8",
+        )
+        subprocess.run(["zstd", "-f", "-q", "-o", str(d / name), str(src)], check=True)
+    result = extract_dir(root, store)
+    assert result["sessions"] == 2, "两代文件名都必须被批量扫描吃到"
+    assert result["candidates"] >= 1
 
 
 def test_scan_matches_statement_and_pitfall_skips_noise() -> None:
@@ -283,6 +423,25 @@ def test_detect_zcode_db_retired_model_io_and_trace(tmp_path: Path, store: Memor
     con.close()
     assert detect_transcript_kind(other_sqlite) == "unsupported"
 
+    claude_log = tmp_path / "c.jsonl"
+    claude_log.write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "mode", "mode": "normal", "sessionId": "s"}),
+                _claude_user("我用 uv 管理这个项目"),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    assert detect_transcript_kind(claude_log) == "claude-log"
+
+    if ZSTD_AVAILABLE:
+        dsh = _write_dsh_session(
+            tmp_path,
+            [json.dumps({"type": "session", "version": 0, "id": "s", "createdAt": 0, "cwd": "/tmp"})],
+        )
+        assert detect_transcript_kind(dsh) == "dsh-session"
+
     model_io = tmp_path / "m.jsonl"
     model_io.write_text(_model_io_line([_text_block("我用的是 uv")]), encoding="utf-8")
     assert detect_transcript_kind(model_io) == "unsupported"
@@ -317,14 +476,18 @@ def test_detect_zcode_db_retired_model_io_and_trace(tmp_path: Path, store: Memor
 
 def test_extract_dispatches_by_transcript_shape(tmp_path: Path, store: MemoryStore) -> None:
     """extract 入口按内容形状分发解析器（不靠文件名约定）：session log 走
-    WorkBuddy 主源，sqlite 走 ZCode 会话库；两者都认不出时抛 ValueError
-    而非静默产空清单。"""
+    WorkBuddy 主源，sqlite 走 ZCode 会话库，Claude/dsh 各走自家形态；
+    都认不出时抛 ValueError 而非静默产空清单。"""
     log = tmp_path / "sess_x.jsonl"
     log.write_text(_session_line("user", "<user_query>我用 uv 管理这个项目</user_query>"), encoding="utf-8")
     assert extract(log, store)["parser"] == "session-log"
 
     db = _zcode_db(tmp_path / "db.sqlite", [("user", [{"type": "text", "text": "部署在 Vercel 上，注意 10 秒超时"}])])
     assert extract(db, store)["parser"] == "zcode-db"
+
+    claude_log = tmp_path / "c_x.jsonl"
+    claude_log.write_text(_claude_user("记住：部署窗口是周五"), encoding="utf-8")
+    assert extract(claude_log, store)["parser"] == "claude-log"
 
     junk = tmp_path / "junk.txt"
     junk.write_text("完全不是 transcript", encoding="utf-8")
@@ -338,7 +501,9 @@ def test_extract_dispatches_by_transcript_shape(tmp_path: Path, store: MemorySto
 
 def test_extract_dir_batches_and_skips_subagents(tmp_path: Path, store: MemoryStore) -> None:
     """批量模式：跨会话合并去重；**跳过 subagents/**——那里的 role:user 是
-    team-lead agent 的派活文本（第三人称转述用户），实测候选 3/3 全是噪声。"""
+    team-lead agent 的派活文本（第三人称转述用户），实测候选 3/3 全是噪声。
+    目录里混着其他宿主的会话（Claude Code 同为 <slug>/<file>.jsonl 布局）
+    也一并按各自形态解析。"""
     projects = tmp_path / "projects"
     sess_a = projects / "Users-x-workspace-a"
     sess_b = projects / "Users-y-workspace-b"
@@ -360,12 +525,22 @@ def test_extract_dir_batches_and_skips_subagents(tmp_path: Path, store: MemorySt
     )
     # subagent 派活文本：含模式词但不是本人陈述
     (sub / "agent-x.jsonl").write_text(
-        _session_line("user", "## 任务：构建鱼吃鱼网页游戏 MVP\n\n用户俊伟想要一个网页游戏，失败要重试"),
+        _session_line("user", "## 任务：构建鱼吃鱼网页游戏 MVP\n\n用户想要一个网页游戏，失败要重试"),
+        encoding="utf-8",
+    )
+    # 混入一个 Claude Code 会话文件：按内容判别后走 claude-log 解析
+    (sess_b / "c3.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "mode", "mode": "normal", "sessionId": "s"}),
+                _claude_user("记住：部署窗口是周五"),
+            ]
+        ),
         encoding="utf-8",
     )
     result = extract_dir(projects, store)
-    assert result["sessions"] == 2
-    assert result["user_turns"] == 2, "跨会话复述应合并"
+    assert result["sessions"] == 3
+    assert result["user_turns"] == 3, "跨会话复述应合并，不同句子各留一条"
     quotes = " ".join(c["quote"] for c in json.loads(
         (store.root / "extract" / "last-candidates.json").read_text(encoding="utf-8")
     )["candidates"])

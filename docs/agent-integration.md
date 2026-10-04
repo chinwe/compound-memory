@@ -227,8 +227,10 @@ uv run compound-memory review-queue   # fact/insight 同 key 冲突队列（人�
 uv run compound-memory rebuild-index  # 手编已有文件内容后重建检索缓存
 uv run compound-memory extract <transcript|dir>  # 会话抽取清单（P0）：确定性扫描 →
                                       #   extract/last-candidates.json；Agent 逐条确认后 memory_write 落库
-                                      #   transcript 按内容自动判别两种形态（session log / ZCode 会话库 sqlite）；
-                                      #   传目录则批量扫（如 extract ~/.workbuddy/projects，自动跳过 subagents/）；
+                                      #   transcript 按内容自动判别四种形态（WorkBuddy session log /
+                                      #   ZCode 会话库 sqlite / Claude Code session log / dsh zstd session）；
+                                      #   传目录批量扫：extract ~/.workbuddy/projects 或 ~/.claude/projects
+                                      #   或 ~/.dsh/sessions（自动跳过 subagents/ 与 dsh subagent 子会话）
                                       #   ZCode 直接指库文件：extract ~/.zcode/cli/db/db.sqlite（只读打开）
                                       #   注意 traces/ 与 rollout/model-io 快照不接入（都只剩部分轮次，是假阴性）
 uv run compound-memory git-log        # 审计轨迹（每次写入自动 commit）

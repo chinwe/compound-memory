@@ -40,7 +40,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | `decay` | 衰减归档，长期未用且少用才动（定时任务跑） |
 | `revive <id>` | 复活归档记忆（私有 ns 记忆加 `--reader`） |
 | `git-log` | 审计轨迹（每次写入自动 commit） |
-| `extract <transcript\|dir>` | 会话抽取清单（P0）：确定性扫描，候选写 `extract/last-candidates.json`（一次性快照，下次扫描覆盖）。transcript 按内容自动判别：WorkBuddy session log（主源，完整逐轮；传目录批量扫）、ZCode 会话库（`~/.zcode/cli/db/db.sqlite`，全量历史，直接指库文件）。`~/.workbuddy/traces/` 与 ZCode rollout/model-io 快照不接入——都只剩部分轮次，接进来是假阴性（理由见下） |
+| `extract <transcript\|dir>` | 会话抽取清单（P0）：确定性扫描，候选写 `extract/last-candidates.json`（一次性快照，下次扫描覆盖）。transcript 按内容自动判别四种形态：WorkBuddy session log、ZCode 会话库（`~/.zcode/cli/db/db.sqlite`，全量历史，直接指库文件）、Claude Code session log、DeepSeek Harness session（zstd 压缩，需系统 zstd CLI）。jsonl/zstd 传目录则批量扫（WorkBuddy 与 Claude 同为 `<项目>/<会话>.jsonl`，dsh 为 `<项目>/<会话>/session*.jsonl.zstd`）。`~/.workbuddy/traces/` 与 ZCode rollout/model-io 快照不接入——都只剩部分轮次，接进来是假阴性（理由见下） |
 
 ### 抽取清单确认（P0：扫描只发现候选，写库仍走协议）
 

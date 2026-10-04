@@ -14,6 +14,15 @@ transcript 解析支持两种宿主格式，按内容形状分发（不靠文件
    （message+part 表，正文在 part 的 text 块）。rollout/model-io jsonl 快照
    已退役不接——它只剩最近几个会话，只接快照会产出"看似扫过、实则只盖住
    冰山一角"的假阴性，与 trace 同等对待。
+3. **Claude Code session log**（`~/.claude/projects/<项目>/<sessionId>.jsonl`）：
+   真实输入 = `type=='user'` 的 message.content（字符串或 text 块）；isMeta
+   （UI 回显/命令展开）、isSidechain（子 agent 转述）、tool_result 块与
+   `<command-*>`/`<local-command-stdout>` 包装都不是用户话。
+4. **DeepSeek Harness session**（`~/.dsh/sessions/<项目>/<会话>/session.jsonl.zstd`）：
+   zstd 压缩的 JSONL（经系统 zstd CLI 解压，不为此引 C 扩展依赖）。真实输入 =
+   `user/message` 且 `data.source.kind=='user'`（runtime-context 快照 / 技能
+   注入 / 审批通知走别的 source.kind）；`session.origin=='subagent'` 的子会话
+   是主 agent 派活文本，整场返回空。
 
 **刻意不支持 trace**（`~/.workbuddy/traces/<pid>/trace_*.json`）：generation
 span 的 toolInput 是请求快照，但被**头部**硬截到 100000 字符，整段解析必抛；
@@ -32,7 +41,9 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import shutil
 import sqlite3
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +72,8 @@ INJECTION_MARKERS = (
     "<command-name>",
     "<local-command",
     "Caveat:",
+    "[Request interrupted",
+    "<command-message",
     # WorkBuddy 形态：Agent Team 注入、队友派活、上下文压缩摘要、续写指令
     "<teammate-message",
     "<user-prompt-submit-hook",
@@ -165,6 +178,89 @@ def user_texts_from_zcode_db(path: Path) -> list[str]:
     return _dedupe(texts)
 
 
+def user_texts_from_claude_log(path: Path) -> list[str]:
+    """Claude Code session log jsonl → 真实用户话（保序去重）。
+
+    只取 type=='user' 的真实输入：跳过 isSidechain（子 agent 转述）与 isMeta
+    （UI 回显、命令展开）；content 字符串或 text 块都过注入过滤——<command-*>
+    包装、local-command-stdout、tool_result 块、"[Request interrupted]" 提示
+    不是用户话。
+    """
+    texts: list[str] = []
+    for event in _iter_json_lines(path):
+        if not isinstance(event, dict) or event.get("type") != "user":
+            continue
+        if event.get("isSidechain") or event.get("isMeta"):
+            continue
+        message = event.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        blocks = [content] if isinstance(content, str) else content if isinstance(content, list) else []
+        for block in blocks:
+            if isinstance(block, str):
+                text = block
+            elif isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text") or ""
+            else:
+                continue
+            cleaned = _unwrap_user_text(text.strip())
+            if cleaned:
+                texts.append(cleaned)
+    return _dedupe(texts)
+
+
+def _zstd_decompress(path: Path) -> str:
+    """zstd CLI 解压出文本（dsh 会话是 zstd 压缩 JSONL；用系统 CLI 免引 C 扩展依赖）。"""
+    zstd = shutil.which("zstd")
+    if zstd is None:
+        raise ValueError(
+            f"zstd CLI not found on PATH; it is required to read DeepSeek Harness session files: {path}"
+        )
+    proc = subprocess.run([zstd, "-dc", str(path)], capture_output=True, check=False)
+    if proc.returncode != 0:
+        stderr = proc.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError(f"zstd failed to decompress {path}: {stderr}")
+    return proc.stdout.decode("utf-8", errors="replace")
+
+
+def user_texts_from_dsh_session(path: Path) -> list[str]:
+    """DeepSeek Harness session.jsonl.zstd → 真实用户话（保序去重）。
+
+    真实输入 = user/message 且 data.source.kind=='user'——runtime-context
+    快照、技能注入、审批通知都走别的 source.kind，结构上就能分开，不必靠
+    文本模式硬猜。session.origin=='subagent' 的子会话是主 agent 派活文本
+    （第三人称转述，与 WorkBuddy subagents/ 同型噪声），整场返回空。
+    """
+    texts: list[str] = []
+    subagent = False
+    for line in _zstd_decompress(path).splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "session":
+            # session 事件在文件首行，先于所有用户消息
+            subagent = event.get("origin") == "subagent"
+            continue
+        if event.get("type") != "user/message":
+            continue
+        data = event.get("data")
+        source = data.get("source") if isinstance(data, dict) else None
+        if not isinstance(source, dict) or source.get("kind") != "user":
+            continue
+        content = data.get("content") if isinstance(data, dict) else None
+        for block in content if isinstance(content, list) else []:
+            if isinstance(block, dict) and block.get("type") == "text":
+                cleaned = _unwrap_user_text((block.get("text") or "").strip())
+                if cleaned:
+                    texts.append(cleaned)
+    return [] if subagent else _dedupe(texts)
+
+
 def user_texts_from_session_log(path: Path) -> list[str]:
     """WorkBuddy session log jsonl → 真实用户话（保序去重）。
 
@@ -267,6 +363,7 @@ def scan_texts(
 DETECT_HEAD_CHARS = 65536  # 形态探测只读文件头：足够看清结构，避开大文件全读
 DETECT_MAX_LINES = 20  # 最多探这么行（较新会话以多条 session-meta 开头）
 SQLITE_MAGIC = b"SQLite format 3\x00"
+ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"  # zstd 帧魔数（dsh 会话文件）
 
 
 def _is_zcode_db(path: Path) -> bool:
@@ -284,20 +381,24 @@ def _is_zcode_db(path: Path) -> bool:
 
 
 def detect_transcript_kind(path: Path) -> str:
-    """按内容形状判定 transcript 形态：session-log / zcode-db / unsupported。
+    """按内容形状判定 transcript 形态：session-log / zcode-db / claude-log /
+    dsh-session / unsupported。
 
-    不靠文件名约定——两种宿主都把日志叫 .jsonl / .sqlite。也不只看第一行：
-    较新会话以 session-meta 事件开头（实测 92 个真实会话里 16 个如此，且恰好
-    是最近的），只看首行会把它们全判成 unsupported 静默跳过。
+    不靠文件名约定——各家都把日志叫 .jsonl / .sqlite / .zstd。也不只看第一
+    行：较新会话以 session-meta / mode 等元事件开头，只看首行会把它们全判成
+    unsupported 静默跳过。
 
-    SQLite 按魔数识别，再验 message/part 表形状；model-io 快照与 trace 是
-    retired 源（只剩最近几个会话 / 首轮 user 消息），判 unsupported 而非
-    unknown——给出行内理由并指向受支持源，避免"看似扫过、实则大面积漏"。
+    SQLite 按魔数 + message/part 表形状识别；zstd 按帧魔数识别（dsh 会话）；
+    model-io 快照与 trace 是 retired 源（只剩最近几个会话 / 首轮 user 消息），
+    判 unsupported 而非 unknown——给出行内理由并指向受支持源，避免"看似扫过、
+    实则大面积漏"。
     """
     with open(path, "rb") as fh:
         raw = fh.read(DETECT_HEAD_CHARS)
     if raw.startswith(SQLITE_MAGIC):
         return "zcode-db" if _is_zcode_db(path) else "unsupported"
+    if raw.startswith(ZSTD_MAGIC):
+        return "dsh-session"
     head = raw.decode("utf-8", errors="replace")
     for line in head.splitlines()[:DETECT_MAX_LINES]:
         line = line.strip()
@@ -311,19 +412,26 @@ def detect_transcript_kind(path: Path) -> str:
             continue
         if event.get("type") == "message":
             return "session-log"
+        if event.get("type") == "user" and isinstance(event.get("message"), dict):
+            return "claude-log"
     return "unsupported"
 
 
 PARSERS = {
     "session-log": user_texts_from_session_log,
     "zcode-db": user_texts_from_zcode_db,
+    "claude-log": user_texts_from_claude_log,
+    "dsh-session": user_texts_from_dsh_session,
 }
 
 UNSUPPORTED_HINT = (
     "不支持的 transcript 形态：{path}。受支持的源有——"
-    "WorkBuddy session log（~/.workbuddy/projects/<项目>/<sessionId>.jsonl，传目录批量扫）"
-    "或 ZCode 会话库（~/.zcode/cli/db/db.sqlite）。"
-    "WorkBuddy traces/ 与 ZCode rollout/model-io 快照不接入：前者只剩首轮、后者只剩最近几个会话，"
+    "WorkBuddy session log（~/.workbuddy/projects/<项目>/<sessionId>.jsonl）、"
+    "ZCode 会话库（~/.zcode/cli/db/db.sqlite）、"
+    "Claude Code session log（~/.claude/projects/<项目>/<sessionId>.jsonl）、"
+    "DeepSeek Harness session（~/.dsh/sessions/<项目>/<会话>/session.jsonl.zstd）；"
+    "jsonl 传目录则批量扫。"
+    "WorkBuddy traces/ 与 ZCode rollout/model-io 快照不接入：都只剩部分轮次，"
     "接进来是'看似扫过、实则大面积漏'的假阴性。"
 )
 
@@ -375,26 +483,39 @@ def extract_dir(
     store: MemoryStore,
     max_sessions: int = EXTRACT_MAX_SESSIONS,
 ) -> dict[str, Any]:
-    """批量扫一个宿主日志目录（WorkBuddy: ~/.workbuddy/projects）。
+    """批量扫一个宿主日志目录。
 
-    只吃一级会话文件，**跳过 subagents/**：那里的 role=="user" 其实是
-    team-lead agent 的派活文本（"用户俊伟想要…" 是第三人称转述，不是本人
-    陈述），实测 3/3 候选全是噪声——混进来只会污染清单。
+    支持的目录布局：WorkBuddy `~/.workbuddy/projects` 与 Claude Code
+    `~/.claude/projects`（都是 `<项目>/<会话>.jsonl`），DeepSeek Harness
+    `~/.dsh/sessions`（`<项目>/<会话>/session.jsonl.zstd`）。每个文件按内容
+    形态分派解析器，认不出的静默跳过（目录里可能混着非会话文件）。
+
+    只吃一级会话文件，**跳过 subagents/**：那里的 role:user 是 team-lead
+    agent 的派活文本（"用户想要…" 是第三人称转述，不是本人陈述），
+    实测 3/3 候选全是噪声——混进来只会污染清单。dsh 的 subagent 子会话在
+    解析器内按 session.origin 识别并返回空（计为已扫会话）。
 
     跨会话合并去重后再扫（同一句话在多会话复述），单会话上限由
     scan_texts 的 MAX_CANDIDATES 兜底。
     """
     texts: list[str] = []
     sessions = 0
-    for log in sorted(root.glob("*/*.jsonl")):
-        if detect_transcript_kind(log) != "session-log":
+    paths: set[Path] = set()
+    # dsh 会话文件有两代文件名（session.jsonl.zstd / session.v3.jsonl.zstd），
+    # 事件形态相同——glob 只认旧名会静默漏掉新会话（实测 25 个里 14 个是 v3）
+    for pattern in ("*/*.jsonl", "*/*/session*.jsonl.zstd"):
+        paths.update(root.glob(pattern))
+    for log in sorted(paths):
+        kind = detect_transcript_kind(log)
+        parser = PARSERS.get(kind)
+        if parser is None or "subagents" in log.parts:
             continue
-        texts.extend(user_texts_from_session_log(log))
+        texts.extend(parser(log))
         sessions += 1
         if sessions >= max_sessions:
             break
     merged = _dedupe(texts)
     candidates = scan_texts(merged, store=store)
-    summary = _write_manifest(store, f"{root} (batch)", "session-log/batch", merged, candidates)
+    summary = _write_manifest(store, f"{root} (batch)", "batch", merged, candidates)
     summary["sessions"] = sessions
     return summary
