@@ -101,7 +101,9 @@ def run_scale(n: int, base_root: Path) -> dict[str, str]:
     out["search lexical broad, default (med/search)"] = f"{bench_search(store, BROAD_QUERIES, repeat=6):.1f}ms"
     out["search vector semantic, default (med/search)"] = f"{bench_search(store, SEMANTIC_QUERIES, repeat=6):.1f}ms"
     out["write + sync encode + git commit (med)"] = f"{timed_ms(lambda: store.write(**extra.pop()), 5):.1f}ms"
-    out["feedback, no re-encode (med)"] = f"{timed_ms(lambda: store.feedback(ids.pop(), 'bench-agent'), 5):.1f}ms"
+    # agent 用 'bench'：对 _shared 记忆是跨 agent feedback（覆盖验证加分路径），
+    # 对私有 ns agent-bench 的记忆是属主（owner 校验放行；'bench-agent' 会被拒）
+    out["feedback, no re-encode (med)"] = f"{timed_ms(lambda: store.feedback(ids.pop(), 'bench'), 5):.1f}ms"
     out["reconcile after oob write (med/search)"] = f"{bench_reconcile(root, store, tag=n):.1f}ms"
     out["stats full scan (total)"] = f"{timed_ms(store.stats, 1) / 1000.0:.2f}s"
     out["full rebuild-index (total)"] = fmt_ms(timed_ms(store.rebuild_index, 1))
