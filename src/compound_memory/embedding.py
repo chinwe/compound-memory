@@ -22,6 +22,11 @@ from typing import Callable
 MODEL_REPO_ID = os.environ.get("COMPOUND_MEMORY_EMBEDDING_MODEL", "Xenova/bge-small-zh-v1.5")
 EMBED_DIM = int(os.environ.get("COMPOUND_MEMORY_EMBEDDING_DIM", "512"))
 
+# 单次 onnx run 的批量上限：rebuild 把全库一次喂进来会变成单次巨批 run
+# （LongMemEval 960 条长会话实测 >40 分钟无进度），切块让成本线性可控。
+# 对调用方 encode 仍是一次全量调用——这是批量面优化，与增量索引无关。
+ENCODE_CHUNK = 32
+
 
 def _cache_glob(repo_id: str) -> str:
     """HF 缓存目录 glob：repo id 的 "/" 替换为 "--"（如 a/b → models--a--b）。"""
@@ -76,7 +81,11 @@ class BgeEncoder:
         self._tokenizer: "Tokenizer | None" = None
 
     def encode(self, texts: list[str]) -> list[list[float]]:
-        """批量编码；L2 归一化后的 [CLS] 表示（余弦可直接用作相似度）。"""
+        """批量编码；L2 归一化后的 [CLS] 表示（余弦可直接用作相似度）。
+
+        内部按 ENCODE_CHUNK 切块逐次 run：外部仍是一次全量调用、返回顺序
+        与输入一一对应，只是把单次巨批拆成有界小批（issue #16）。
+        """
         assert VEC_AVAILABLE  # 构造已保证；reassure 类型检查
         if self._session is None or self._tokenizer is None:
             self._tokenizer = Tokenizer.from_file(str(self._tokenizer_path))
@@ -84,13 +93,17 @@ class BgeEncoder:
             self._tokenizer.enable_padding()
             self._session = ort.InferenceSession(str(self._onnx_path), providers=["CPUExecutionProvider"])
         encs = self._tokenizer.encode_batch(texts)
-        feed = {
-            "input_ids": np.array([e.ids for e in encs], dtype=np.int64),
-            "attention_mask": np.array([e.attention_mask for e in encs], dtype=np.int64),
-            "token_type_ids": np.array([e.type_ids for e in encs], dtype=np.int64),
-        }
         names = {i.name for i in self._session.get_inputs()}
-        out = self._session.run(None, {k: v for k, v in feed.items() if k in names})[0]
-        cls = out[:, 0, :]
-        normed = cls / np.linalg.norm(cls, axis=1, keepdims=True)
-        return normed.tolist()
+        out_rows: list[list[float]] = []
+        for start in range(0, len(encs), ENCODE_CHUNK):
+            batch = encs[start : start + ENCODE_CHUNK]
+            feed = {
+                "input_ids": np.array([e.ids for e in batch], dtype=np.int64),
+                "attention_mask": np.array([e.attention_mask for e in batch], dtype=np.int64),
+                "token_type_ids": np.array([e.type_ids for e in batch], dtype=np.int64),
+            }
+            out = self._session.run(None, {k: v for k, v in feed.items() if k in names})[0]
+            cls = out[:, 0, :]
+            normed = cls / np.linalg.norm(cls, axis=1, keepdims=True)
+            out_rows.extend(normed.tolist())
+        return out_rows
