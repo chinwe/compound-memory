@@ -26,6 +26,10 @@ _Avoid_: 数据不出机（字面绝对化会连 search 动线一起禁掉）
 0~1 的数值，表示一条记忆被验证的程度；使用与跨 Agent 验证会提高它。
 _Avoid_: score、weight（weight 专指类型权重）
 
+**Validity window（有效期）**：
+事实的生效区间标注：`valid_from` 起生效；`valid_until` 当日仍有效、次日起退出检索与邻居召回（get 恒可读，不等于归档）。事实更替仍走 review 队列裁决——valid_until 只管检索可见性，不做自动失效改写。
+_Avoid_: 过期/expire（口语动词，规范说法是「valid_until 已过」）、TTL（那是类型的归档寿命）
+
 **Compounding（复利）**：
 记忆系统随使用增值的机制：使用强化置信度、双向关联在 get/search 时带出邻居、跨 Agent 验证额外加分。
 _Avoid_: 加分、利息

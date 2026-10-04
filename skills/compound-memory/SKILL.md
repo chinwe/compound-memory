@@ -23,6 +23,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | `key` | fact/insight 用稳定英文短横线标识（`user-tts`、`proj-xxx`）；更新既有事实复用同 key，新版本与旧版内容不同时返回 `conflict: true` 并入冲突队列 |
 | `source` | 宿主标识：`agent-workbuddy` / `agent-zcode` / `agent-claude` / `agent-deepseek` |
 | `ns` | 默认 `_shared`；`agent-*` 是私有区，写/读/反馈都只认属主——读私有 ns 须带 `reader`（自己的 agent id，缺省即拒绝），越权抛 `PermissionError`。`memory_search` 不传 `ns` 时自动并搜自有私有区（双通道，见必做动作①） |
+| `valid_from` / `valid_until` | 可选 ISO 日期（YYYY-MM-DD）标注事实有效期；`valid_until` 已过的事实自动退出检索结果（`memory_get` 仍可读）。事实会过时的场景（负责人变更、配置轮换）写新版时带上预期失效日，过期后检索不再被旧值污染 |
 | 内容 | 中文，与库内既有条目一致 |
 
 读取语义：按 id 的 `memory_get` 恒含 `found` 键，目标不存在返回 `{"found": false}`；目标在私有 ns 时必带 `reader`；归档记忆仍可 get，对它 `memory_feedback` 或 CLI `revive`（私有 ns 带 `--reader`）即恢复可检索。

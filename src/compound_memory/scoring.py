@@ -116,6 +116,19 @@ def bm25_scores(
     return scores
 
 
+def is_expired(mem: Memory, today: dt.date) -> bool:
+    """valid_until 已过 ⇒ True（valid_until 当日仍有效，次日过期）。
+
+    坏/缺 valid_until 返回 False——坏数据不冒充过期（与 _within_days 同哲学：
+    宁可少排除，不因坏日期静默吞掉一条记忆）。valid_from 不参与判定：
+    检索没有 as-of 语义，未来才生效的记忆照常可召回。
+    """
+    if not mem.valid_until:
+        return False
+    remaining = age_days(mem.valid_until, today)
+    return remaining is not None and remaining > 0
+
+
 def recency_score(mem: Memory, now: dt.date) -> float:
     """新近度 0.5 + 0.5·e^(-Δdays/τ)，τ 取自记忆类型；底座把槽内跨度压到 0.5（先验只做 tie-break）。
 

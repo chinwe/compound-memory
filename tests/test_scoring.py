@@ -20,6 +20,7 @@ from compound_memory.scoring import (
     TYPE_WEIGHT,
     age_days,
     dup_similarity_matrix,
+    is_expired,
     rank,
     recency_age,
 )
@@ -41,6 +42,7 @@ def make_mem(
     created: str | None = None,
     last_used: str | None = None,
     uses: int = 0,
+    valid_until: str | None = None,
 ) -> Memory:
     return Memory(
         id=f"20260101_{seq:06d}",
@@ -52,6 +54,7 @@ def make_mem(
         confidence=confidence,
         uses=uses,
         last_used=last_used,
+        valid_until=valid_until,
     )
 
 
@@ -203,3 +206,25 @@ class TestRecencyAge:
         """坏日期交出 None（决策在消费方：rank 记 0 分、decay 跳过），绝不在缝上崩。"""
         mem = make_mem(1, "x", last_used="not-a-date")
         assert recency_age(mem, dt.date(2026, 10, 1)) is None
+
+
+class TestExpired:
+    """valid_until 过期判定（Zep 式时态模型的单一定义点）。"""
+
+    def test_valid_until_today_still_valid(self):
+        """valid_until 语义是"有效期至"（含当日）：当天仍可信，次日起检索排除。"""
+        mem = make_mem(1, "redis persistence", valid_until=TODAY.isoformat())
+        assert is_expired(mem, TODAY) is False
+
+    def test_expires_the_day_after_valid_until(self):
+        mem = make_mem(1, "redis persistence", valid_until="2026-09-30")
+        assert is_expired(mem, TODAY) is True
+
+    def test_future_valid_until_not_expired(self):
+        mem = make_mem(1, "x", valid_until="2027-01-01")
+        assert is_expired(mem, TODAY) is False
+
+    def test_missing_or_bad_valid_until_not_expired(self):
+        """坏数据不冒充过期（与 _within_days 同哲学）：宁可带进检索，不因坏日期静默吞记忆。"""
+        assert is_expired(make_mem(1, "x"), TODAY) is False
+        assert is_expired(make_mem(2, "x", valid_until="not-a-date"), TODAY) is False

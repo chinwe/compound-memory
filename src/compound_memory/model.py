@@ -40,5 +40,9 @@ class Memory:
     key: str | None = None
     validated_by: list[str] = field(default_factory=list)
     archived: bool = False
+    # 有效期标注（frontmatter 可选字段，ISO date；write 侧校验格式）：
+    # valid_from 仅标注；valid_until 已过 ⇒ 检索/邻居/蒸馏候选默认排除（get 与归档不受影响）
+    valid_from: str | None = None
+    valid_until: str | None = None
     # 写入来源通道（frontmatter 可选字段）：普通写入不落盘，仅蒸馏产物为 "distillation"
     origin: str | None = None

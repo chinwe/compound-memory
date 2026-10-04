@@ -38,7 +38,7 @@ uv run --directory <仓库> compound-memory init
 
 | Tool | 用途 | 关键点 |
 |---|---|---|
-| `memory_write` | 写入记忆 | `type`: episode/fact/insight/skill；`source`: 写入方 agent id；fact/insight 建议带稳定 `key` |
+| `memory_write` | 写入记忆 | `type`: episode/fact/insight/skill；`source`: 写入方 agent id；fact/insight 建议带稳定 `key`；可选 `valid_from`/`valid_until`（ISO 日期）标注事实有效期——`valid_until` 已过的事实退出检索结果，但 `memory_get` 仍可读 |
 | `memory_search` | 检索 | 返回 `{"hits": [...]}` 按分数排序；命中自动内嵌最多 3 条一度邻居；`include_neighbors=False` 可关。不传 `ns` 时双通道检索：`_shared` + 调用方自有私有 ns（身份已知时，私有条目自动带出）；显式传 `ns` 只搜该 ns，查 `agent-*` 时必带 `reader`（自己的 agent id），缺省即拒绝 |
 | `memory_get` | 按 id 取回 | 恒含 `found` 键；默认带一度邻居；目标在私有 ns 时必带 `reader`，缺省即拒绝 |
 | `memory_link` | 双向关联两条记忆 | 复利来源②：关联带出；两条记忆必须同 ns，跨 ns 链被拒绝 |

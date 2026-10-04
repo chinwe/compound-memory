@@ -25,7 +25,7 @@ import yaml
 from .index import Index
 from .model import MEMORY_TYPES, TTL_DAYS, Memory
 from .review_queue import ReviewQueue
-from .scoring import age_days, doc_text, dup_similarity_matrix, rank, recency_age, tokenize
+from .scoring import age_days, doc_text, dup_similarity_matrix, is_expired, rank, recency_age, tokenize
 from .vector_index import VectorIndex
 
 # frontmatter 解析 loader：C 扩展（libyaml）快 ~5x 且与 SafeLoader 语义逐位一致
@@ -95,6 +95,19 @@ def _within_days(date_str: str, days: int, now: dt.date) -> bool:
     不回退 created，语义差异留在调用处。"""
     age = age_days(date_str, now)
     return age is not None and 0 <= age <= days
+
+
+def _check_validity(valid_from: str | None, valid_until: str | None) -> None:
+    """有效期字段校验（write 单点）：ISO date 格式 + from<=until，坏输入响亮抛 ValueError。"""
+    for name, value in (("valid_from", valid_from), ("valid_until", valid_until)):
+        if value is None:
+            continue
+        try:
+            dt.date.fromisoformat(value)
+        except (ValueError, TypeError):
+            raise ValueError(f"{name} must be an ISO date (YYYY-MM-DD), got: {value!r}")
+    if valid_from and valid_until and dt.date.fromisoformat(valid_from) > dt.date.fromisoformat(valid_until):
+        raise ValueError(f"valid_from {valid_from!r} is after valid_until {valid_until!r}")
 
 
 def default_root() -> Path:
@@ -297,8 +310,11 @@ class MemoryStore:
         created: str | None = None,
         confidence: float | None = None,
         origin: str | None = None,
+        valid_from: str | None = None,
+        valid_until: str | None = None,
     ) -> dict[str, Any]:
         source = self._resolve_identity(source, "source")
+        _check_validity(valid_from, valid_until)
         mem, conflict_with = self._write_new(
             content,
             type=type,
@@ -309,6 +325,8 @@ class MemoryStore:
             created=created,
             confidence=confidence,
             origin=origin,
+            valid_from=valid_from,
+            valid_until=valid_until,
         )
         self._commit(f"write {mem.id} ({type}/{ns}) by {source}")
         return self._write_result(mem, conflict_with)
@@ -324,6 +342,8 @@ class MemoryStore:
         created: str | None,
         confidence: float | None,
         origin: str | None,
+        valid_from: str | None = None,
+        valid_until: str | None = None,
     ) -> tuple[Memory, Memory | None]:
         """write 的无 commit 核心——distill_apply 复用它把产物写入 + 源归档收进一次 commit。"""
         if type not in MEMORY_TYPES:
@@ -346,6 +366,8 @@ class MemoryStore:
             ttl=TTL_DAYS[type],
             key=key,
             origin=origin,
+            valid_from=valid_from,
+            valid_until=valid_until,
         )
         self._save(mem)
         if conflict_with is not None:
@@ -463,20 +485,21 @@ class MemoryStore:
         q_tokens = tokenize(query)
         if not q_tokens:
             return []
-        vec_sims, vec_rels = self._vector_recall(query, set(scopes))
+        vec_sims, vec_rels = self._vector_recall(query, set(scopes), now)
         return rank(
             query,
-            self._candidates(q_tokens, set(scopes), vec_rels),
+            self._candidates(q_tokens, set(scopes), vec_rels, now),
             now=now,
             top_k=top_k,
-            neighbor_lookup=(lambda mid: self._active_neighbors(mid, set(scopes))) if include_neighbors else None,
+            neighbor_lookup=(lambda mid: self._active_neighbors(mid, set(scopes), now)) if include_neighbors else None,
             vec_sims=vec_sims,
         )
 
-    def _vector_recall(self, query: str, nss: set[str]) -> tuple[dict[str, float] | None, list[str]]:
+    def _vector_recall(self, query: str, nss: set[str], now: dt.date) -> tuple[dict[str, float] | None, list[str]]:
         """向量召回：查询编码 + KNN（大池取回后按 ns 集合/去重收敛到 VEC_POOL）。
 
         返回 (vec_sims, vec_rels)；embedder 未注入或任何故障 ⇒ (None, []) 纯词面降级。
+        过期记忆与归档同等排除——候选并集两侧同一套活性语义，不给过期记忆留向量旁路。
         """
         if self._embedder is None:
             return None, []
@@ -497,7 +520,7 @@ class MemoryStore:
                 if not path.exists():
                     continue
                 mem = self.parse(path)
-                if mem.archived or mem.ns not in nss:
+                if mem.archived or mem.ns not in nss or is_expired(mem, now):
                     continue
                 sims[mem_id] = cos
                 rels.append(rel_path)
@@ -505,8 +528,8 @@ class MemoryStore:
         except Exception:
             return None, []
 
-    def _active_neighbors(self, mem_id: str, nss: set[str]) -> list[Memory]:
-        """邻居召回的数据源：hit 的一度 links，归档邻居不召回（截断/上限/去环归 rank）。
+    def _active_neighbors(self, mem_id: str, nss: set[str], now: dt.date) -> list[Memory]:
+        """邻居召回的数据源：hit 的一度 links，归档/过期邻居不召回（截断/上限/去环归 rank）。
 
         ns 集合过滤是访问控制的一部分，不可省：_shared 记忆若链到 agent-* 私有记忆，
         邻居会把私有正文带进调用方不可见的检索结果（2026-10-03 实测泄漏）；
@@ -518,7 +541,12 @@ class MemoryStore:
         out: list[Memory] = []
         for link_id in mem.links:
             neighbor = self.find(link_id)
-            if neighbor is not None and not neighbor.archived and neighbor.ns in nss:
+            if (
+                neighbor is not None
+                and not neighbor.archived
+                and not is_expired(neighbor, now)
+                and neighbor.ns in nss
+            ):
                 out.append(neighbor)
         return out
 
@@ -586,7 +614,7 @@ class MemoryStore:
         三类信号：merge_with（同 ns 同 type 同 key，强信号）、possible_dup_of
         （BM25 normalized_similarity ≥ DISTILL_DUP_SIM_THRESHOLD，弱信号）、
         promotion_candidate（episode 高活性，晋升建议——判断后置，#6）。
-        归档区不参与；坏日期记忆按宁缺勿滥跳过。
+        归档区不参与；过期（valid_until 已过）与坏日期记忆按宁缺勿滥跳过。
 
         reader：候选带正文返回，扫私有 ns 须属主（与 get/search 同规则）。
         """
@@ -597,6 +625,8 @@ class MemoryStore:
         cands: list[Memory] = []
         for path in sorted((self.ns_root / ns).rglob("*.md")):
             mem = self.parse(path)
+            if is_expired(mem, now):
+                continue  # 过期事实不该被蒸馏固化进新产物
             age = recency_age(mem, now)
             if age is None or age > window_days:
                 continue
@@ -708,21 +738,27 @@ class MemoryStore:
         counts.update(self.vector_index.rebuild(self._scan_pairs()))
         return counts
 
-    def _candidates(self, q_tokens: list[str], nss: set[str], vec_rels: list[str] | None = None) -> list[Memory]:
+    def _candidates(self, q_tokens: list[str], nss: set[str], vec_rels: list[str] | None = None, now: dt.date | None = None) -> list[Memory]:
         """Indexed lookup: 索引活性（跨进程重载/带外重建）由各缓存内部自愈，
         这里全信索引命中，只逐一复查文件存在性与 ns 集合/活性——防的是索引
         词条与手编文件内容的漂移（改内容不改目录 mtime，那条路走显式 rebuild）。
-        vec_rels 非空时，向量 KNN 命中（rel_path 由向量缓存给出）并入候选并集。"""
+        vec_rels 非空时，向量 KNN 命中（rel_path 由向量缓存给出）并入候选并集。
+        now 提供时同步排除过期记忆（valid_until 已过 ⇒ 检索不可见，get 不受限）。
+        ns 前缀剪枝在 parse 之前：活动区 rel 必为 namespaces/<ns>/...（索引不收
+        归档），常见词命中近全库的大库上把 ns 过滤提前省掉全部越界 parse。"""
+        prefixes = tuple(f"namespaces/{ns}/" for ns in nss)
         rels = list(self.index.candidates(q_tokens))
         for rel_path in vec_rels or []:
             if rel_path not in rels:
                 rels.append(rel_path)
         out: list[Memory] = []
         for rel in rels:
+            if not rel.startswith(prefixes):
+                continue
             path = self.root / rel
             if path.exists():
                 mem = self.parse(path)
-                if mem.ns in nss and not mem.archived:
+                if not mem.archived and not (now is not None and is_expired(mem, now)):
                     out.append(mem)
         return out
 
@@ -760,6 +796,7 @@ class MemoryStore:
         total, archived, conf_sum = 0, 0, 0.0
         recent_feedback, cross_validated = 0, 0
         distilled_total, distilled_recent = 0, 0
+        expired_active = 0
         now = self._clock()
         for base, is_archive in ((self.ns_root, False), (self.archive_root, True)):
             for path in base.rglob("*.md"):
@@ -767,6 +804,9 @@ class MemoryStore:
                 total += 1
                 if is_archive:
                     archived += 1
+                elif is_expired(mem, now):
+                    # 活动区里 valid_until 已过：检索已不可见，但仍躺在活动区待手编更新或蒸馏替换
+                    expired_active += 1
                 by_type[mem.type] = by_type.get(mem.type, 0) + 1
                 by_ns[mem.ns] = by_ns.get(mem.ns, 0) + 1
                 conf_sum += mem.confidence
@@ -794,6 +834,7 @@ class MemoryStore:
             "cross_validated": cross_validated,
             "distilled_total": distilled_total,
             "distilled_recent_7d": distilled_recent,
+            "expired_active": expired_active,
         }
 
     def git_log(self, limit: int = 5) -> list[str]:

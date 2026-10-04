@@ -328,3 +328,83 @@ class TestCli:
         assert cli_main(["--root", root, "search", "锚点记忆", "--no-neighbors"]) == 0
         hit = json.loads(capsys.readouterr().out)[0]
         assert "neighbors" not in hit
+
+
+class TestValidityWindow:
+    """时态事实（valid_from/valid_until）：过期事实从检索与邻居召回中排除，但不消失——
+    get 恒可读（"归档不丢数据"哲学的镜像）；"新事实是否取代旧事实"的裁决仍走 review 队列，
+    有效期只决定检索可见性，绝不绕过冲突裁决。"""
+
+    def test_expired_fact_excluded_from_search_but_gettable(self, store: MemoryStore):
+        mem = store.write(
+            content="项目 X 的负责人是张三", type="fact", source="agent-a", key="lead-x",
+            valid_from="2026-01-01", valid_until=_days_ago(1),
+        )
+        assert store.search("项目 X 负责人") == []
+        got = store.get(mem["id"])
+        assert got["found"] is True
+        assert got["valid_from"] == "2026-01-01"
+        assert got["valid_until"] == _days_ago(1)
+
+    def test_fact_valid_until_today_still_searchable(self, store: MemoryStore):
+        """valid_until 含当日（"有效期至"）：当天仍可信。"""
+        mem = store.write(content="V2 发布窗口是本周五", type="fact", source="agent-a",
+                          valid_until=CLOCK_DATE.isoformat())
+        assert [h["id"] for h in store.search("V2 发布窗口")] == [mem["id"]]
+
+    def test_expired_fact_excluded_from_vector_recall_too(self, vec_store: MemoryStore):
+        """候选并集两侧同一套活性语义：向量路不得给过期记忆留旁路。"""
+        expired = vec_store.write(content="旧方案使用 A 服务", type="fact", source="agent-a",
+                                  valid_until=_days_ago(1))
+        alive = vec_store.write(content="新方案使用 B 服务", type="fact", source="agent-a")
+        hits = vec_store.search("方案使用", top_k=10)
+        assert expired["id"] not in [h["id"] for h in hits]
+        assert alive["id"] in [h["id"] for h in hits]
+
+    def test_expired_fact_not_recalled_as_neighbor(self, store: MemoryStore):
+        old = store.write(content="旧接口返回字段 foo", type="fact", source="agent-a", valid_until=_days_ago(1))
+        new = store.write(content="新接口返回字段 bar", type="fact", source="agent-a")
+        store.link(old["id"], new["id"])
+        (hit,) = store.search("新接口返回字段")
+        assert hit["id"] == new["id"]
+        assert hit["neighbors"] == []
+
+    def test_write_rejects_bad_validity_dates(self, store: MemoryStore):
+        """坏格式/逻辑矛盾响亮抛 ValueError（调用方错误），不静默落盘脏标注。"""
+        with pytest.raises(ValueError, match="valid_until"):
+            store.write(content="x", type="fact", source="agent-a", valid_until="10/01/2026")
+        with pytest.raises(ValueError, match="after valid_until"):
+            store.write(content="x", type="fact", source="agent-a",
+                        valid_from="2026-12-31", valid_until="2026-01-01")
+
+    def test_replacement_fact_still_goes_to_review_queue(self, store: MemoryStore):
+        """时态字段不绕过冲突裁决：同 key 不同内容的新事实照旧进 review 队列——
+        过期只管检索可见性，"旧的标注过期还是归档"由裁决方决定。"""
+        store.write(content="负责人是张三", type="fact", source="agent-a", key="lead")
+        new = store.write(content="负责人是李四", type="fact", source="agent-a", key="lead",
+                          valid_until="2027-12-31")
+        assert new["conflict"] is True
+        assert len(store.review_queue()) == 1
+
+    def test_expired_fact_skipped_by_distill_plan(self, store: MemoryStore):
+        """过期事实不该被蒸馏固化进新产物——蒸馏扫过期候选同归档区一样排除。"""
+        expired = store.write(content="待替换的方案 A 细节", type="insight", source="agent-a",
+                              created=_days_ago(5), valid_until=_days_ago(1))
+        plan = store.distill_plan(window_days=30)
+        assert expired["id"] not in [c["id"] for c in plan["candidates"]]
+
+    def test_stats_counts_expired_active(self, store: MemoryStore):
+        store.write(content="过期事实待清理", type="fact", source="agent-a", valid_until=_days_ago(1))
+        store.write(content="正常事实", type="fact", source="agent-a")
+        assert store.stats()["expired_active"] == 1
+
+    def test_cli_write_validity_roundtrip(self, tmp_path: Path, capsys):
+        """CLI 缝：--valid-from/--valid-until 落盘 + get 读回。"""
+        root = str(tmp_path / "vroot")
+        assert cli_main(["--root", root, "write", "缓存清理窗口", "fact", "agent-cli",
+                         "--valid-from", "2026-09-01", "--valid-until", "2026-09-30"]) == 0
+        mem_id = json.loads(capsys.readouterr().out)["id"]
+        assert cli_main(["--root", root, "get", mem_id]) == 0
+        got = json.loads(capsys.readouterr().out)
+        assert got["valid_from"] == "2026-09-01"
+        assert got["valid_until"] == "2026-09-30"

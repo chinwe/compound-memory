@@ -35,7 +35,17 @@ def cmd_init(args: argparse.Namespace) -> None:
 
 
 def cmd_write(args: argparse.Namespace) -> None:
-    _emit(_open_store(args).write(content=args.content, type=args.type, source=args.source, ns=args.ns, key=args.key))
+    _emit(
+        _open_store(args).write(
+            content=args.content,
+            type=args.type,
+            source=args.source,
+            ns=args.ns,
+            key=args.key,
+            valid_from=args.valid_from,
+            valid_until=args.valid_until,
+        )
+    )
 
 
 def cmd_search(args: argparse.Namespace) -> None:
@@ -132,6 +142,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("write")
     p.add_argument("content"); p.add_argument("type", choices=MEMORY_TYPES)
     p.add_argument("source"); p.add_argument("--ns", default="_shared"); p.add_argument("--key", default=None)
+    p.add_argument("--valid-from", default=None, help="ISO date: fact valid from (annotation)")
+    p.add_argument("--valid-until", default=None,
+                   help="ISO date: fact expires after this day (excluded from search, still readable via get)")
     p.set_defaults(func=cmd_write)
 
     p = sub.add_parser("search")
