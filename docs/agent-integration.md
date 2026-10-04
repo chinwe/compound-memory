@@ -225,6 +225,8 @@ uv run compound-memory decay          # 衰减归档（launchd/cron 定时跑；
 uv run compound-memory revive <id>    # 复活归档记忆（CLI 唯一入口）
 uv run compound-memory review-queue   # fact/insight 同 key 冲突队列（人工复核，CLI 唯一入口）
 uv run compound-memory rebuild-index  # 手编已有文件内容后重建检索缓存
+uv run compound-memory extract <transcript>  # 会话抽取清单（P0）：确定性扫描 model-io jsonl →
+                                      #   extract/last-candidates.json；Agent 逐条确认后 memory_write 落库
 uv run compound-memory git-log        # 审计轨迹（每次写入自动 commit）
 ```
 

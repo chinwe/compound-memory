@@ -12,6 +12,7 @@ from typing import Any
 
 from . import __version__
 from .embedding import auto_encoder
+from .extraction import extract
 from .storage import DISTILL_DUP_SIM_THRESHOLD, MEMORY_TYPES, MemoryStore, PROMOTION_USES_THRESHOLD, default_root
 
 
@@ -127,6 +128,10 @@ def cmd_distill_apply(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_extract(args: argparse.Namespace) -> None:
+    _emit(extract(Path(args.transcript), _open_store(args)))
+
+
 def cmd_git_log(args: argparse.Namespace) -> None:
     _emit(_open_store(args).git_log(limit=args.limit))
 
@@ -205,6 +210,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--all", action="store_true", help="clear the whole queue")
     p.set_defaults(func=cmd_review_resolve)
     p = sub.add_parser("git-log"); p.add_argument("--limit", type=int, default=5); p.set_defaults(func=cmd_git_log)
+    p = sub.add_parser(
+        "extract",
+        help="scan a session transcript for memory candidates (deterministic pass, no LLM)",
+        description="Deterministic candidate extraction from a ZCode model-io jsonl transcript. "
+        "Pattern matching only (statement -> fact, pitfall -> insight); the manifest lands in "
+        "<root>/extract/last-candidates.json. Writing stays with the agent: confirm each candidate "
+        "via memory_write (same-key conflicts still enter the review queue).",
+    )
+    p.add_argument("transcript", help="path to a model-io-sess_*.jsonl transcript")
+    p.set_defaults(func=cmd_extract)
     return parser
 
 

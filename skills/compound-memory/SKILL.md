@@ -40,6 +40,11 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | `decay` | 衰减归档，长期未用且少用才动（定时任务跑） |
 | `revive <id>` | 复活归档记忆（私有 ns 记忆加 `--reader`） |
 | `git-log` | 审计轨迹（每次写入自动 commit） |
+| `extract <transcript>` | 会话抽取清单（P0）：确定性扫描 model-io jsonl，候选写 `extract/last-candidates.json`（一次性快照，下次扫描覆盖） |
+
+### 抽取清单确认（P0：扫描只发现候选，写库仍走协议）
+
+会话 transcript 经 `extract` 确定性扫描（模式匹配、零 LLM）产出疑似值得沉淀的用户陈述清单。Agent 读清单**逐条判断**：值得写就 `memory_write`（key 自己定、优先复用 `likely_dup_of` 指向的既有条目 key；同 key 冲突照常进 review 队列），不值得就丢弃——扫描器不做丢弃决策，也不直接写库。清单为空属正常（宁缺勿滥）：当前模式表只覆盖中文用户话的声明/踩坑句式，Agent 复述与命令粘贴不在扫描范围。
 
 ### 蒸馏工作流（判断段归调用方 Agent）
 
