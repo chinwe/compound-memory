@@ -6,6 +6,16 @@ on:
   pull_request:
 
 jobs:
+  privacy:
+    # 隐私门禁（权威拦截）：禁串来自 PRIVACY_PATTERNS Secret，绝不写入仓库；
+    # fork PR 拿不到 Secret，检查脚本缺 patterns 时警告放行（见 docs/agents/privacy-gate.md）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          PRIVACY_PATTERNS: ${{ secrets.PRIVACY_PATTERNS }}
+        run: bash scripts/check-privacy.sh
+
   test:
     runs-on: ubuntu-latest
     strategy:

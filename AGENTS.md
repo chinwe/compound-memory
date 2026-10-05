@@ -48,6 +48,10 @@ Issues live in the repo's GitHub Issues (`chinwe/compound-memory`), managed via 
 
 Default five-role triage vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
 
+### Privacy gate
+
+Pre-commit + CI 两层门禁拦个人信息入库；禁串在仓库外（本地 patterns 文件 / GitHub Secret），本地 hook 未启用时 CI 仍拦截。改动提交流程或更新禁串前读 `docs/agents/privacy-gate.md`。
+
 ### Domain docs
 
 Single-context: root `CONTEXT.md` (glossary) + `docs/adr/`. See `docs/agents/domain.md`.

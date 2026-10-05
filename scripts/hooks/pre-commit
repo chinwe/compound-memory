@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# 隐私门禁 pre-commit：对暂存文件跑 ../check-privacy.sh，命中即拒绝提交。
+# 一次性启用：git config core.hooksPath scripts/hooks（该配置只在本地 .git/config，不入库）。
+# --no-verify 可绕过本 hook——CI 的 PRIVACY_PATTERNS Secret 门禁才是权威拦截，见 docs/agents/privacy-gate.md。
+set -u
+here="$(cd "$(dirname "$0")" && pwd)"
+
+staged="$(git diff --cached --name-only --diff-filter=ACMR)"
+[ -z "$staged" ] && exit 0
+
+# 文件名经 null 分隔传给检查脚本，避免空格/特殊字符拆词
+printf '%s\n' "$staged" | while IFS= read -r f; do printf '%s\0' "$f"; done |
+    xargs -0 "$here/../check-privacy.sh"
+code=$?
+# xargs 把检查脚本的退出 1 折成 123；git 对任何非零都拒提交，这里归一成 1 保持语义清晰
+[ "$code" -eq 123 ] && exit 1
+exit "$code"
