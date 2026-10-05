@@ -33,6 +33,7 @@
 - mcp 2.x 行为：`FastMCP` 已改名 `MCPServer`（`mcp.server.mcpserver`）；单元素 list 返回值会被 unwrap 成对象——批量结果要包一层 `{"hits": [...]}`；工具内异常默认返回 `is_error=True` 而非抛出；tool 一律声明 `structured_output=False`（`dict[str, Any]` 注解会被推断 outputSchema，结构化载荷与文本回退双份下发撑大宿主上下文）。另注意返回形状：CLI `search` 返回裸数组，`{"hits": ...}` 包装只在 MCP 层。
 - 删除文件的沙箱约束已收进 seam adapter：生产默认 `Path.unlink`（单文件 unlink 不受批量守卫影响）；conftest 的 `sandbox_safe_remove`（改名 `.{name}.rm`）只在测试侧注入。测试断言日期一律用 conftest 的 `CLOCK_DATE`（store fixture 已注入固定 clock），勿贴真实墙钟。
 - 沙箱对后台任务曾有 SIGKILL（exit 137；2026-10-04 一次 17 分钟的**单次巨批** onnx run 被杀，同日一次 45+ 分钟的分块编码任务全程未被杀——疑似与巨批内存峰值有关而非单纯时长）：长编码/评测任务优先分块限内存、被杀后响亮重试；前台 Bash 上限 600s。长命令与后台命令一律绝对路径（cwd 在调用间会漂移，曾把相对路径拼错）。
+- 回归测试钉子别用绝对计时断言：沙箱负载波动大（同一提交全量耗时实测 55s~153s），会把「线性但慢」误判成回归（曾把 36.2s 误报给 10s 阈值）。优先结构性计数/不变量断言——如 sys 审计钩子数 tokens.tmp 落盘次数与批量大小无关（见 test_batch.py::TestBatchScale）。
 
 ## 约定
 
