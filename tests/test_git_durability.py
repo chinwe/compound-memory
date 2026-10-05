@@ -98,6 +98,53 @@ class TestIndexLockRetry:
         assert "git add failed" in capsys.readouterr().err
 
 
+class TestGitDiscoveryCeiling:
+    def test_broken_root_git_never_escapes_to_parent_repo(self, tmp_path: Path) -> None:
+        """root 的 .git 无效时，仓库发现不得向上借父链最近的真仓库——
+        否则启动对账的 add -A/commit 落错仓（2026-10-05 实测把父仓库的
+        未提交改动收编成 'orphan changes recovered'）。诱饵法端到端验证：
+        父仓库放一个未提交文件，坏 root .git 重开 store 后诱饵必须原样未动。"""
+        parent = tmp_path / "proj"
+        parent.mkdir()
+        subprocess.run(["git", "-C", str(parent), "init", "-q"], check=True)
+        (parent / "bait.txt").write_text("uncommitted bait", encoding="utf-8")
+
+        root = parent / "memroot"
+        MemoryStore(root, clock=lambda: CLOCK_DATE, remover=sandbox_safe_remove)  # 正常首建
+        # root 的 .git 换成空目录——逃逸的触发形态（git 对无效 .git 目录会
+        # 跳过并继续向上发现；gitfile 形态反而报 fatal 不逃逸）。此处故意
+        # 用它：诱饵 parent 是 tmp 下的假仓库，旧实现逃逸也只落在诱饵上
+        (root / ".git").rename(root / ".git.broken")
+        (root / ".git").mkdir()
+
+        MemoryStore(root, clock=lambda: CLOCK_DATE, remover=sandbox_safe_remove)  # 不得抛、不得动父仓库
+
+        bait = subprocess.run(
+            ["git", "-C", str(parent), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert "bait.txt" in bait.stdout  # 诱饵仍是未提交状态：没被任何恢复提交收编
+
+    def test_valid_root_git_unaffected_by_ceiling(self, tmp_path: Path) -> None:
+        """ceiling 只挡逃逸不挡正常路径：root .git 有效时 git 动作照常落 root。"""
+        parent = tmp_path / "proj"
+        parent.mkdir()
+        subprocess.run(["git", "-C", str(parent), "init", "-q"], check=True)
+        root = parent / "memroot"
+        store = MemoryStore(root, clock=lambda: CLOCK_DATE, remover=sandbox_safe_remove)
+        store.write("inside root", type="fact", source="agent-a")
+        assert any("write" in line for line in store.git_log(10))
+        parent_log = subprocess.run(
+            ["git", "-C", str(parent), "log", "--oneline"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert parent_log.returncode != 0 or not parent_log.stdout.strip()  # 父仓库零提交
+
+
 class TestOrphanRecovery:
     @staticmethod
     def _break_commit(store: MemoryStore) -> None:

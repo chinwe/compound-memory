@@ -162,6 +162,12 @@ class MemoryStore:
         self._embedder = embedder
         self._review_queue = ReviewQueue(self.root / "review-queue.md", clock=clock)
         self.git_enabled = git and (git_probe or _git_available)()
+        # git 仓库发现的天花板（防逃逸）：root 的 .git 无效（损坏/被清空）时
+        # git 会跳过它继续向上、借父链最近的真仓库执行 add -A/commit
+        # （2026-10-05 实测把父仓库的未提交改动收编走）；ceiling 钉在
+        # root.parent，无效 .git 报 not a repository 而非逃逸。root 的
+        # .git 有效时发现第一跳即命中，行为不变
+        self._git_env = {**os.environ, "GIT_CEILING_DIRECTORIES": os.path.realpath(self.root.parent)}
         self._clock = clock
         self._remover = remover or _unlink_file
         # 进程侧身份证明：agent_id 非空时（宿主经 COMPOUND_MEMORY_AGENT_ID 注入），
@@ -293,6 +299,7 @@ class MemoryStore:
             capture_output=True,
             text=True,
             check=check,
+            env=self._git_env,
         )
 
     def _git_retry(self, *args: str) -> subprocess.CompletedProcess[str]:
