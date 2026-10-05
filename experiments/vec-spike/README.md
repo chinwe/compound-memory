@@ -64,7 +64,7 @@ BGE-small-zh-v1.5 ONNX int8（24MB，HF 本地缓存已存在，零下载）+ on
 | RRF 融合（k=60） | **0.90** | **1.00** | **0.95** |
 
 要点：
-- 向量路把全部 expected 拉进 top-3，修复审计③的词面盲区（「用户叫什么名字/所在城市」vs「用户姓名…位于杭州」：BM25 rank-4 → 向量 rank-1）。
+- 向量路把全部 expected 拉进 top-3，修复审计③的词面盲区（「用户叫什么名字/所在城市」vs「用户姓名…位于某市」：BM25 rank-4 → 向量 rank-1）。
 - RRF 融合对两路互补最敏感（论文结论 "RRF almost invariably improved on the best of the combined results" 在本仓数据上复现）。
 - 词面对照组（邮件发件人、MCP 破坏性变更）两路都 rank-1——向量路没有伤害词面强命中。
 
