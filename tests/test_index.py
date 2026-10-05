@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -126,11 +127,20 @@ class TestSelfHealing:
 
         长驻进程 B 已加载缓存后，进程 A 的写入（更新 tokens.json）必须对 B 的
         下一次检索可见——旧实现里 B 的内存态永不失效，A 写的记忆静默丢失。
+
+        b 建基线后把缓存 mtime 压到过去：本测试两次 _save 之间零间隔（纯内存
+        操作相接），同 tick 内 mtime_ns 相同会让判活漏检（2026-10-05 审计三次
+        全量跑出一次 flaky，探针已确定性复现）——压 mtime 在构造上消除竞态，
+        使「A 写入 → B 检测」必然跨 tick。压过之后 b 先空重载一次（内容未变，
+        无害），随后 a 的新写入 mtime 必然不同。全文件仅此测试是零间隔双写：
+        store seam 测试的间隔里有 git commit 子进程兜底，无需同款处理。
         """
         pairs: list[tuple[Memory, str]] = []
         a = Index(tmp_path, scan_pairs=lambda: list(pairs))
         b = Index(tmp_path, scan_pairs=lambda: list(pairs))
         assert b.candidates(tokenize("redis")) == []  # b 先加载并落盘空缓存（建立基线）
+        past = time.time() - 60
+        os.utime(cache_file(tmp_path), (past, past))
         mem = make_mem(1, "redis queue depth")
         a.sync(mem, rel_of(mem))  # a（另一进程）写入并更新缓存文件
         assert b.candidates(tokenize("redis")) == [rel_of(mem)]  # b 检测 mtime 变化后重载
