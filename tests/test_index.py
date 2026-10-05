@@ -136,6 +136,35 @@ class TestSelfHealing:
         assert b.candidates(tokenize("redis")) == [rel_of(mem)]  # b 检测 mtime 变化后重载
 
 
+class TestOutOfBandInFirstNamespace:
+    """跨 ns 带外新增的读路径自愈（回归钉：活性协议复制漂移出的真 bug）。
+
+    旧实现的 _dirs_newer_than 循环错位：type_dirs 在 ns 循环内赋值、循环外
+    消费，只有最后一个 ns 的 type 目录被检查——排序靠前的 ns 里发生带外
+    新增时 reconcile 不触发，新记忆永久检索不到。修复后判定收拢 liveness
+    单点（语义在 test_liveness 钉死），这里钉的是 Index._ensure_fresh 的接线。
+    """
+
+    def test_out_of_band_add_in_first_ns_is_reconciled(self, index, tmp_path: Path):
+        idx, pairs = index
+        old_mem = make_mem(1, "redis queue depth")
+        idx.sync(old_mem, rel_of(old_mem))
+        stamp = cache_file(tmp_path).stat().st_mtime_ns
+        # ns_a 先建（贴合"目录创建序即遍历序"的文件系统形态，红态更敏感）
+        second_type = tmp_path / "namespaces" / "ns_b" / "fact"
+        first_type = tmp_path / "namespaces" / "ns_a" / "episode"
+        second_type.mkdir(parents=True)
+        first_type.mkdir(parents=True)
+        older, newer = stamp - 1_000_000, stamp + 1_000_000
+        for d in (tmp_path / "namespaces", first_type.parent, second_type.parent, second_type):
+            os.utime(d, ns=(older, older))
+        os.utime(first_type, ns=(newer, newer))
+        hand = make_mem(2, "zabbix queue alerts")
+        rel = "namespaces/ns_a/episode/20260101_000002.md"
+        pairs.append((hand, rel))
+        assert idx.candidates(tokenize("zabbix")) == [rel]
+
+
 class TestStoreSeam:
     """store 层只断言 README 记载的 layout 存在性与行为，不解析缓存内容。"""
 

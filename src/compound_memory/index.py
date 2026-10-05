@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 from typing import Callable
 
+from .liveness import dirs_newer_than
 from .model import Memory
 from .scoring import tokenize, doc_text
 
@@ -22,6 +23,8 @@ class Index:
 
     调用方无需感知缓存何时加载、何时重建、archived 走哪条路，
     也无需感知缓存是否被其他进程更新过——活性检测在读路径内部完成。
+    另有一对批式写通道动词 defer / flush_pending：仅 MemoryStore.batch 使用，
+    把逐条落盘收拢成批尾一次。
     """
 
     def __init__(self, root: Path, scan_pairs: Callable[[], list[tuple[Memory, str]]]) -> None:
@@ -33,6 +36,8 @@ class Index:
         self._data: dict[str, list[str]] | None = None  # None = 未加载
         self._dead = False  # 落盘缓存缺失或损坏，待重建
         self._loaded_stamp: int | None = None  # 缓存文件上次加载时的 mtime_ns
+        self._deferred = False  # batch() 期间 sync 只改内存态
+        self._dirty = False  # deferred 期间有未落盘的内存态变更
 
     # ---------- 缓存活性（重建/重载协议在这里，调用方不可见） ----------
 
@@ -64,9 +69,10 @@ class Index:
         1. 缺失/损坏 ⇒ 全量重建；
         2. 缓存文件 mtime 变了（其他进程写过）⇒ 丢弃内存态重载；
         3. 任一 ns/type 目录 mtime 晚于缓存文件（带外新增/删除 .md）
-           ⇒ 增量对账：scan 后只更新 diff 的条目（与 VectorIndex._reconcile
-           同构，perf-bench：千条库带外写后首查的大头）。
+           ⇒ 增量对账：scan 后只更新 diff 的条目（perf-bench：千条库带外写后首查的大头）。
         """
+        if self._deferred:
+            return  # 批内不做读路径自愈：batch 是唯一写者，批尾 flush 后恢复
         self._ensure_live()
         stamp = self._cache_stamp()
         if self._loaded_stamp is not None and stamp != self._loaded_stamp:
@@ -76,32 +82,29 @@ class Index:
                 self.rebuild(self._scan_pairs())
                 return
             stamp = self._loaded_stamp if self._loaded_stamp is not None else stamp
-        if stamp is not None and self._dirs_newer_than(stamp):
+        if stamp is not None and dirs_newer_than(self._root / "namespaces", stamp):
             self._reconcile()
 
-    def _dirs_newer_than(self, cache_stamp: int) -> bool:
-        """活动区目录在缓存落盘后发生过增删（新增/删除文件会更新父目录 mtime）。"""
-        ns_root = self._root / "namespaces"
-        if not ns_root.is_dir():
-            return False
-        try:
-            ns_dirs = [d for d in ns_root.iterdir() if d.is_dir()]
-        except OSError:
-            return False
-        for ns_dir in ns_dirs:
-            try:
-                if ns_dir.stat().st_mtime_ns > cache_stamp:
-                    return True
-                type_dirs = [d for d in ns_dir.iterdir() if d.is_dir()]
-            except OSError:
-                continue
-        for t_dir in type_dirs:
-            try:
-                if t_dir.stat().st_mtime_ns > cache_stamp:
-                    return True
-            except OSError:
-                continue
-        return False
+    def defer(self) -> None:
+        """批式写通道入口（仅 MemoryStore.batch 调用）：sync 只改内存态，落盘收拢到 flush_pending。"""
+        self._deferred = True
+        self._dirty = False
+
+    def flush_pending(self) -> None:
+        """批尾一次落盘（无变更则零写入）；恢复读路径活性自愈。"""
+        if not self._deferred:
+            return
+        self._deferred = False
+        if self._dirty:
+            self._save()
+            self._dirty = False
+
+    def _save_lazy(self) -> None:
+        """defer 期间只标脏（批尾一次落盘），否则立即落盘。"""
+        if self._deferred:
+            self._dirty = True
+        else:
+            self._save()
 
     def _reconcile(self) -> None:
         """带外增删的增量对账：反转缓存出 rel→tokens 基线，scan 后只应用 diff。
@@ -196,8 +199,8 @@ class Index:
         index = self._load()
         for tok in set(tokenize(doc_text(mem))):
             index.setdefault(tok, []).append(rel_path)
-        self._save()
+        self._save_lazy()
 
     def _remove(self, rel_path: str) -> None:
         self._purge(rel_path)
-        self._save()
+        self._save_lazy()

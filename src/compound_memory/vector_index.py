@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Callable
 
 from .embedding import EMBED_DIM
+from .liveness import dirs_newer_than
 from .model import Memory
 from .scoring import doc_text
 
@@ -56,6 +57,7 @@ class VectorIndex:
         self._path = root / "index" / DB_NAME
         self._db: sqlite3.Connection | None = None
         self._rebuilt_stamp: int | None = None  # 自己重建后落盘的 db mtime 基线
+        self._pending: list[tuple[Memory, str]] | None = None  # 非 None = batch() 批式通道中
 
     # ---------- 降级与活性 ----------
 
@@ -99,38 +101,69 @@ class VectorIndex:
         """
         if not self._usable():
             return
+        if self._pending is not None:
+            return  # 批内不做读路径自愈：batch 是唯一写者，批尾 flush 后恢复
         stamp = self._db_stamp()
         if stamp is None:
             self.rebuild(self._scan_pairs())
-        elif self._stale(stamp):
+        elif dirs_newer_than(self._root / "namespaces", stamp):
+            # 不做"db 未变即未 stale"的短路——手编文件只动目录 mtime 不动 db，短路会漏检
             self._reconcile()
+
+    def defer(self) -> None:
+        """批式写通道入口（仅 MemoryStore.batch 调用）：sync 暂存 pending，flush_pending 一次对账。"""
+        self._pending = []
+
+    def flush_pending(self) -> None:
+        """批尾一次对账：新增/变更一次性批量编码（借 embedder 的批内分块），单次 commit。
+
+        不可用或故障保持静默降级（宁缺勿炸），与 sync/rebuild 同一契约。
+        """
+        if self._pending is None:
+            return
+        pending, self._pending = self._pending, None
+        if not pending:
+            return
+        db = self._connect()
+        if db is None:
+            return
+        try:
+            known = {
+                mid: (content_hash, rel_path)
+                for mid, content_hash, rel_path in db.execute(
+                    "SELECT mem_id, content_hash, rel_path FROM meta"
+                )
+            }
+            seen: set[str] = set()
+            changed: list[tuple[Memory, str]] = []
+            for mem, rel in pending:
+                if mem.archived:
+                    self._remove(db, mem.id)
+                    continue
+                if mem.id in seen:
+                    continue
+                seen.add(mem.id)
+                entry = known.get(mem.id)
+                if entry is not None and entry[0] == _content_hash(mem):
+                    if entry[1] != rel:
+                        db.execute("UPDATE meta SET rel_path = ? WHERE mem_id = ?", (rel, mem.id))
+                    continue
+                changed.append((mem, rel))
+            if changed:
+                assert self._embedder is not None
+                vectors = self._embedder([doc_text(mem) for mem, _ in changed])
+                for (mem, rel), vec in zip(changed, vectors):
+                    self._upsert(db, mem, rel, vec)
+            db.commit()
+            self._rebuilt_stamp = self._db_stamp()
+        except (sqlite3.DatabaseError, RuntimeError, OSError):
+            self._discard(db)
 
     def _db_stamp(self) -> int | None:
         try:
             return self._path.stat().st_mtime_ns
         except OSError:
             return None
-
-    def _stale(self, stamp: int) -> bool:
-        """db 落盘后活动区发生过带外增删（新增/删除文件会更新 ns/type 目录 mtime）。
-
-        不做"db 未变即未 stale"的短路——手编文件只动目录 mtime 不动 db，短路会漏检。
-        """
-        ns_root = self._root / "namespaces"
-        if not ns_root.is_dir():
-            return False
-        try:
-            for ns_dir in ns_root.iterdir():
-                if not ns_dir.is_dir():
-                    continue
-                if ns_dir.stat().st_mtime_ns > stamp:
-                    return True
-                for t_dir in ns_dir.iterdir():
-                    if t_dir.is_dir() and t_dir.stat().st_mtime_ns > stamp:
-                        return True
-        except OSError:
-            return False
-        return False
 
     def _reconcile(self) -> None:
         """带外增删的增量对账：只编码 diff（新增/内容变更），未变更零编码。
@@ -172,6 +205,9 @@ class VectorIndex:
 
     def sync(self, mem: Memory, rel_path: str) -> None:
         """使向量缓存与 mem 一致：active ⇒ 已索引（hash 未变零编码）；archived ⇒ 已移除。"""
+        if self._pending is not None:
+            self._pending.append((mem, rel_path))  # 批内只暂存，编码与落库收拢到 flush_pending
+            return
         if not self._usable():
             return
         self._ensure_live()
@@ -257,7 +293,9 @@ class VectorIndex:
 
     # ---------- 内部 ----------
 
-    def _upsert(self, db: sqlite3.Connection, mem: Memory, rel_path: str) -> None:
+    def _upsert(
+        self, db: sqlite3.Connection, mem: Memory, rel_path: str, vec: list[float] | None = None
+    ) -> None:
         row = db.execute("SELECT content_hash, vec_row FROM meta WHERE mem_id = ?", (mem.id,)).fetchone()
         new_hash = _content_hash(mem)
         if row is not None and row[0] == new_hash:
@@ -265,9 +303,10 @@ class VectorIndex:
             return
         import sqlite_vec
 
+        if vec is None:
+            vec = self._embedder([doc_text(mem)])[0]  # type: ignore[misc]
         if row is not None:
             db.execute("DELETE FROM vecs WHERE rowid = ?", (row[1],))
-        vec = self._embedder([doc_text(mem)])[0]  # type: ignore[misc]
         cur = db.execute("INSERT INTO vecs(rowid, embedding) VALUES (?, ?)", (None, sqlite_vec.serialize_float32(vec)))
         db.execute(
             "INSERT INTO meta(mem_id, rel_path, ns, content_hash, vec_row) VALUES (?, ?, ?, ?, ?) "

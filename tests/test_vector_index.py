@@ -208,3 +208,25 @@ class TestIncrementalReconcile:
         os.replace(src, dst)
         hits = b.search("redis 持久化", include_neighbors=False)
         assert [h["id"] for h in hits] == [res["id"]]
+
+
+class TestVectorFreshAcrossNamespaces:
+    """与词法侧同型的跨 ns 回归钉（活性协议收拢 liveness 时的保护伞）。
+
+    带外新增落在排序靠前的 _shared，agent-a 的目录整体早于 db stamp——
+    任何"只查最后一个 ns"的探测形态都会漏掉这条新增。查询与文档零词面
+    重叠，命中只能来自对账后的向量路。
+    """
+
+    def test_out_of_band_add_in_first_ns_is_reconciled(self, vec_store: MemoryStore):
+        vec_store.write(content="nginx buffer 配置要点", type="fact", source="agent-a")
+        # 第二个 ns：目录 mtime 早于最后一次向量落盘（带外新增只更新 _shared 一侧）
+        vec_store.write(content="agent 私有基线条目", type="fact", source="agent-a", ns="agent-a")
+        hand = vec_store.ns_root / "_shared" / "fact" / "20261001_handvec.md"
+        hand.write_text(
+            "---\nid: 20261001_handvec\nns: _shared\ntype: fact\n"
+            "source: agent-x\ncreated: 2026-10-01\n---\n\nnginx buffer 配置要点（带外新增复述）\n",
+            encoding="utf-8",
+        )
+        hits = vec_store.search("反向代理的缓冲区设置", include_neighbors=False)
+        assert "20261001_handvec" in [h["id"] for h in hits]
