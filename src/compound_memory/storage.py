@@ -13,8 +13,10 @@ from __future__ import annotations
 import datetime as dt
 import dataclasses
 import os
+import re
 import shutil
 import subprocess
+import sys
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -39,6 +41,12 @@ except ImportError:  # pragma: no cover - 取决于 PyYAML 是否带 C 扩展
 
 # 向量召回候选池：词面候选 ∪ 向量 KNN 前 VEC_POOL 条（ns/活性过滤后）
 VEC_POOL = 16
+
+# ns / mem_id 的路径组件白名单：两者都被直接拼进存储路径或 rglob 模式，
+# 来自 LLM/宿主输出，格式不设防时 ns='agent-../../x' 可写出存储根、
+# mem_id='*' 可经 rglob 命中库内任意记忆（2026-10-05 审计 P1-1/P2-3）。
+# 合法 id（YYYYMMDD_hex6）与现有全部 ns 取值均落在 [A-Za-z0-9_-] 内。
+_PATH_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 ARCHIVE_USES_THRESHOLD = 3
 CONF_USE_BUMP = 0.1
@@ -243,8 +251,15 @@ class MemoryStore:
             return
         if not self.git_enabled:
             return
-        self._git("add", "-A", check=False)
-        self._git("commit", "-qm", message, check=False)
+        staged = self._git("add", "-A", check=False)
+        committed = self._git("commit", "-qm", message, check=False)
+        # check=False 的失败不得静默：文件已落盘但审计史出现空洞（并发 index.lock、
+        # hook 拒绝），"git log 即审计史"的承诺至少要 stderr 响亮一声。
+        # nothing-to-commit 是 git 的正常无操作返回，不算失败。
+        for step, label in ((staged, "add"), (committed, "commit")):
+            combined = (step.stdout or "") + (step.stderr or "")
+            if step.returncode != 0 and "nothing to commit" not in combined:
+                print(f"compound-memory: git {label} failed: {combined.strip()}", file=sys.stderr)
 
     # ---------- 文件 IO ----------
 
@@ -288,6 +303,12 @@ class MemoryStore:
         return Memory(**{**defaults, **{k: v for k, v in meta.items() if k in {f.name for f in dataclasses.fields(Memory)}}})
 
     def find(self, mem_id: str) -> Memory | None:
+        # mem_id 拼 rglob 模式：非法字符（glob 元字符/路径分隔）不得进入——
+        # '*' 曾命中库内任意第一条且绕过属主检查直泄私有正文（审计 P2-3）。
+        # 非法 id 语义等价于「不可能存在」⇒ 返回 None：全部调用方对 None
+        # 已有容错分支，抛错反而会炸掉邻居召回的「宁缺勿炸」降级。
+        if not _PATH_COMPONENT_RE.match(mem_id):
+            return None
         for base in (self.ns_root, self.archive_root):
             for path in base.rglob(f"{mem_id}.md"):
                 return self.parse(path)
@@ -302,7 +323,15 @@ class MemoryStore:
     @staticmethod
     def _check_ns(ns: str) -> None:
         """ns 格式校验（write/search 共用）：非法 ns 是调用方错误，必须抛错——
-        search 侧静默返回空结果会让 agent 误判"无相关记忆"。"""
+        search 侧静默返回空结果会让 agent 误判"无相关记忆"。
+
+        字符集白名单先行于前缀检查：ns 直接拼进存储路径（_active_path），
+        "agent-../../x" 曾可把 .md 写出存储根（2026-10-05 审计 P1-1）——
+        白名单同时封死穿越、glob 元字符与路径分隔，且必须在越权检查之前
+        （恶意 ns 自证身份的 owner 校验没有资格先跑）。
+        """
+        if not _PATH_COMPONENT_RE.match(ns):
+            raise ValueError(f"ns contains characters outside [A-Za-z0-9_-]: {ns!r}")
         if ns != "_shared" and not ns.startswith("agent-"):
             raise ValueError("ns must be '_shared' or start with 'agent-'")
 
@@ -525,6 +554,8 @@ class MemoryStore:
         reader 是调用方身份，ns=agent-* 时必填且须为属主（读侧 owner 校验，
         与 write 的越权抛 PermissionError 对称）。
         """
+        if top_k < 0:
+            raise ValueError(f"top_k must be >= 0, got {top_k}")
         if ns is None:
             reader = self._resolve_identity(reader, "reader")
             scopes = ["_shared"]

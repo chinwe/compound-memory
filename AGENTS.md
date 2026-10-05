@@ -22,7 +22,7 @@
   - `MemoryStore.lexical_candidates`：公开词面候选通道（返回记忆正文的入口，已过身份门禁）——extraction 复述标注走它，勿直调 `_candidates` 私有件；
   - `scoring.recency_age`：新近基准（last_used 优先，created 兜底），直接返回距 today 天数、坏日期返回 None；排序与衰减共用，勿各算各的；
   - `ReviewQueue`：review-queue.md 行格式（生成 + 解析 + fail-safe 保留）单一定义点，勿在别处裸读/裸写队列文件；
-  - `MemoryStore` 接口错误约定：调用方错误（参数/越权/自链接）抛 `ValueError`/`PermissionError`（CLI/MCP adapter 各翻译一次），目标不存在返回 `{"found": False}`（按 id 动词恒含 `found` 键）；
+  - `MemoryStore` 接口错误约定：调用方错误（参数/越权/自链接）抛 `ValueError`/`PermissionError`（CLI/MCP adapter 各翻译一次），目标不存在返回 `{"found": False}`（按 id 动词恒含 `found` 键）；非法 ns（白名单外字符）写/检索抛 `ValueError`，非法 mem_id 在 `find` 视作不存在返回 `None`（调用方对 None 已有容错，抛错会炸掉邻居召回降级，2026-10-05 审计加固）；
   - `_check_ns_owner` + `_resolve_identity`：ns 访问控制与身份裁决唯一位置。不变量：**凡返回记忆正文或元数据的新入口（MCP tool、CLI 命令、store 公开方法）必须先过这两道门**——检索、按 id 读、邻居、蒸馏扫描/落库、复活全覆盖，新增入口先对表自查（2026-10-03 曾靠枚举才发现 distill_plan/revive 两个漏网同族入口）。
 - 术语遵循 `CONTEXT.md` glossary，注意每条的 Avoid 列表，不要用同义词漂移。
 
@@ -34,6 +34,8 @@
 - 删除文件的沙箱约束已收进 seam adapter：生产默认 `Path.unlink`（单文件 unlink 不受批量守卫影响）；conftest 的 `sandbox_safe_remove`（改名 `.{name}.rm`）只在测试侧注入。测试断言日期一律用 conftest 的 `CLOCK_DATE`（store fixture 已注入固定 clock），勿贴真实墙钟。
 - 沙箱对后台任务曾有 SIGKILL（exit 137；2026-10-04 一次 17 分钟的**单次巨批** onnx run 被杀，同日一次 45+ 分钟的分块编码任务全程未被杀——疑似与巨批内存峰值有关而非单纯时长）：长编码/评测任务优先分块限内存、被杀后响亮重试；前台 Bash 上限 600s。长命令与后台命令一律绝对路径（cwd 在调用间会漂移，曾把相对路径拼错）。
 - 回归测试钉子别用绝对计时断言：沙箱负载波动大（同一提交全量耗时实测 55s~153s），会把「线性但慢」误判成回归（曾把 36.2s 误报给 10s 阈值）。优先结构性计数/不变量断言——如 sys 审计钩子数 tokens.tmp 落盘次数与批量大小无关（见 test_batch.py::TestBatchScale）。
+- `search` 默认 `top_k=5`：验证可见性/覆盖面的断言（并发写互见、rebuild 前后对比、灌库全量可检）必须显式放大 top_k 或断言候选集合，否则截断会伪装成「丢更新」——2026-10-05 外部审计的 P1-2 误报与复核第一轮 PoC 双双栽在这里。
+- 穿越/路径类 PoC 探针执行前先 `resolve()` 核对落点：`ns` 层级探针会从 `.test-tmp` 写穿到仓库根乃至工作区上层（2026-10-05 曾把 deep_victim/fact/*.md 写进仓库根，幸为探针自建目录可直接清理）。
 
 ## 约定
 

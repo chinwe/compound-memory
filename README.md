@@ -106,7 +106,7 @@ systemctl --user list-timers | grep compound-memory   # 验证已加载
 ## 开发
 
 ```bash
-uv run pytest tests/ -q     # 85 tests（MCP tool 边界 + 蒸馏 + 生命周期/索引/CLI）
+uv run pytest tests/ -q     # 全量测试（MCP tool 边界 + 蒸馏 + 生命周期/索引/CLI + 输入防御）
 uv run mypy src/compound_memory/
 ```
 

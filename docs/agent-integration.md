@@ -47,7 +47,7 @@ uv run --directory <仓库> compound-memory init
 ### 统一约定（各宿主必须一致）
 
 - **`source` agent id**：WorkBuddy → `agent-workbuddy`；ZCode → `agent-zcode`；Claude Code → `agent-claude`；DeepSeek Harness → `agent-deepseek`。id 用宿主标识而非个性化名字（如 TARS），保证稳定不随命名变化；跨 Agent 验证加分依赖 id 互不相同。
-- **namespace**：默认写 `_shared`（全体可见）；`agent-<name>` 是私有区，仅属主可写、读/反馈也须属主身份（`reader`/`agent` 填自己的 agent id，缺省即拒绝）。检索不传 `ns` 时自动并搜自有私有区（双通道）。日常任务一律用默认值即可。
+- **namespace**：默认写 `_shared`（全体可见）；`agent-<name>` 是私有区，仅属主可写、读/反馈也须属主身份（`reader`/`agent` 填自己的 agent id，缺省即拒绝）。检索不传 `ns` 时自动并搜自有私有区（双通道）。ns 只允许字符 `[A-Za-z0-9_-]`（ns 会被直接拼进存储路径，含 `../`、`/`、`*` 等一律 ValueError，2026-10-05 审计加固）。日常任务一律用默认值即可。
 - **进程身份注入（建议必配）**：宿主配置的 `env` 加 `COMPOUND_MEMORY_AGENT_ID: <本宿主 agent id>`。注入后存储层以进程身份裁决一切自报身份（source/reader/agent）：缺省自动补真值、等价形式（`agent-x`/`x`）归一化、矛盾响亮拒绝——模型谎报身份失效，伪造 source 污染跨 Agent 验证的通道一并关闭。未注入则保持自报身份模式（协作边界，非安全边界）。
 - **写什么**：稳定事实（用户偏好、项目约定、环境限制、踩坑结论）才写；一次性、会话内临时信息不写。任务状态类（进行时/待办）内容易腐：要么带 `valid_until`、要么改写成不含进行时态的稳定事实——过时的状态记忆比没有更糟。内容用中文，key 用稳定英文短横线标识（如 `user-tts`、`proj-xxx`）。
 
@@ -256,5 +256,6 @@ launchd（macOS）/ systemd user timer（Linux）/ cron 每天 09:00 自动把�
 | 手工编辑过记忆文件内容 | 活性检测只覆盖新增/删除，**内容**修改需显式 `rebuild-index` |
 | SessionStart 没注入 | hook 任何异常都静默退出；手动跑 `~/.agents/memory/hooks/session_start.py` 检查输出是否为合法 `{"additionalContext": ...}` JSON |
 | 写入报 PermissionError | 命名空间越权：`agent-*` 私有区仅属主可写，日常写 `_shared` |
+| 写入/检索报 ValueError（`ns contains characters...`） | ns 含白名单外字符（`../`、`/`、`*`、空格等）：ns 是存储路径组件，只允许 `[A-Za-z0-9_-]`，私有区写 `agent-<宿主 id>` |
 | 同 key 写入返回 `conflict: true` | 内容与既有版本不同，已入 `review-queue.md`；裁决（人或主治 Agent）后把废置版本归档：置 frontmatter `archived: true` 移入 `archive/<ns>/<type>/` 并删活动文件（等价 decay 语义），再 `rebuild-index`，记忆库 git 留一条审计 commit |
 | 记忆被归档了 | 按 id `memory_get` 可取回；对它 `memory_feedback` 或 `revive` 即恢复可检索 |

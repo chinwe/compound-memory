@@ -4,8 +4,8 @@
 裁决（新旧取舍）归调用方，这里只登记、展示与清除，不做判断、不碰 git。
 
 行结构（append 生成，机器写入）：old/new 记忆 id 各在 "(` 与 " (" 边界；
-非贪婪到首个 " vs "——content 截断 40 字符，正则回溯保证内容含 " vs " 时仍取对 id。
-解析失败的行 fail-safe 保留：宁可不登记，不误删记录。
+非贪婪到首个 " vs "——content 清洗控制字符后截断 40 字符，正则回溯保证内容
+含 " vs " 时仍取对 id。解析失败的行 fail-safe 保留：宁可不登记，不误删记录。
 """
 
 from __future__ import annotations
@@ -19,6 +19,15 @@ from .model import Memory
 
 _REVIEW_ROW_RE = re.compile(r"^- \S+ conflict `[^`]+`: (?P<old>\S+) \(.*?\) vs (?P<new>\S+) \(")
 
+# 行格式是机器可解析契约：自由文本（ns/key/source/content）里的控制字符
+# （换行、制表等）曾可把一行拆成两行，损坏行被 fail-safe 保留后永久占队列
+# （2026-10-05 审计 P2-4）——写入前在 append 单点中性化为空格。
+_CTRL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _sanitize(text: str) -> str:
+    return _CTRL_CHARS_RE.sub(" ", text)
+
 
 class ReviewQueue:
     """冲突队列 artifact 的所有者：append 写入、lines 展示、resolve 清除。"""
@@ -29,8 +38,9 @@ class ReviewQueue:
 
     def append(self, old: Memory, new: Memory) -> None:
         line = (
-            f"- {self._clock().isoformat()} conflict `{new.ns}/{new.type}/{new.key}`: "
-            f"{old.id} ({old.source}: {old.content[:40]}) vs {new.id} ({new.source}: {new.content[:40]})\n"
+            f"- {self._clock().isoformat()} conflict `{_sanitize(new.ns)}/{new.type}/{_sanitize(new.key or '')}`: "
+            f"{old.id} ({_sanitize(old.source)}: {_sanitize(old.content)[:40]}) vs "
+            f"{new.id} ({_sanitize(new.source)}: {_sanitize(new.content)[:40]})\n"
         )
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(line)
