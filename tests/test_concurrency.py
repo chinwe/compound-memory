@@ -13,6 +13,7 @@ import logging
 import threading
 import time
 from contextlib import redirect_stderr
+from multiprocessing import Process, Queue
 from pathlib import Path
 
 import pytest
@@ -98,3 +99,65 @@ class TestConcurrentWriters:
                 store.write(f"batched {i}", type="fact", source="agent-a")
             batch_ctx.message = "bulk write test"
         assert store.stats()["active"] == 3
+
+    def test_parallel_feedback_no_lost_update(self, tmp_path: Path) -> None:
+        """并发 feedback 同一记忆：读-改-写必须全程在临界区内。
+
+        find 在锁外时两写者读到同一快照、后写覆盖前者，uses/confidence 丢更新
+        （2026-10-02 实测的「重试重复 +uses」同根因）。
+        """
+        root = tmp_path / "memroot"
+        mem_id = _make_store(root).write("hot memory", type="fact", source="agent-a")["id"]
+        rounds = 8
+        barrier = threading.Barrier(2)
+
+        def bump(agent: str) -> None:
+            store = _make_store(root)
+            barrier.wait()
+            for _ in range(rounds):
+                store.feedback(mem_id, agent=agent)
+
+        threads = [threading.Thread(target=bump, args=(f"agent-{n}",)) for n in "bc"]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(60)
+        assert not any(t.is_alive() for t in threads), "feedback thread hung: deadlock?"
+        mem = _make_store(root).find(mem_id)
+        assert mem is not None
+        assert mem.uses == 2 * rounds, f"lost updates under concurrent feedback: uses={mem.uses}"
+
+
+def _mp_worker(root_str: str, name: str, n: int, q: "Queue[tuple]") -> None:
+    """真跨进程写入者（#21 验收）：独立进程、独立 store，写 n 条并回报。"""
+    try:
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            store = MemoryStore(Path(root_str), clock=lambda: CLOCK_DATE, remover=_unlink_file)
+            ids = [store.write(f"{name}-{i}", type="fact", source=name)["id"] for i in range(n)]
+        git_failed = "git add failed" in buf.getvalue() or "git commit failed" in buf.getvalue()
+        q.put(("ok", ids, git_failed, ""))
+    except Exception as exc:  # noqa: BLE001 - 故障形态完整回报给断言侧
+        q.put(("err", [], False, repr(exc)))
+
+
+class TestCrossProcessWriters:
+    """真多进程验收（#21 brief 字面要求）：flock 的跨进程互斥语义。"""
+
+    def test_two_processes_write_no_loss_no_git_failure(self, tmp_path: Path) -> None:
+        root = tmp_path / "memroot"
+        _make_store(root).write("seed", type="fact", source="agent-a")
+        q: "Queue[tuple]" = Queue()
+        procs = [Process(target=_mp_worker, args=(str(root), f"agent-{n}", 5, q)) for n in "bc"]
+        for p in procs:
+            p.start()
+        for p in procs:
+            p.join(60)
+        assert all(p.exitcode == 0 for p in procs), [p.exitcode for p in procs]
+        results = [q.get(timeout=10) for _ in procs]
+        assert all(status == "ok" for status, *_ in results), results
+        assert not any(git_failed for _, _, git_failed, _ in results), results
+        ids = [mid for _, ids, _, _ in results for mid in ids]
+        assert len(ids) == 10
+        store = _make_store(root)
+        assert all(store.find(mid) is not None for mid in ids)

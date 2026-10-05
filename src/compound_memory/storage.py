@@ -19,7 +19,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -28,11 +27,14 @@ from typing import Any, Callable, Iterator, overload
 
 import yaml
 
-from .index import Index
+from .index import Index, atomic_write_text
 from .model import MEMORY_TYPES, TTL_DAYS, Memory
 from .review_queue import ReviewQueue
 from .scoring import age_days, doc_text, dup_similarity_matrix, is_expired, rank, recency_age, tokenize
 from .vector_index import VectorIndex
+
+# storage 域告警的单点 logger：扫描容错（#20）与向量降级（#19）共用
+logger = logging.getLogger(__name__)
 
 # frontmatter 解析 loader：C 扩展（libyaml）快 ~5x 且与 SafeLoader 语义逐位一致
 # （perf-bench：scan_pairs 的 yaml parse 是对账/统计读路径的最大单项），
@@ -52,9 +54,6 @@ VEC_POOL = 16
 _PATH_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 ARCHIVE_USES_THRESHOLD = 3
-
-# storage 域告警的单点 logger：扫描容错（#20）与向量降级（#19）共用
-logger = logging.getLogger(__name__)
 CONF_USE_BUMP = 0.1
 CONF_CROSS_AGENT_BUMP = 0.15
 GIT_IDENTITY = ("-c", "user.name=compound-memory", "-c", "user.email=memory@local")
@@ -331,22 +330,9 @@ class MemoryStore:
                 continue
             meta[key] = value
         body = "---\n" + yaml.safe_dump(meta, allow_unicode=True, sort_keys=False) + "---\n\n" + mem.content.strip() + "\n"
-        # 原子写出（#18）：同目录临时文件 + os.replace——任何时刻目标要么旧完整
-        # 要么新完整，中断/失败不留半写（坏 frontmatter 会炸全量扫描，见 #20）。
-        # 临时文件必须在目标同目录（跨文件系统 replace 不原子），且名字不以 .md
-        # 结尾，避免被 rglob("*.md") 当记忆扫到。
-        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-        tmp_path = Path(tmp_name)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(body)
-            os.replace(tmp_path, path)
-        except BaseException:
-            try:
-                self._remover(tmp_path)
-            except OSError:
-                pass  # 清理失败不掩盖原异常；残留 .tmp 不进 *.md 扫描视野
-            raise
+        # 原子写出收口到共享单点 atomic_write_text（#18/#21）：中断不留半写、
+        # 临时名唯一、失败清理、权限对齐 open() 默认
+        atomic_write_text(path, body)
 
     @staticmethod
     def parse(path: Path) -> Memory:
@@ -355,6 +341,10 @@ class MemoryStore:
             raise ValueError(f"bad memory file (missing frontmatter): {path}")
         _, fm, body = text.split("---\n", 2)
         meta = yaml.load(fm, Loader=_SafeLoader) or {}
+        # 合法 YAML 但非映射（手编标量/列表）：统一转解析失败（#20 容错面覆盖），
+        # 否则下面 meta["content"] 抛 TypeError / meta.items() 抛 AttributeError 逃过捕获
+        if not isinstance(meta, dict):
+            raise ValueError(f"bad memory file (frontmatter not a mapping): {path}")
         meta["content"] = body.strip()
         defaults = {
             f.name: f.default
@@ -372,8 +362,8 @@ class MemoryStore:
     def _parse_for_scan(self, path: Path) -> Memory | None:
         """扫描路径的容错解析（#20）：坏文件跳过并告警，不炸整场扫描。
 
-        只捕解析类异常（缺 frontmatter / 坏 YAML / 缺必填字段 / 编码与读盘错误），
-        其他异常照常传播。返回 None 表示跳过，调用方 continue；
+        只捕解析类异常（缺 frontmatter / 坏 YAML / 非映射 / 缺必填字段 /
+        编码与读盘错误），其他异常照常传播。返回 None 表示跳过；
         文件本身不动，留给人工处置。全好文件零日志，告警即坏信号。
         """
         try:
@@ -381,6 +371,21 @@ class MemoryStore:
         except (ValueError, OSError, yaml.YAMLError) as exc:
             logger.warning("skipping unparseable memory file %s: %s", path, exc)
             return None
+
+    def _scan_parsed(self, base: Path) -> Iterator[tuple[Memory, Path]]:
+        """按目录扫描 *.md 并容错解析（#20 扫描消费方共用单点）。
+
+        逐条告警之外，结束时对跳过数量做一次汇总告警（#20 验收：
+        数量 + 逐条路径 + 原因，两层都有）。"""
+        skipped = 0
+        for path in sorted(base.rglob("*.md")):
+            mem = self._parse_for_scan(path)
+            if mem is None:
+                skipped += 1
+                continue
+            yield mem, path
+        if skipped:
+            logger.warning("scan skipped %d unparseable memory file(s)", skipped)
 
     def find(self, mem_id: str) -> Memory | None:
         # mem_id 拼 rglob 模式：非法字符（glob 元字符/路径分隔）不得进入——
@@ -573,12 +578,14 @@ class MemoryStore:
 
     def feedback(self, mem_id: str, agent: str) -> dict[str, Any]:
         agent = self._resolve_identity(agent, "agent")
-        mem = self.find(mem_id)
-        if mem is None:
-            return {"found": False}
-        # 私有记忆只有属主可反馈：防外来 agent 刷 uses/confidence、混入 validated_by 或复活归档
-        self._check_ns_owner(mem.ns, agent, role="agent")
+        # 读-改-写全程临界区：find 在锁外时并发 feedback 同一记忆会读到同一
+        # 快照、后写覆盖前者，uses/confidence 丢更新（2026-10-05 并发测试实证）
         with self._write_lock():
+            mem = self.find(mem_id)
+            if mem is None:
+                return {"found": False}
+            # 私有记忆只有属主可反馈：防外来 agent 刷 uses/confidence、混入 validated_by 或复活归档
+            self._check_ns_owner(mem.ns, agent, role="agent")
             if mem.archived:
                 self._move_to_active(mem)
             mem.uses += 1
@@ -599,20 +606,20 @@ class MemoryStore:
     def link(self, id_a: str, id_b: str) -> dict[str, Any]:
         if id_a == id_b:
             raise ValueError("cannot link a memory to itself")
-        mem_a, mem_b = self.find(id_a), self.find(id_b)
-        missing = [mid for mid, m in ((id_a, mem_a), (id_b, mem_b)) if m is None]
-        if missing:
-            return {"found": False, "missing": missing}
-        assert mem_a is not None and mem_b is not None
-        # 跨 ns 链会把对侧 id 写进本侧文件 frontmatter，成为私有 id 的泄漏源；
-        # 且邻居召回本就同 ns 过滤，跨 ns 链对复利无贡献——创建侧直接禁止
-        if mem_a.ns != mem_b.ns:
-            raise ValueError(f"cannot link memories across namespaces: {mem_a.ns!r} vs {mem_b.ns!r}")
-        if id_b not in mem_a.links:
-            mem_a.links.append(id_b)
-        if id_a not in mem_b.links:
-            mem_b.links.append(id_a)
-        with self._write_lock():
+        with self._write_lock():  # 读-改-写全程临界区（同 feedback 的丢更新防御）
+            mem_a, mem_b = self.find(id_a), self.find(id_b)
+            missing = [mid for mid, m in ((id_a, mem_a), (id_b, mem_b)) if m is None]
+            if missing:
+                return {"found": False, "missing": missing}
+            assert mem_a is not None and mem_b is not None
+            # 跨 ns 链会把对侧 id 写进本侧文件 frontmatter，成为私有 id 的泄漏源；
+            # 且邻居召回本就同 ns 过滤，跨 ns 链对复利无贡献——创建侧直接禁止
+            if mem_a.ns != mem_b.ns:
+                raise ValueError(f"cannot link memories across namespaces: {mem_a.ns!r} vs {mem_b.ns!r}")
+            if id_b not in mem_a.links:
+                mem_a.links.append(id_b)
+            if id_a not in mem_b.links:
+                mem_b.links.append(id_a)
             self._save(mem_a)
             self._save(mem_b)
             self._commit(f"link {id_a} <-> {id_b}")
@@ -732,10 +739,7 @@ class MemoryStore:
         now = self._clock()
         with self._write_lock():  # 批量归档 + 收尾 commit 一个临界区
             archived: list[str] = []
-            for path in sorted(self.ns_root.rglob("*.md")):
-                mem = self._parse_for_scan(path)
-                if mem is None:
-                    continue
+            for mem, _path in self._scan_parsed(self.ns_root):
                 if mem.ttl is None:
                     continue
                 age = recency_age(mem, now)
@@ -750,13 +754,13 @@ class MemoryStore:
 
     def revive(self, mem_id: str, reader: str | None = None) -> dict[str, Any]:
         reader = self._resolve_identity(reader, "reader")
-        mem = self.find(mem_id)
-        if mem is None:
-            return {"found": False}
-        # revive 返回全文，与 get 同属按 id 读路径：私有 ns 仅属主可复活
-        self._check_ns_owner(mem.ns, reader)
-        if mem.archived:
-            with self._write_lock():
+        with self._write_lock():  # 读-改-写全程临界区（同 feedback 的丢更新防御）
+            mem = self.find(mem_id)
+            if mem is None:
+                return {"found": False}
+            # revive 返回全文，与 get 同属按 id 读路径：私有 ns 仅属主可复活
+            self._check_ns_owner(mem.ns, reader)
+            if mem.archived:
                 self._move_to_active(mem)
                 self._save(mem)
                 self._commit(f"revive {mem_id}")
@@ -803,10 +807,7 @@ class MemoryStore:
         self._check_ns_owner(ns, reader)
         now = self._clock()
         cands: list[Memory] = []
-        for path in sorted((self.ns_root / ns).rglob("*.md")):
-            mem = self._parse_for_scan(path)
-            if mem is None:
-                continue
+        for mem, _path in self._scan_parsed(self.ns_root / ns):
             if is_expired(mem, now):
                 continue  # 过期事实不该被蒸馏固化进新产物
             age = recency_age(mem, now)
@@ -911,12 +912,10 @@ class MemoryStore:
 
     def _scan_pairs(self) -> list[tuple[Memory, str]]:
         """扫描活动区供 Index 全量重建（注入回调，惰性调用）。"""
-        out: list[tuple[Memory, str]] = []
-        for path in sorted(self.ns_root.rglob("*.md")):
-            mem = self._parse_for_scan(path)
-            if mem is not None:
-                out.append((mem, path.relative_to(self.root).as_posix()))
-        return out
+        return [
+            (mem, path.relative_to(self.root).as_posix())
+            for mem, path in self._scan_parsed(self.ns_root)
+        ]
 
     def rebuild_index(self) -> dict[str, Any]:
         counts = self.index.rebuild(self._scan_pairs())
@@ -968,10 +967,7 @@ class MemoryStore:
         base = self.ns_root / ns / mtype
         if not base.exists():
             return None
-        for path in sorted(base.rglob("*.md")):
-            mem = self._parse_for_scan(path)
-            if mem is None:
-                continue
+        for mem, _path in self._scan_parsed(base):
             if mem.key == key and mem.content.strip() != exclude_content.strip():
                 return mem
         return None
@@ -1002,10 +998,7 @@ class MemoryStore:
         expired_active = 0
         now = self._clock()
         for base, is_archive in ((self.ns_root, False), (self.archive_root, True)):
-            for path in base.rglob("*.md"):
-                mem = self._parse_for_scan(path)
-                if mem is None:
-                    continue
+            for mem, _path in self._scan_parsed(base):
                 total += 1
                 if is_archive:
                     archived += 1

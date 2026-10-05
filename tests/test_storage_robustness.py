@@ -19,6 +19,9 @@ BAD_FILE_CORPUS = {
     "no-frontmatter": "not frontmatter at all\n",
     "broken-yaml": "---\nkey: [unclosed\n---\nbody\n",
     "bad-encoding": None,  # 以非法 utf-8 字节写入
+    # 合法 YAML 但非映射（手编常见坏法）：同样必须被容错面捕获
+    "scalar-yaml": "---\njust a bare string\n---\nbody\n",
+    "list-yaml": "---\n- one\n- two\n---\nbody\n",
 }
 
 
@@ -69,6 +72,19 @@ class TestAtomicSave:
         stray = [p for p in (store.ns_root / "_shared" / "fact").iterdir() if p.suffix != ".md"]
         assert stray == []
 
+    def test_written_file_permissions_match_plain_write(self, tmp_path: Path) -> None:
+        """#18 验收「与现状一致」含权限：mkstemp 固定 0600 会整体变严，
+        必须对齐 open() 默认（0666 & ~umask）。"""
+        import os
+
+        store = _make_store(tmp_path)
+        mem_id = store.write("perm check", type="fact", source="agent-a")["id"]
+        path = next((store.ns_root / "_shared" / "fact").rglob(f"{mem_id}.md"))
+        mask = os.umask(0)
+        os.umask(mask)
+        expected = 0o666 & ~mask
+        assert path.stat().st_mode & 0o777 == expected
+
 
 def _plant_bad_file(store: MemoryStore, kind: str = "no-frontmatter") -> Path:
     """带外制造坏记忆文件（模拟手编/写入中断产物），返回其路径。"""
@@ -87,7 +103,9 @@ class TestScanTolerance:
     （响亮但不阻断），文件原样保留待人工处置；全好文件时零额外日志。
     """
 
-    @pytest.mark.parametrize("kind", ["no-frontmatter", "broken-yaml", "bad-encoding"])
+    @pytest.mark.parametrize(
+        "kind", ["no-frontmatter", "broken-yaml", "bad-encoding", "scalar-yaml", "list-yaml"]
+    )
     def test_rebuild_skips_bad_file(self, store: MemoryStore, caplog: pytest.LogCaptureFixture, kind: str) -> None:
         store.write("good fact", type="fact", source="agent-a")
         bad = _plant_bad_file(store, kind)
@@ -95,6 +113,9 @@ class TestScanTolerance:
             counts = store.rebuild_index()
         assert counts["memories"] == 1  # 计数不含坏文件
         assert any("19990101_badfile" in r.getMessage() for r in caplog.records)
+        # #20 验收：除逐条告警外还有数量汇总
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("skipped" in m and "unparseable" in m for m in msgs)
         assert bad.exists()  # 不删除、不移动
 
     def test_stats_skips_bad_file(self, store: MemoryStore, caplog: pytest.LogCaptureFixture) -> None:

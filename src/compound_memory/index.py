@@ -20,6 +20,34 @@ from .model import Memory
 from .scoring import tokenize, doc_text
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    """同目录唯一临时文件 + os.replace 原子替换（#18/#21 共享单点）。
+
+    - 中断/失败时目标要么旧完整要么新完整，不留半写文件；
+    - 临时名唯一（mkstemp）：并发写者不会踩掉彼此的 replace 源（固定 .tmp 名
+      实测 ENOENT）；读路径的惰性重建不经写锁，缓存写出必须自身并发安全；
+    - 权限经 fchmod 对齐 open() 默认（0666 & ~umask）——mkstemp 固定 0600 会
+      让新落盘文件整体变严，与 write_text 时代行为不一致；
+    - 失败清理临时文件（非 .md 后缀不进扫描视野；单文件 unlink 不受沙箱
+      批量删除守卫影响）。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            mask = os.umask(0)  # 探测 umask 需 set 两步；写者已串行化，实际 umask 进程内不变
+            os.umask(mask)
+            os.fchmod(fh.fileno(), 0o666 & ~mask)
+            fh.write(text)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass  # 清理失败不掩盖原异常
+        raise
+
+
 class Index:
     """Deep module: 三个动词 sync / candidates / rebuild，缓存机制全部在实现内。
 
@@ -148,13 +176,8 @@ class Index:
     def _save(self) -> None:
         # 目录可能被外部整体移走（测试模拟缓存丢失、或人为 rm -rf index/），写前确保存在
         self._dir.mkdir(parents=True, exist_ok=True)
-        # 唯一临时名 + 原子替换：固定 .tmp 名在两写者并发时会让后一个 replace
-        # ENOENT（前一个已把 tmp 换走，2026-10-05 并发测试实证）；读路径的惰性
-        # 重建不经写锁，这里必须自身并发安全
-        fd, tmp_name = tempfile.mkstemp(dir=self._dir, prefix=f".{self._path.name}.", suffix=".tmp")
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(self._data or {}, ensure_ascii=False, sort_keys=True))
-        os.replace(tmp_name, self._path)
+        # 原子写共享单点（唯一临时名 + fchmod 权限对齐 + 失败清理），语义见函数 docstring
+        atomic_write_text(self._path, json.dumps(self._data or {}, ensure_ascii=False, sort_keys=True))
         self._loaded_stamp = self._cache_stamp()  # 自己写盘后刷新基线，避免自触发重载
 
     # ---------- interface ----------
