@@ -503,12 +503,15 @@ def test_extract_dir_batches_and_skips_subagents(tmp_path: Path, store: MemorySt
     """批量模式：跨会话合并去重；**跳过 subagents/**——那里的 role:user 是
     team-lead agent 的派活文本（第三人称转述用户），实测候选 3/3 全是噪声。
     目录里混着其他宿主的会话（Claude Code 同为 <slug>/<file>.jsonl 布局）
-    也一并按各自形态解析。"""
+    也一并按各自形态解析。**覆盖面不静默**：glob 没吃到的文件（dsh v3 教训
+    ——glob 窄于现实时 44% 会话静默漏扫）与不支持形态的文件都要在 skipped
+    里如实现身并归因。"""
     projects = tmp_path / "projects"
     sess_a = projects / "Users-x-workspace-a"
     sess_b = projects / "Users-y-workspace-b"
     sub = sess_a / "abc" / "subagents"
-    for d in (sess_a, sess_b, sub):
+    deep = sess_a / "deep"
+    for d in (sess_a, sess_b, sub, deep):
         d.mkdir(parents=True)
     (sess_a / "s1.jsonl").write_text(
         _session_line("user", "<user_query>我用 uv 管理这个项目</user_query>"), encoding="utf-8"
@@ -538,11 +541,22 @@ def test_extract_dir_batches_and_skips_subagents(tmp_path: Path, store: MemorySt
         ),
         encoding="utf-8",
     )
+    # 深于批量 glob 的会话文件 + 不支持形态的文件：不解析，但必须在 skipped 里现身
+    (deep / "nested.jsonl").write_text(
+        _session_line("user", "<user_query>我用 edge-tts 生成中文音频，晓晓语音</user_query>"), encoding="utf-8"
+    )
+    (sess_a / "junk.jsonl").write_text("完全不是 transcript", encoding="utf-8")
     result = extract_dir(projects, store)
     assert result["sessions"] == 3
     assert result["user_turns"] == 3, "跨会话复述应合并，不同句子各留一条"
+    skipped = {s["path"]: s["reason"] for s in result["skipped"]}
+    assert skipped["Users-x-workspace-a/abc/subagents/agent-x.jsonl"] == "subagents"
+    assert skipped["Users-x-workspace-a/deep/nested.jsonl"] == "outside-batch-globs"
+    assert skipped["Users-x-workspace-a/junk.jsonl"] == "unsupported-kind"
+    assert result["skipped_total"] == len(result["skipped"])
     quotes = " ".join(c["quote"] for c in json.loads(
         (store.root / "extract" / "last-candidates.json").read_text(encoding="utf-8")
     )["candidates"])
     assert "uv" in quotes and "Vercel" in quotes
     assert "鱼吃鱼" not in quotes, "subagent 派活文本不得进清单"
+    assert "edge-tts" not in quotes, "skipped 文件不得被解析进清单"

@@ -91,6 +91,7 @@ USER_WRAPPERS = (
 
 MAX_CANDIDATES = 20  # 每次扫描的清单上限：防喋喋不休的会话产出垃圾清单
 EXTRACT_MAX_SESSIONS = 500  # 批量模式单次最多吃多少个会话文件（防目录爆量）
+SKIP_LIST_MAX = 50  # 清单里 skipped 明细上限：防超大目录撑爆清单，skipped_total 仍如实计数
 QUOTE_CHARS = 200  # 候选摘录截断
 # 去重标注阈值：查询 token 被库内条目覆盖率（containment）。不用 normalized BM25——
 # 长句查询的分母惩罚使复述句也只有 ~0.12，结构性偏低；覆盖率对「复述检测」语义正确
@@ -457,17 +458,20 @@ def _write_manifest(
     kind: str,
     texts: list[str],
     candidates: list[dict[str, Any]],
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     out_dir = store.root / "extract"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "last-candidates.json"
-    manifest = {
+    manifest: dict[str, Any] = {
         "generated": dt.date.today().isoformat(),
         "source": str(source),
         "parser": kind,
         "user_turns": len(texts),
         "candidates": candidates,
     }
+    if extra:
+        manifest.update(extra)
     out_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return {
         "candidates": len(candidates),
@@ -475,6 +479,7 @@ def _write_manifest(
         "parser": kind,
         "out": str(out_path),
         "source": str(source),
+        **(extra or {}),
     }
 
 
@@ -487,35 +492,61 @@ def extract_dir(
 
     支持的目录布局：WorkBuddy `~/.workbuddy/projects` 与 Claude Code
     `~/.claude/projects`（都是 `<项目>/<会话>.jsonl`），DeepSeek Harness
-    `~/.dsh/sessions`（`<项目>/<会话>/session.jsonl.zstd`）。每个文件按内容
-    形态分派解析器，认不出的静默跳过（目录里可能混着非会话文件）。
+    `~/.dsh/sessions`（`<项目>/<会话>/session*.jsonl.zstd`）。每个文件按内容
+    形态分派解析器。
 
     只吃一级会话文件，**跳过 subagents/**：那里的 role:user 是 team-lead
-    agent 的派活文本（"用户想要…" 是第三人称转述，不是本人陈述），
-    实测 3/3 候选全是噪声——混进来只会污染清单。dsh 的 subagent 子会话在
-    解析器内按 session.origin 识别并返回空（计为已扫会话）。
+    agent 的派活文本（"用户想要…" 是第三人称转述，不是本人陈述），实测 3/3
+    候选全是噪声——混进来只会污染清单。dsh 的 subagent 子会话在解析器内按
+    session.origin 识别并返回空（计为已扫会话）。
+
+    **覆盖面不静默**（dsh v3 教训：glob 窄于现实时 44% 会话静默漏扫）：summary
+    附 skipped 观测——目录里全部 jsonl/zstd 与已解析集合做差，按 subagents /
+    unsupported-kind / outside-batch-globs 归因（明细截断到 SKIP_LIST_MAX，
+    skipped_total 仍如实计数）；触达 max_sessions 上限时的余量同样计入
+    outside-batch-globs。
 
     跨会话合并去重后再扫（同一句话在多会话复述），单会话上限由
     scan_texts 的 MAX_CANDIDATES 兜底。
     """
-    texts: list[str] = []
-    sessions = 0
     paths: set[Path] = set()
     # dsh 会话文件有两代文件名（session.jsonl.zstd / session.v3.jsonl.zstd），
     # 事件形态相同——glob 只认旧名会静默漏掉新会话（实测 25 个里 14 个是 v3）
     for pattern in ("*/*.jsonl", "*/*/session*.jsonl.zstd"):
         paths.update(root.glob(pattern))
+    texts: list[str] = []
+    sessions = 0
+    unsupported: set[Path] = set()
+    subagent_files: set[Path] = set()
     for log in sorted(paths):
-        kind = detect_transcript_kind(log)
-        parser = PARSERS.get(kind)
-        if parser is None or "subagents" in log.parts:
+        if "subagents" in log.parts:
+            subagent_files.add(log)
+            continue
+        parser = PARSERS.get(detect_transcript_kind(log))
+        if parser is None:
+            unsupported.add(log)
             continue
         texts.extend(parser(log))
         sessions += 1
         if sessions >= max_sessions:
             break
+    candidates_set = set(root.glob("**/*.jsonl")) | set(root.glob("**/*.zstd"))
+    skipped: list[dict[str, str]] = [
+        {"path": p.relative_to(root).as_posix(), "reason": "unsupported-kind"} for p in sorted(unsupported)
+    ]
+    for p in sorted(candidates_set - paths - unsupported - subagent_files):
+        reason = "subagents" if "subagents" in p.parts else "outside-batch-globs"
+        skipped.append({"path": p.relative_to(root).as_posix(), "reason": reason})
+    skipped.sort(key=lambda item: item["path"])
     merged = _dedupe(texts)
     candidates = scan_texts(merged, store=store)
-    summary = _write_manifest(store, f"{root} (batch)", "batch", merged, candidates)
+    summary = _write_manifest(
+        store,
+        f"{root} (batch)",
+        "batch",
+        merged,
+        candidates,
+        extra={"skipped": skipped[:SKIP_LIST_MAX], "skipped_total": len(skipped)},
+    )
     summary["sessions"] = sessions
     return summary
