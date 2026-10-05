@@ -156,8 +156,11 @@ class TestBatchScale:
 
         small = _flush_opens(tmp_path / "memroot-small", 20)
         large = _flush_opens(tmp_path / "memroot-large", 80)
-        assert len(small) >= 1
-        assert len(large) == len(small), "落盘次数必须与批量大小无关（逐条路径是 80 > 20）"
+        assert len(small) >= 1, "audit hook counted nothing: is the hook dead? (args[0] indexing before the event short-circuit kills all events, see AGENTS.md sandbox pitfalls)"
+        assert len(large) == len(small), (
+            f"save count must not depend on batch size (per-item path is {len(large)} vs {len(small)}); "
+            "if either side is 0, suspect a dead audit hook first (AGENTS.md sandbox pitfalls)"
+        )
         hits = MemoryStore(
             tmp_path / "memroot-large", git=False, clock=lambda: CLOCK_DATE, remover=sandbox_safe_remove
         ).search("zzmarker79")

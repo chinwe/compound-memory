@@ -18,6 +18,7 @@
   - `scoring.rank`：排序管线与搜索结果形状的唯一位置（权重常量 W_SIM/W_CONF/W_RECENCY/W_TYPE 定义在 scoring.py，改权重只改那里）；
   - `Index`：拥有"活动记忆必被索引、归档必不在索引"不变量，缓存损坏自动重建、检索降级不报错；活性是 store 级的——读路径自动检测跨进程缓存更新（重载）与带外新增/删除文件（目录 mtime 重建，探测共用 `liveness.dirs_newer_than` 单点），手编已有文件**内容**需显式 `rebuild-index`；
   - `MemoryStore.batch`：批量落库正门（逐条校验写穿、批尾一次索引 flush + 一次 commit；失败语义"落地即已提交"，嵌套即 ValueError）。灌库/蒸馏类批量写入一律走它，勿绕过直用 `_save`（experiments 旁路已迁移）；向量侧批尾一次性批量编码，`Index`/`VectorIndex` 的 `defer`/`flush_pending` 仅 batch 调用；
+  - `MemoryStore._write_lock`：写动词（write/feedback/link/decay/revive/review-resolve/batch）的**读-改-写**全程持锁——按 id 读与门禁也在锁内，`find` 在锁外时并发 feedback 同一记忆丢 uses/confidence（2026-10-05 并发测试实证 13/16）。新增写动词先对这条自查；文件写出共用 `atomic_write_text`（index.py，原子替换 + 唯一临时名 + 权限对齐），勿另写 mkstemp；
   - `extraction.HOSTS`：宿主 transcript 知识单一定义点（parser / 内容嗅探 / 批量 glob / 提示文案 / CLI 帮助全由表生成），新增宿主 = 一个函数 + 一行表，勿在别处加分支；公共尾部（剥壳滤注入去重）用 `collect_user_texts`；
   - `MemoryStore.lexical_candidates`：公开词面候选通道（返回记忆正文的入口，已过身份门禁）——extraction 复述标注走它，勿直调 `_candidates` 私有件；
   - `scoring.recency_age`：新近基准（last_used 优先，created 兜底），直接返回距 today 天数、坏日期返回 None；排序与衰减共用，勿各算各的；
@@ -33,7 +34,8 @@
 - mcp 2.x 行为：`FastMCP` 已改名 `MCPServer`（`mcp.server.mcpserver`）；单元素 list 返回值会被 unwrap 成对象——批量结果要包一层 `{"hits": [...]}`；工具内异常默认返回 `is_error=True` 而非抛出；tool 一律声明 `structured_output=False`（`dict[str, Any]` 注解会被推断 outputSchema，结构化载荷与文本回退双份下发撑大宿主上下文）。另注意返回形状：CLI `search` 返回裸数组，`{"hits": ...}` 包装只在 MCP 层。
 - 删除文件的沙箱约束已收进 seam adapter：生产默认 `Path.unlink`（单文件 unlink 不受批量守卫影响）；conftest 的 `sandbox_safe_remove`（改名 `.{name}.rm`）只在测试侧注入。测试断言日期一律用 conftest 的 `CLOCK_DATE`（store fixture 已注入固定 clock），勿贴真实墙钟。
 - 沙箱对后台任务曾有 SIGKILL（exit 137；2026-10-04 一次 17 分钟的**单次巨批** onnx run 被杀，同日一次 45+ 分钟的分块编码任务全程未被杀——疑似与巨批内存峰值有关而非单纯时长）：长编码/评测任务优先分块限内存、被杀后响亮重试；前台 Bash 上限 600s。长命令与后台命令一律绝对路径（cwd 在调用间会漂移，曾把相对路径拼错）。
-- 回归测试钉子别用绝对计时断言：沙箱负载波动大（同一提交全量耗时实测 55s~153s），会把「线性但慢」误判成回归（曾把 36.2s 误报给 10s 阈值）。优先结构性计数/不变量断言——如 sys 审计钩子数 tokens.tmp 落盘次数与批量大小无关（见 test_batch.py::TestBatchScale）。
+- 回归测试钉子别用绝对计时断言：沙箱负载波动大（同一提交全量耗时实测 55s~153s），会把「线性但慢」误判成回归（曾把 36.2s 误报给 10s 阈值）。优先结构性计数/不变量断言——如 sys 审计钩子数 tokens 落盘次数与批量大小无关（见 test_batch.py::TestBatchScale）。
+- `sys.addaudithook` 钩子内 `event != "..."` 短路必须先于 `args[0]` 索引：注册新钩子会触发无参 `sys.addaudithook` 事件，老钩子先摸 args 抛 IndexError，之后**所有**审计事件静默丢失——症状是「第二个被监测对象计数恒 0」（2026-10-05 五轮探针才定位），与业务代码无关极难排查。
 - `search` 默认 `top_k=5`：验证可见性/覆盖面的断言（并发写互见、rebuild 前后对比、灌库全量可检）必须显式放大 top_k 或断言候选集合，否则截断会伪装成「丢更新」——2026-10-05 外部审计的 P1-2 误报与复核第一轮 PoC 双双栽在这里。
 - 穿越/路径类 PoC 探针执行前先 `resolve()` 核对落点：`ns` 层级探针会从 `.test-tmp` 写穿到仓库根乃至工作区上层（2026-10-05 曾把 deep_victim/fact/*.md 写进仓库根，幸为探针自建目录可直接清理）。
 
