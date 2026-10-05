@@ -253,6 +253,8 @@ launchd（macOS）/ systemd user timer（Linux）/ cron 每天 09:00 自动把�
 |---|---|
 | 宿主里看不到 5 个 memory_* 工具 | 先手动跑启动命令看报错：`uv run --directory <仓库> compound-memory-server`；多为 uv 不在预期路径（`command` 要写绝对路径）或 `--directory` 指向的仓库位置漂移（仓库移动后要同步改各宿主配置） |
 | 搜索结果为空 / 召回不全 | `stats` 看记忆量；怀疑索引损坏时 `rebuild-index`（缓存可随时重建，检索永远降级不报错） |
+| server 日志出现 `vector recall degraded to lexical` | 向量召回故障已自动降级纯词面（检索不中断）；多为 vec extra 环境或向量索引异常，重装 `--extra vec` 或 `rebuild-index`；未装 vec extra 的宿主不会出现此日志 |
+| server 日志出现 `write lock unavailable` 或 `skipping unparseable memory file` | 前者：root 上 `.lock` 无法加锁（异常文件系统），已降级无锁写入，避免多宿主并发写；后者：库内有解析失败的坏文件已被扫描跳过并保留原样，按日志路径人工检查/修复该文件 |
 | 手工编辑过记忆文件内容 | 活性检测只覆盖新增/删除，**内容**修改需显式 `rebuild-index` |
 | SessionStart 没注入 | hook 任何异常都静默退出；手动跑 `~/.agents/memory/hooks/session_start.py` 检查输出是否为合法 `{"additionalContext": ...}` JSON |
 | 写入报 PermissionError | 命名空间越权：`agent-*` 私有区仅属主可写，日常写 `_shared` |

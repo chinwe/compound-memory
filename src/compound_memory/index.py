@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Callable
 
@@ -146,9 +148,13 @@ class Index:
     def _save(self) -> None:
         # 目录可能被外部整体移走（测试模拟缓存丢失、或人为 rm -rf index/），写前确保存在
         self._dir.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self._data or {}, ensure_ascii=False, sort_keys=True), encoding="utf-8")
-        tmp.replace(self._path)
+        # 唯一临时名 + 原子替换：固定 .tmp 名在两写者并发时会让后一个 replace
+        # ENOENT（前一个已把 tmp 换走，2026-10-05 并发测试实证）；读路径的惰性
+        # 重建不经写锁，这里必须自身并发安全
+        fd, tmp_name = tempfile.mkstemp(dir=self._dir, prefix=f".{self._path.name}.", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(self._data or {}, ensure_ascii=False, sort_keys=True))
+        os.replace(tmp_name, self._path)
         self._loaded_stamp = self._cache_stamp()  # 自己写盘后刷新基线，避免自触发重载
 
     # ---------- interface ----------

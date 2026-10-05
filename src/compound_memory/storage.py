@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import datetime as dt
 import dataclasses
+import fcntl
+import logging
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -49,6 +52,9 @@ VEC_POOL = 16
 _PATH_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 ARCHIVE_USES_THRESHOLD = 3
+
+# storage 域告警的单点 logger：扫描容错（#20）与向量降级（#19）共用
+logger = logging.getLogger(__name__)
 CONF_USE_BUMP = 0.1
 CONF_CROSS_AGENT_BUMP = 0.15
 GIT_IDENTITY = ("-c", "user.name=compound-memory", "-c", "user.email=memory@local")
@@ -162,6 +168,7 @@ class MemoryStore:
         self.agent_id = agent_id
         self._batch_depth = 0  # batch() 嵌套深度（恒 0 或 1：嵌套 batch 是调用方错误）
         self._batch_ops = 0  # 本批延迟的提交计数（批尾消息与"零操作不提交"判据）
+        self._write_lock_depth = 0  # 写锁重入深度：batch 持锁期间批内动词直通
         self._ensure_layout()
         if self.git_enabled and not (self.root / ".git").exists():
             # init commit 仅限首次创建：__init__ 在每次 CLI/MCP 启动都会执行，
@@ -195,17 +202,18 @@ class MemoryStore:
         """
         if self._batch_depth > 0:
             raise ValueError("nested batch() is not supported")
-        self._batch_depth += 1
-        self._batch_ops = 0
-        handle = _Batch(message)
-        self.index.defer()
-        self.vector_index.defer()
-        try:
-            yield handle
-        except BaseException:
-            self._end_batch(handle.message, partial=True)
-            raise
-        self._end_batch(handle.message, partial=False)
+        with self._write_lock():  # 全程持锁：批内写穿与批尾 flush+commit 同在临界区
+            self._batch_depth += 1
+            self._batch_ops = 0
+            handle = _Batch(message)
+            self.index.defer()
+            self.vector_index.defer()
+            try:
+                yield handle
+            except BaseException:
+                self._end_batch(handle.message, partial=True)
+                raise
+            self._end_batch(handle.message, partial=False)
 
     def _end_batch(self, message: str | None, partial: bool) -> None:
         # 先退出批态再 flush：flush 与收尾 commit 不被延迟拦截
@@ -217,6 +225,45 @@ class MemoryStore:
             self._commit((message + suffix) if message else f"batch write {self._batch_ops} entries{suffix}")
             self._batch_ops = 0
 
+    # ---------- 跨进程写锁 ----------
+
+    @contextmanager
+    def _write_lock(self) -> Iterator[None]:
+        """写路径动词的跨进程互斥（#21）：覆盖「文件写出 + 缓存更新 + commit」临界区。
+
+        多宿主并发写同一 root 时，git add -A 会扫进他人刚落盘的变更、commit 撞
+        index.lock 报错（2026-10-02 实测）；flock 串行化写者后两者皆消。flock 关联
+        open file description，同进程重复加锁会自锁——batch 持锁期间批内动词经
+        depth 重入直通。锁不可用的异常环境降级无锁并 warning（宁降级勿死锁）；
+        读路径与检索不持锁（索引缓存自身并发安全，见 Index._save 的唯一临时名）。
+        """
+        if self._write_lock_depth > 0:
+            self._write_lock_depth += 1
+            try:
+                yield
+            finally:
+                self._write_lock_depth -= 1
+            return
+        fd: int | None = None
+        try:
+            fd = os.open(self.root / ".lock", os.O_CREAT | os.O_RDWR, 0o644)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except OSError as exc:
+            logger.warning("write lock unavailable: %s; proceeding unlocked", exc)
+            if fd is not None:
+                os.close(fd)
+                fd = None
+        self._write_lock_depth += 1
+        try:
+            yield
+        finally:
+            self._write_lock_depth -= 1
+            if fd is not None:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
+
     # ---------- 布局 / git ----------
 
     def _ensure_layout(self) -> None:
@@ -225,11 +272,11 @@ class MemoryStore:
             (shared / t).mkdir(parents=True, exist_ok=True)
         self.archive_root.mkdir(parents=True, exist_ok=True)
         # 运行时工件目录清单归这里一处所有（index/ 缓存、distill/ 蒸馏产物、
-        # extract/ 抽取清单——含会话摘录，均不入审计史）——
+        # extract/ 抽取清单、.lock 写锁——均不入审计史）——
         # scripts/distill-prepare.sh 不再自行补写；已存在的旧库缺行时补齐
         gitignore = self.root / ".gitignore"
         existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
-        missing = [line for line in ("index/\n", "distill/\n", "extract/\n") if line not in existing]
+        missing = [line for line in ("index/\n", "distill/\n", "extract/\n", ".lock\n") if line not in existing]
         if missing and existing and not existing.endswith("\n"):
             missing[0] = "\n" + missing[0]  # 手编文件缺尾换行时先补，避免拼接坏行
         if missing:
@@ -284,7 +331,22 @@ class MemoryStore:
                 continue
             meta[key] = value
         body = "---\n" + yaml.safe_dump(meta, allow_unicode=True, sort_keys=False) + "---\n\n" + mem.content.strip() + "\n"
-        path.write_text(body, encoding="utf-8")
+        # 原子写出（#18）：同目录临时文件 + os.replace——任何时刻目标要么旧完整
+        # 要么新完整，中断/失败不留半写（坏 frontmatter 会炸全量扫描，见 #20）。
+        # 临时文件必须在目标同目录（跨文件系统 replace 不原子），且名字不以 .md
+        # 结尾，避免被 rglob("*.md") 当记忆扫到。
+        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            os.replace(tmp_path, path)
+        except BaseException:
+            try:
+                self._remover(tmp_path)
+            except OSError:
+                pass  # 清理失败不掩盖原异常；残留 .tmp 不进 *.md 扫描视野
+            raise
 
     @staticmethod
     def parse(path: Path) -> Memory:
@@ -300,7 +362,25 @@ class MemoryStore:
             if f.default is not dataclasses.MISSING and f.name != "content"
         }
         defaults.pop("content", None)
-        return Memory(**{**defaults, **{k: v for k, v in meta.items() if k in {f.name for f in dataclasses.fields(Memory)}}})
+        # 缺必填字段（手编文件最常见坏法）转译为 ValueError：统一解析失败面，
+        # 扫描容错与调用方无需各自特判 TypeError
+        try:
+            return Memory(**{**defaults, **{k: v for k, v in meta.items() if k in {f.name for f in dataclasses.fields(Memory)}}})
+        except TypeError as exc:
+            raise ValueError(f"bad memory file (missing required field): {path}: {exc}") from exc
+
+    def _parse_for_scan(self, path: Path) -> Memory | None:
+        """扫描路径的容错解析（#20）：坏文件跳过并告警，不炸整场扫描。
+
+        只捕解析类异常（缺 frontmatter / 坏 YAML / 缺必填字段 / 编码与读盘错误），
+        其他异常照常传播。返回 None 表示跳过，调用方 continue；
+        文件本身不动，留给人工处置。全好文件零日志，告警即坏信号。
+        """
+        try:
+            return self.parse(path)
+        except (ValueError, OSError, yaml.YAMLError) as exc:
+            logger.warning("skipping unparseable memory file %s: %s", path, exc)
+            return None
 
     def find(self, mem_id: str) -> Memory | None:
         # mem_id 拼 rglob 模式：非法字符（glob 元字符/路径分隔）不得进入——
@@ -400,20 +480,21 @@ class MemoryStore:
     ) -> dict[str, Any]:
         source = self._resolve_identity(source, "source")
         _check_validity(valid_from, valid_until)
-        mem, conflict_with = self._write_new(
-            content,
-            type=type,
-            source=source,
-            ns=ns,
-            key=key,
-            links=links,
-            created=created,
-            confidence=confidence,
-            origin=origin,
-            valid_from=valid_from,
-            valid_until=valid_until,
-        )
-        self._commit(f"write {mem.id} ({type}/{ns}) by {source}")
+        with self._write_lock():
+            mem, conflict_with = self._write_new(
+                content,
+                type=type,
+                source=source,
+                ns=ns,
+                key=key,
+                links=links,
+                created=created,
+                confidence=confidence,
+                origin=origin,
+                valid_from=valid_from,
+                valid_until=valid_until,
+            )
+            self._commit(f"write {mem.id} ({type}/{ns}) by {source}")
         return self._write_result(mem, conflict_with)
 
     def _write_new(
@@ -497,19 +578,20 @@ class MemoryStore:
             return {"found": False}
         # 私有记忆只有属主可反馈：防外来 agent 刷 uses/confidence、混入 validated_by 或复活归档
         self._check_ns_owner(mem.ns, agent, role="agent")
-        if mem.archived:
-            self._move_to_active(mem)
-        mem.uses += 1
-        bump = CONF_USE_BUMP
-        if agent not in mem.validated_by:
-            if agent != mem.source:
-                bump += CONF_CROSS_AGENT_BUMP
-            mem.validated_by.append(agent)
-        mem.confidence = round(min(1.0, mem.confidence + bump), 3)
-        mem.last_used = self.today()
-        self._save(mem)
-        self._sync_indexes(mem, self._active_rel(mem))
-        self._commit(f"feedback {mem.id} by {agent}: uses={mem.uses} conf={mem.confidence}")
+        with self._write_lock():
+            if mem.archived:
+                self._move_to_active(mem)
+            mem.uses += 1
+            bump = CONF_USE_BUMP
+            if agent not in mem.validated_by:
+                if agent != mem.source:
+                    bump += CONF_CROSS_AGENT_BUMP
+                mem.validated_by.append(agent)
+            mem.confidence = round(min(1.0, mem.confidence + bump), 3)
+            mem.last_used = self.today()
+            self._save(mem)
+            self._sync_indexes(mem, self._active_rel(mem))
+            self._commit(f"feedback {mem.id} by {agent}: uses={mem.uses} conf={mem.confidence}")
         result = asdict(mem)
         result["found"] = True
         return result
@@ -530,9 +612,10 @@ class MemoryStore:
             mem_a.links.append(id_b)
         if id_a not in mem_b.links:
             mem_b.links.append(id_a)
-        self._save(mem_a)
-        self._save(mem_b)
-        self._commit(f"link {id_a} <-> {id_b}")
+        with self._write_lock():
+            self._save(mem_a)
+            self._save(mem_b)
+            self._commit(f"link {id_a} <-> {id_b}")
         return {"found": True, "a": id_a, "b": id_b, "links": mem_a.links}
 
     def search(
@@ -614,7 +697,11 @@ class MemoryStore:
                 sims[mem_id] = cos
                 rels.append(rel_path)
             return (sims or None), rels
-        except Exception:
+        except Exception as exc:
+            # 宁缺勿炸的降级语义不变；但故障必须可观测（#19）——否则索引损坏/
+            # 模型异常会长期被掩盖在「正常降级」里。embedder 未注入是配置路径，
+            # 不经此处，不产生日志。
+            logger.warning("vector recall degraded to lexical: %s", exc)
             return None, []
 
     def _active_neighbors(self, mem_id: str, nss: set[str], now: dt.date) -> list[Memory]:
@@ -643,19 +730,22 @@ class MemoryStore:
 
     def decay_sweep(self) -> list[str]:
         now = self._clock()
-        archived: list[str] = []
-        for path in sorted(self.ns_root.rglob("*.md")):
-            mem = self.parse(path)
-            if mem.ttl is None:
-                continue
-            age = recency_age(mem, now)
-            if age is None:
-                continue  # 坏/缺日期：跳过该条而非崩掉整场扫描（宁可不归档，不因坏数据丢记忆）
-            if age > mem.ttl and mem.uses < ARCHIVE_USES_THRESHOLD:
-                self._archive(mem)
-                archived.append(mem.id)
-        if archived:
-            self._commit("decay: archive " + ", ".join(archived))
+        with self._write_lock():  # 批量归档 + 收尾 commit 一个临界区
+            archived: list[str] = []
+            for path in sorted(self.ns_root.rglob("*.md")):
+                mem = self._parse_for_scan(path)
+                if mem is None:
+                    continue
+                if mem.ttl is None:
+                    continue
+                age = recency_age(mem, now)
+                if age is None:
+                    continue  # 坏/缺日期：跳过该条而非崩掉整场扫描（宁可不归档，不因坏数据丢记忆）
+                if age > mem.ttl and mem.uses < ARCHIVE_USES_THRESHOLD:
+                    self._archive(mem)
+                    archived.append(mem.id)
+            if archived:
+                self._commit("decay: archive " + ", ".join(archived))
         return archived
 
     def revive(self, mem_id: str, reader: str | None = None) -> dict[str, Any]:
@@ -666,9 +756,10 @@ class MemoryStore:
         # revive 返回全文，与 get 同属按 id 读路径：私有 ns 仅属主可复活
         self._check_ns_owner(mem.ns, reader)
         if mem.archived:
-            self._move_to_active(mem)
-            self._save(mem)
-            self._commit(f"revive {mem_id}")
+            with self._write_lock():
+                self._move_to_active(mem)
+                self._save(mem)
+                self._commit(f"revive {mem_id}")
         result = asdict(mem)
         result["found"] = True
         return result
@@ -713,7 +804,9 @@ class MemoryStore:
         now = self._clock()
         cands: list[Memory] = []
         for path in sorted((self.ns_root / ns).rglob("*.md")):
-            mem = self.parse(path)
+            mem = self._parse_for_scan(path)
+            if mem is None:
+                continue
             if is_expired(mem, now):
                 continue  # 过期事实不该被蒸馏固化进新产物
             age = recency_age(mem, now)
@@ -818,10 +911,12 @@ class MemoryStore:
 
     def _scan_pairs(self) -> list[tuple[Memory, str]]:
         """扫描活动区供 Index 全量重建（注入回调，惰性调用）。"""
-        return [
-            (self.parse(path), path.relative_to(self.root).as_posix())
-            for path in sorted(self.ns_root.rglob("*.md"))
-        ]
+        out: list[tuple[Memory, str]] = []
+        for path in sorted(self.ns_root.rglob("*.md")):
+            mem = self._parse_for_scan(path)
+            if mem is not None:
+                out.append((mem, path.relative_to(self.root).as_posix()))
+        return out
 
     def rebuild_index(self) -> dict[str, Any]:
         counts = self.index.rebuild(self._scan_pairs())
@@ -874,7 +969,9 @@ class MemoryStore:
         if not base.exists():
             return None
         for path in sorted(base.rglob("*.md")):
-            mem = self.parse(path)
+            mem = self._parse_for_scan(path)
+            if mem is None:
+                continue
             if mem.key == key and mem.content.strip() != exclude_content.strip():
                 return mem
         return None
@@ -888,9 +985,10 @@ class MemoryStore:
 
         裁决（新旧取舍）归调用方——这里只做登记，不做判断（spec 非目标：不自动裁决冲突）。
         """
-        out = self._review_queue.resolve(ids=ids, all=all)
-        if out["resolved"]:
-            self._commit(f"review resolve {out['resolved']} entries")
+        with self._write_lock():  # 队列文件改写 + 登记提交一个临界区
+            out = self._review_queue.resolve(ids=ids, all=all)
+            if out["resolved"]:
+                self._commit(f"review resolve {out['resolved']} entries")
         return out
 
     def stats(self) -> dict[str, Any]:
@@ -905,7 +1003,9 @@ class MemoryStore:
         now = self._clock()
         for base, is_archive in ((self.ns_root, False), (self.archive_root, True)):
             for path in base.rglob("*.md"):
-                mem = self.parse(path)
+                mem = self._parse_for_scan(path)
+                if mem is None:
+                    continue
                 total += 1
                 if is_archive:
                     archived += 1

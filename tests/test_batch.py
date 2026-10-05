@@ -134,14 +134,19 @@ class TestBatchScale:
             seen: list[str] = []
 
             def _count_tokens_save(event: str, args: tuple) -> None:
-                # Index._save 原子写先落 tokens.tmp（with_suffix 替换掉 .json）再 replace
+                # Index._save 原子写先落唯一临时名 .tokens.json.<rand>.tmp 再 replace
+                # （固定 tokens.tmp 在并发写者间会互相踩掉对方 tmp，#21 改 mkstemp）
+                # event 短路必须先于 args 索引：addaudithook 注册时有无参事件，
+                # 先摸 args[0] 会炸掉后续钩子注册（探针实证）
+                if event != "open":
+                    return
+                name = args[0] if isinstance(args[0], str) else ""
                 if (
-                    event == "open"
-                    and isinstance(args[0], str)
-                    and args[0].startswith(str(store.root / "index"))
-                    and args[0].endswith("tokens.tmp")
+                    name.startswith(str(store.root / "index"))
+                    and ".tokens.json." in name
+                    and name.endswith(".tmp")
                 ):
-                    seen.append(args[0])
+                    seen.append(name)
 
             sys.addaudithook(_count_tokens_save)
             with store.batch():
