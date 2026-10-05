@@ -60,7 +60,7 @@ def memory_write(
     valid_from: str | None = None,
     valid_until: str | None = None,
 ) -> dict[str, Any]:
-    """Write a memory. type: episode|fact|insight|skill; source: writing agent id; ns: '_shared' or 'agent-<name>'. key: stable id for fact/insight (enables conflict review). Write only stable facts (preferences, conventions, environment constraints, pitfalls), not session-temporary details; prefer reusing an existing key over a new entry. valid_from/valid_until: optional ISO dates (YYYY-MM-DD) marking the fact's validity window — once valid_until has passed, the memory is excluded from search results but still readable via memory_get. Returns the stored memory; `conflict: true` means a different version with the same key exists and a review entry was queued."""
+    """Write a memory. type: episode|fact|insight|skill; source: writing agent id; ns: '_shared' or 'agent-<name>'. key: stable id for fact/insight (enables conflict review). Write only stable facts (preferences, conventions, environment constraints, pitfalls), not session-temporary details; volatile status notes (in-progress work, remaining todos) either carry valid_until or stay out — a stale status memory is worse than none; prefer reusing an existing key over a new entry. valid_from/valid_until: optional ISO dates (YYYY-MM-DD) marking the fact's validity window — once valid_until has passed, the memory is excluded from search results but still readable via memory_get. Returns the stored memory; `conflict: true` means a different version with the same key exists and a review entry was queued."""
     return _store_or_configure().write(
         content=content,
         type=type,
