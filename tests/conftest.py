@@ -13,6 +13,7 @@ import datetime as dt
 import math
 import os
 import shutil
+import subprocess
 import sys
 import uuid
 import zlib
@@ -60,6 +61,38 @@ def pytest_configure(config):
     _prune_test_tmp()
     if not _TEST_TMP_BASE.exists():
         _TEST_TMP_BASE.mkdir()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _dev_repo_head_guard():
+    """开发仓库 HEAD 守卫：测试 root 都在 .test-tmp/ 下，会话期间开发仓库
+    的 HEAD 不该移动——git 仓库发现向上逃逸时，测试的 add -A/commit 会
+    落到父链最近的真仓库（2026-10-05 实测把未提交改动 commit 进了开发
+    仓库）。移动即炸：把这类污染从「靠人发现」变成「本地/CI 必炸」。
+    """
+    repo = Path(__file__).resolve().parents[1]
+
+    def head() -> str | None:
+        try:
+            out = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            return None
+        return out.stdout.strip() if out.returncode == 0 else None
+
+    before = head()
+    yield
+    after = head()
+    if before is not None and after is not None and before != after:
+        raise AssertionError(
+            "dev repo HEAD moved during the test session "
+            f"({before[:8]} -> {after[:8]}): a test committed into the development "
+            "repository (git discovery escaped the test root); reset and fix the test"
+        )
 
 
 @pytest.fixture

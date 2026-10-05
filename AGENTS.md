@@ -38,6 +38,7 @@
 - `sys.addaudithook` 钩子内 `event != "..."` 短路必须先于 `args[0]` 索引：注册新钩子会触发无参 `sys.addaudithook` 事件，老钩子先摸 args 抛 IndexError，之后**所有**审计事件静默丢失——症状是「第二个被监测对象计数恒 0」（2026-10-05 五轮探针才定位），与业务代码无关极难排查。
 - `search` 默认 `top_k=5`：验证可见性/覆盖面的断言（并发写互见、rebuild 前后对比、灌库全量可检）必须显式放大 top_k 或断言候选集合，否则截断会伪装成「丢更新」——2026-10-05 外部审计的 P1-2 误报与复核第一轮 PoC 双双栽在这里。
 - 穿越/路径类 PoC 探针执行前先 `resolve()` 核对落点：`ns` 层级探针会从 `.test-tmp` 写穿到仓库根乃至工作区上层（2026-10-05 曾把 deep_victim/fact/*.md 写进仓库根，幸为探针自建目录可直接清理）。
+- git 相关测试制造「坏仓库」时勿用空 `.git` 目录：git 仓库发现会向上借用父链最近的真仓库，测试的 add -A/commit 落错仓（2026-10-05 实测把开发仓库未提交改动 commit 成 "orphan changes recovered"，靠 reset 恢复）；坏仓库一律用 gitfile 形态——`.git` 写成文件 `gitdir: <不存在的路径>`，git 报 fatal 且不逃逸。conftest 的 session 级 HEAD 守卫兜底：会话期间开发仓库 HEAD 移动即炸。
 
 ## 约定
 

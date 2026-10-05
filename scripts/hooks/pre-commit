@@ -8,6 +8,12 @@ here="$(cd "$(dirname "$0")" && pwd)"
 staged="$(git diff --cached --name-only --diff-filter=ACMR)"
 [ -z "$staged" ] && exit 0
 
+# _git 调用形状检查（纯本地 <0.1s）：storage 源码被暂存时全量扫 src/，
+# 调用点未显式传 check= 即拒——漏传会把容错分支变成死代码
+if printf '%s\n' "$staged" | grep -q '^src/compound_memory/'; then
+    "$here/../check_git_calls.py" || exit 1
+fi
+
 # 文件名经 null 分隔传给检查脚本，避免空格/特殊字符拆词
 printf '%s\n' "$staged" | while IFS= read -r f; do printf '%s\0' "$f"; done |
     xargs -0 "$here/../check-privacy.sh"

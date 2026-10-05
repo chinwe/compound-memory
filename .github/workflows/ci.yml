@@ -40,6 +40,11 @@ jobs:
         if: matrix.python-version == '3.13'
         run: uv run mypy src/compound_memory/
 
+      - name: Git call shape check
+        # _git 调用点必须显式传 check=(scripts/check_git_calls.py,同 pre-commit 本地层)
+        if: matrix.python-version == '3.13'
+        run: uv run python scripts/check_git_calls.py
+
       - name: Wheel smoke test
         # 发布标准的固化:纯 wheel(无 dev/vec extra)必须可安装、CLI 与 server 可跑
         run: |
