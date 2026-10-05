@@ -12,6 +12,7 @@ import plistlib
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -164,6 +165,33 @@ class TestDistillApply:
         assert _commit_count(store) == before
         assert store.get(src["id"])["archived"] is False
         assert store.search("x") == []
+
+    def test_apply_source_read_holds_write_lock(self, store: MemoryStore, monkeypatch: pytest.MonkeyPatch):
+        """源读取必须在写锁内（写动词读-改-写全程持锁的自查条款）：
+        find 在锁外时，锁外间隙完成的并发 feedback 会被旧快照在归档
+        写回时覆盖——uses/confidence 丢更新。"""
+        src = store.write(content="待蒸馏的源经验", type="episode", source="agent-a")
+        store.feedback(src["id"], "agent-b")  # uses=1 基线
+
+        real_batch = store.batch
+
+        @contextmanager
+        def racing_batch(message=None):
+            # 模拟锁外窗口完成的并发写动词：真实形态是另一进程抢在
+            # distill_apply 拿锁前完成 feedback 落盘
+            store.feedback(src["id"], "agent-c")
+            with real_batch(message) as handle:
+                yield handle
+
+        monkeypatch.setattr(store, "batch", racing_batch)
+        result = store.distill_apply(content="合并经验", type="insight", source="agent-a", source_ids=[src["id"]])
+        monkeypatch.undo()
+
+        assert result["found"] is True
+        archived = store.find(src["id"])
+        assert archived is not None and archived.archived
+        # 并发反馈的 uses=2 不得被锁外旧快照（uses=1）在归档时覆盖
+        assert archived.uses == 2
 
     def test_apply_key_conflict_uses_existing_review_queue(self, store: MemoryStore):
         """产物冲突不特殊对待：同 key 的 fact 冲突自然进 review 队列（既有机制）。"""

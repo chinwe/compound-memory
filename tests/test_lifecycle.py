@@ -125,8 +125,9 @@ class TestGit:
 
     def test_init_commit_only_on_first_creation(self, tmp_path: Path):
         """首次创建产生 init commit；重开 store（CLI/MCP 每次启动都构造）不得把
-        带外手编的文件吞进误导性的第二次 "init" 提交——变更保留在工作区，
-        由显式写路径动词的 _commit 收走。"""
+        带外手编的文件吞进误导性的第二次 "init" 提交——带外变更由启动对账
+        （_recover_orphan_changes）收编进明确标注的恢复提交：不声称作者、
+        不错位归因到下一个写动词，init 提交历史不被伪造。"""
         root = tmp_path / "reopen"
         MemoryStore(root, clock=lambda: CLOCK_DATE, remover=sandbox_safe_remove)
         handmade = root / "namespaces" / "_shared" / "fact" / "20261001_handed.md"
@@ -138,7 +139,8 @@ class TestGit:
         store2 = MemoryStore(root, clock=lambda: CLOCK_DATE, remover=sandbox_safe_remove)
         log = store2.git_log(50)
         assert sum("init compound-memory store" in line for line in log) == 1
-        assert store2._git("status", "--porcelain").stdout.strip() != ""
+        assert "orphan changes recovered" in log[0]
+        assert store2._git("status", "--porcelain").stdout.strip() == ""
 
 
 class TestStats:

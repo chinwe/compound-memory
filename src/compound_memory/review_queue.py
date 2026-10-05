@@ -15,6 +15,7 @@ import re
 from pathlib import Path
 from typing import Callable
 
+from .index import atomic_write_text
 from .model import Memory
 
 _REVIEW_ROW_RE = re.compile(r"^- \S+ conflict `[^`]+`: (?P<old>\S+) \(.*?\) vs (?P<new>\S+) \(")
@@ -88,5 +89,6 @@ class ReviewQueue:
             keep = [line for line, hit in zip(lines, matched) if not hit]
             removed = sum(matched)
         if removed:
-            self.path.write_text("".join(keep), encoding="utf-8")
+            # 原子写共享单点：清行改写中断时旧队列原封保留（spec：文件写出一律 atomic_write_text）
+            atomic_write_text(self.path, "".join(keep))
         return {"resolved": removed, "remaining": sum(1 for line in keep if line.startswith("- "))}

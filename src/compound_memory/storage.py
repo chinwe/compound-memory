@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -57,6 +58,8 @@ ARCHIVE_USES_THRESHOLD = 3
 CONF_USE_BUMP = 0.1
 CONF_CROSS_AGENT_BUMP = 0.15
 GIT_IDENTITY = ("-c", "user.name=compound-memory", "-c", "user.email=memory@local")
+# index.lock 瞬时冲突的退避序列（_git_retry）：初试 + 每档一次重试
+GIT_LOCK_RETRY_DELAYS = (0.05, 0.2)
 # 蒸馏信号阈值（distill-plan 单一定义点；CLI --help 文本由这两个常量生成，不会漂移）：
 # 疑似重复 = normalized_similarity(BM25/n_query_tokens) 达到该值；晋升建议 = episode 高活性门槛
 DISTILL_DUP_SIM_THRESHOLD = 0.5
@@ -175,6 +178,8 @@ class MemoryStore:
             self._git("init", "-q", check=False)
             self._git("add", "-A", check=False)
             self._git("commit", "-qm", "init compound-memory store", check=False)
+        elif self.git_enabled:
+            self._recover_orphan_changes()
 
     def today(self) -> str:
         """当前日期（ISO，注入 clock 的公开出口）：created 缺省、抽取清单等消费。"""
@@ -290,6 +295,34 @@ class MemoryStore:
             check=check,
         )
 
+    def _git_retry(self, *args: str) -> subprocess.CompletedProcess[str]:
+        """index.lock 瞬时冲突的有界重试（check=False 语义不变，只多退避重试）。
+
+        覆盖两类真实竞争：flock 降级窗口内的并发写者、外部 git 进程（手工
+        操作/其他工具）。hook 拒绝等永久性错误不含 index.lock 字样，一次即
+        返回——重试只该买瞬时冲突，不该烧时间在必然重现的失败上。
+        """
+        step = self._git(*args, check=False)
+        for delay in GIT_LOCK_RETRY_DELAYS:
+            if step.returncode == 0 or "index.lock" not in (step.stderr or ""):
+                break
+            time.sleep(delay)
+            step = self._git(*args, check=False)
+        return step
+
+    def _recover_orphan_changes(self) -> None:
+        """启动对账：上次会话 commit 失败/进程中断留在工作树的孤儿变更，
+        收编进一个明确标注的恢复提交——否则它们会被下一个写动词的
+        "write ..." 消息错位归因（2026-10-02 实测）。带外手编未提交的
+        变更同样会被收编：恢复消息不声称作者，语义上诚实；需要专属提交
+        历史的带外变更应在手编流程内自行 commit。
+        """
+        with self._write_lock():  # status 判定与收编同临界区：锁外判定的 TOCTOU 窗口会漏变更
+            status = self._git("status", "--porcelain", check=False)
+            if status.returncode != 0 or not status.stdout.strip():
+                return  # 坏仓库/干净树零副作用：启动路径宁降级
+            self._commit("orphan changes recovered")
+
     def _commit(self, message: str) -> None:
         if self._batch_depth > 0:
             # 批内延迟：commit 收拢到 batch() 退出时一次性执行（单点拦截，各动词无需批式特化）
@@ -297,15 +330,21 @@ class MemoryStore:
             return
         if not self.git_enabled:
             return
-        staged = self._git("add", "-A", check=False)
-        committed = self._git("commit", "-qm", message, check=False)
-        # check=False 的失败不得静默：文件已落盘但审计史出现空洞（并发 index.lock、
-        # hook 拒绝），"git log 即审计史"的承诺至少要 stderr 响亮一声。
-        # nothing-to-commit 是 git 的正常无操作返回，不算失败。
-        for step, label in ((staged, "add"), (committed, "commit")):
-            combined = (step.stdout or "") + (step.stderr or "")
-            if step.returncode != 0 and "nothing to commit" not in combined:
-                print(f"compound-memory: git {label} failed: {combined.strip()}", file=sys.stderr)
+        staged = self._git_retry("add", "-A")
+        combined = (staged.stdout or "") + (staged.stderr or "")
+        if staged.returncode != 0:
+            # add 未完成就没有可提交的新内容：commit 只会提交 staged 残留，
+            # 消息与新变更错位归因（比审计空洞更误导）——短路放弃，变更留
+            # 工作树由启动对账收编。check=False 的失败不得静默："git log 即
+            # 审计史"的承诺至少要 stderr 响亮一声。
+            if "nothing to commit" not in combined:
+                print(f"compound-memory: git add failed: {combined.strip()}", file=sys.stderr)
+            return
+        committed = self._git_retry("commit", "-qm", message)
+        combined = (committed.stdout or "") + (committed.stderr or "")
+        # nothing-to-commit 是 git 的正常无操作返回，不算失败
+        if committed.returncode != 0 and "nothing to commit" not in combined:
+            print(f"compound-memory: git commit failed: {combined.strip()}", file=sys.stderr)
 
     # ---------- 文件 IO ----------
 
@@ -867,16 +906,19 @@ class MemoryStore:
         """
         source = self._resolve_identity(source, "source")
         source_ids = list(dict.fromkeys(source_ids))  # 去重保序：重复源只归档一次
-        sources = [self.find(mid) for mid in source_ids]
-        missing = [mid for mid, mem in zip(source_ids, sources) if mem is None]
-        if missing:
-            return {"found": False, "missing": missing}
-        # 蒸馏不跨 ns：私有记忆被当源蒸进 _shared 是正文泄漏通道；
-        # distill_plan 本就按单 ns 扫描，源与产物同 ns 是既定流程
-        foreign_ns = sorted({s.ns for s in sources if s is not None and s.ns != ns})
-        if foreign_ns:
-            raise ValueError(f"distill sources must live in target ns {ns!r}; found in: {foreign_ns}")
         with self.batch() as batch_ctx:
+            # 源读取在写锁内（batch 持锁）：find 在锁外时，间隙内并发 feedback
+            # 的 uses/confidence 会被旧快照在归档写回时覆盖丢失（写动词
+            # 读-改-写全程持锁的自查条款）。检查失败零操作，批尾不产生提交。
+            sources = [self.find(mid) for mid in source_ids]
+            missing = [mid for mid, mem in zip(source_ids, sources) if mem is None]
+            if missing:
+                return {"found": False, "missing": missing}
+            # 蒸馏不跨 ns：私有记忆被当源蒸进 _shared 是正文泄漏通道；
+            # distill_plan 本就按单 ns 扫描，源与产物同 ns 是既定流程
+            foreign_ns = sorted({s.ns for s in sources if s is not None and s.ns != ns})
+            if foreign_ns:
+                raise ValueError(f"distill sources must live in target ns {ns!r}; found in: {foreign_ns}")
             result = self.write(
                 content,
                 type=type,
@@ -1038,5 +1080,5 @@ class MemoryStore:
     def git_log(self, limit: int = 5) -> list[str]:
         if not self.git_enabled:
             return []
-        proc = self._git("log", "--oneline", f"-{limit}")
+        proc = self._git("log", "--oneline", f"-{limit}", check=True)
         return [line for line in proc.stdout.splitlines() if line.strip()]

@@ -86,6 +86,37 @@ class TestAtomicSave:
         assert path.stat().st_mode & 0o777 == expected
 
 
+class TestReviewQueueAtomicResolve:
+    """清行落盘与记忆文件同规格（spec：文件写出一律 atomic_write_text）：
+    resolve 是 review-queue.md 的唯一改写点，中断时旧队列原封保留——
+    解析侧「宁可不登记，不误删记录」的 fail-safe 延伸到写侧，
+    半写队列文件与坏 frontmatter 一样会放大解析失败面。"""
+
+    def test_failed_replace_keeps_queue_intact(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        store = _make_store(tmp_path)
+        store.write("original content", type="fact", source="agent-d", key="k1")
+        store.write("conflicting content", type="fact", source="agent-d", key="k1")
+        assert len(store.review_queue()) == 1
+
+        def boom(*args: object, **kwargs: object) -> None:
+            raise OSError("simulated interruption before replace")
+
+        monkeypatch.setattr(storage_mod.os, "replace", boom)
+        with pytest.raises(OSError):
+            store.review_resolve(all=True)
+        monkeypatch.undo()
+
+        # 裁决登记的改写要么整体生效要么不生效：中断不清队
+        assert len(store.review_queue()) == 1
+        # 失败路径清理临时文件，根目录只剩既有 artifact
+        stray = [
+            p
+            for p in store.root.iterdir()
+            if p.is_file() and p.suffix != ".md" and p.name not in {".gitignore", ".lock"}
+        ]
+        assert stray == []
+
+
 def _plant_bad_file(store: MemoryStore, kind: str = "no-frontmatter") -> Path:
     """带外制造坏记忆文件（模拟手编/写入中断产物），返回其路径。"""
     bad = store.ns_root / "_shared" / "fact" / "19990101_badfile.md"
