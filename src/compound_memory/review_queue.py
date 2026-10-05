@@ -13,7 +13,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from .index import atomic_write_text
 from .model import Memory
@@ -56,12 +56,14 @@ class ReviewQueue:
             if line.startswith("- ")
         ]
 
-    def resolve(self, ids: list[str] | None = None, all: bool = False) -> dict[str, int]:
-        """清除命中行，返回 {"resolved", "remaining"}；git commit 归调用方（MemoryStore）。
+    def resolve(self, ids: list[str] | None = None, all: bool = False) -> dict[str, Any]:
+        """清除命中行，返回 {"resolved", "remaining", "rows"}；git commit 归调用方（MemoryStore）。
 
         - all=True：清空整个队列（幂等，空队列返回 resolved=0）。
         - 按 id：行内 old/new 任一命中即整行清除；任一 id 未命中任何行 ⇒
           ValueError 原子拒绝（队列原样保留），避免半清状态让调用方误判。
+        - rows 是被清行的 (old, new) 明细：调用方凭「传入 id = 裁决废置方」
+          归档淘汰侧；这里只解析行结构，不归档、不做方向判断。
         """
         if all and ids:
             raise ValueError("pass either ids or --all, not both")
@@ -71,24 +73,32 @@ class ReviewQueue:
             lines = self.path.read_text(encoding="utf-8").splitlines(keepends=True)
         else:
             lines = []
+        rows: list[dict[str, str]] = []
+        keep: list[str] = []
         if all:
-            keep = []
             removed = sum(1 for line in lines if line.startswith("- "))
+            # all 模式不产出 rows：没有裁决信息，rows 无消费方（归档只跟 ids 走）
         else:
             wanted = set(ids or [])
             covered: set[str] = set()
-            matched: list[bool] = []
             for line in lines:
                 m = _REVIEW_ROW_RE.match(line)
-                matched.append(m is not None and bool(wanted & {m.group("old"), m.group("new")}))
+                hit = m is not None and bool(wanted & {m.group("old"), m.group("new")})
+                if hit and m is not None:
+                    rows.append({"old": m.group("old"), "new": m.group("new")})
                 if m is not None:
                     covered |= {m.group("old"), m.group("new")}
+                if not hit:
+                    keep.append(line)
             missing = wanted - covered
             if missing:
                 raise ValueError(f"ids not found in review queue: {', '.join(sorted(missing))}")
-            keep = [line for line, hit in zip(lines, matched) if not hit]
-            removed = sum(matched)
+            removed = len(rows)
         if removed:
             # 原子写共享单点：清行改写中断时旧队列原封保留（spec：文件写出一律 atomic_write_text）
             atomic_write_text(self.path, "".join(keep))
-        return {"resolved": removed, "remaining": sum(1 for line in keep if line.startswith("- "))}
+        return {
+            "resolved": removed,
+            "remaining": sum(1 for line in keep if line.startswith("- ")),
+            "rows": rows,
+        }

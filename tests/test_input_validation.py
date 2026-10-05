@@ -135,3 +135,45 @@ class TestTopKValidation:
     def test_zero_top_k_returns_empty(self, store: MemoryStore):
         store.write("hello world", type="fact", source="a", ns="_shared")
         assert store.search("hello", top_k=0) == []
+
+
+# 非法 key 样本：日期+下划线（2026-10-05 运维实测的漂移形态）、大写、下划线、
+# 空白、边缘横线（连续/首尾）——共同点是破坏「稳定短横线标识」的既定形态
+BAD_KEY = [
+    "20261005_audit_review",
+    "Audit-Review",
+    "proj_compound_memory",
+    "has space",
+    "-lead-dash",
+    "trailing-dash-",
+    "double--dash",
+]
+
+
+class TestKeyFormat:
+    def test_write_rejects_non_conforming_key(self, store: MemoryStore):
+        """key 是同 key 更新的稳定锚点，格式在落库前校验拒绝。
+
+        为何值得代码设防：key 约定原本只在 SKILL.md 文档里，write 无校验——
+        2026-10-05 单日 8 个独立会话沉淀出 5 条日期前缀 key + 1 条无 key。
+        日期化 key 天然一次性（id 已含日期），等于放弃同 key 更新通道。
+        """
+        for key in BAD_KEY:
+            with pytest.raises(ValueError, match="key"):
+                store.write("payload", type="fact", source="agent-x", key=key)
+
+    def test_valid_keys_still_accepted(self, store: MemoryStore):
+        """白名单不误伤：既有约定形态（主题段、含数字段）照常落库。
+
+        日期前缀如 `20261005-audit-review` 形式合法——一次性事件标签的取舍
+        归文档约定（禁止日期前缀），代码只守字符集与结构。
+        """
+        for key in ("user-tts", "proj-compound-memory", "20261005-audit-review", "v2"):
+            mem = store.write(f"note for {key}", type="fact", source="agent-x", key=key)
+            assert mem["key"] == key
+
+    def test_missing_key_still_allowed(self, store: MemoryStore):
+        """key 本就可选（episode 惯例无 key）：None 与空串语义等同，不校验不拒绝。"""
+        for key in (None, ""):
+            mem = store.write("keyless note", type="episode", source="agent-x", key=key)
+            assert mem["key"] in (None, "")

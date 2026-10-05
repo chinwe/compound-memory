@@ -20,7 +20,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | 项 | 约定 |
 |---|---|
 | `type` | `fact` 客观事实（配置、账号、环境参数）；`insight` 经验教训；`skill` 可复用操作方法；`episode` 事件经历 |
-| `key` | fact/insight 用稳定英文短横线标识（`user-tts`、`proj-xxx`）；更新既有事实复用同 key，新版本与旧版内容不同时返回 `conflict: true` 并入冲突队列 |
+| `key` | fact/insight 用稳定英文短横线标识（`user-tts`、`proj-xxx`），格式 `^[a-z0-9]+(-[a-z0-9]+)*$`，`write` 落库前校验（不合规 ValueError）；**禁止日期前缀**——id 已含日期，日期化 key 天然一次性，等于放弃同 key 更新通道（2026-10-05 单日多会话沉淀出成批日期 key 的教训）；更新既有事实复用同 key，新版本与旧版内容不同时返回 `conflict: true` 并入冲突队列 |
 | `source` | 宿主标识：`agent-workbuddy` / `agent-zcode` / `agent-claude` / `agent-deepseek` |
 | `ns` | 默认 `_shared`；`agent-*` 是私有区，写/读/反馈都只认属主——读私有 ns 须带 `reader`（自己的 agent id，缺省即拒绝），越权抛 `PermissionError`；ns 只允许 `[A-Za-z0-9_-]`（路径组件安全，含 `../`、`/`、`*` 等一律 ValueError——ns 会被直接拼进存储路径）。`memory_search` 不传 `ns` 时自动并搜自有私有区（双通道，见必做动作①） |
 | `valid_from` / `valid_until` | 可选 ISO 日期（YYYY-MM-DD）标注事实有效期；`valid_until` 已过的事实自动退出检索结果（`memory_get` 仍可读）。事实会过时的场景（负责人变更、配置轮换）写新版时带上预期失效日，过期后检索不再被旧值污染 |
@@ -37,7 +37,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 |---|---|
 | `stats` | 看健康度：uses/confidence 分布、活性、蒸馏产出 |
 | `rebuild-index` | 手工编辑过记忆文件**内容**后（活性检测只覆盖新增/删除文件） |
-| `review-queue` | 处理同 key 冲突队列（人工裁决入口） |
+| `review-queue` / `review-resolve` | 处理同 key 冲突队列（人工裁决入口）：`review-resolve <废置id>` 清行并自动归档废置方（对侧保留活动区）；`--all` 只清空队列不归档 |
 | `decay` | 衰减归档，长期未用且少用才动（定时任务跑） |
 | `revive <id>` | 复活归档记忆（私有 ns 记忆加 `--reader`） |
 | `git-log` | 审计轨迹（每次写入自动 commit） |
@@ -51,7 +51,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 
 ### 蒸馏工作流（判断段归调用方 Agent）
 
-1. `distill-plan`：确定性候选清单写到 `<root>/distill/last-plan.json`（launchd 每天 09:00 自动跑），标注 merge_with / possible_dup_of / promotion_candidate。扫私有 ns 加 `--reader`；`distill-apply` 的源与产物必须同 ns。
+1. `distill-plan`：确定性候选清单写到 `<root>/distill/last-plan.json`（launchd 每天 09:00 自动跑），主候选标注 merge_with / possible_dup_of / promotion_candidate；另有 `key_duplicates` 专项段圈出同 key 多版本组（不受活性门限制——清行未归档的废置旧版 uses=0 进不了主候选），逐组「留新归旧」处置。扫私有 ns 加 `--reader`；`distill-apply` 的源与产物必须同 ns。
 2. Agent 读 `last-plan.json` 做取舍、拟合并文案。
 3. `distill-apply "<产物>" insight <source> --sources <id1>,<id2>`：原子落库，产物 links 溯源到源、源归档可复活。任意会话发现清单有新候选时按需处理即可。
 
@@ -64,6 +64,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | SessionStart 没注入 | hook 任何异常都静默退出；手动跑 `~/.agents/memory/hooks/session_start.py` 查输出是否为合法 `{"additionalContext": ...}` JSON |
 | 写入/读取/反馈 `PermissionError` | ns 越权：日常写读 `_shared`；读私有 `agent-*` ns 要带 `reader`（`agent-<名>` 或 `<名>`） |
 | 报 `contradicts attested agent` | 宿主已注入进程身份（`COMPOUND_MEMORY_AGENT_ID`），自报身份与之矛盾：`source`/`agent` 改填自己的 agent id，`reader` 可直接省略（自动补真值）；仍报错则核对宿主 env 配置 |
-| 写入返回 `conflict: true` | 内容与既有版本不同，已入冲突队列；裁决后把废置版本归档（frontmatter `archived: true` 移入 `archive/` 并删活动文件）再 `rebuild-index` |
+| `write` 报 `key must match` | key 格式不合规（禁大写/下划线/空格/日期前缀）：改用小写字母数字段以短横线连接（`proj-xxx`）；key 是同 key 更新的锚点，日期化会让事实更新退化成不断新增 |
+| 写入返回 `conflict: true` | 内容与既有版本不同，已入冲突队列；裁决后 `review-resolve <废置id>` 清行并自动归档废置方（索引同步、自动 commit，无需 rebuild）；`--all` 只清行不归档（无裁决信息） |
 
 架构与复利机制见仓库 `README.md`，术语见 `CONTEXT.md`。

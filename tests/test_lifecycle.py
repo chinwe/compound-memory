@@ -205,24 +205,39 @@ class TestReviewResolve:
 
     def test_resolve_removes_matching_line_and_updates_stats(self, store: MemoryStore):
         """#14 验收：命中行清除 + stats.review_queue_entries 同步归零。"""
-        old, _ = self._conflict(store, "k1")
+        old, new = self._conflict(store, "k1")
         assert len(store.review_queue()) == 1
         out = store.review_resolve([old])
-        assert out == {"resolved": 1, "remaining": 0}
+        assert out == {
+            "resolved": 1,
+            "remaining": 0,
+            "rows": [{"old": old, "new": new}],
+            "archived": [old],
+        }
         assert store.review_queue() == []
         assert store.stats()["review_queue_entries"] == 0
 
     def test_resolve_keeps_unmatched_lines(self, store: MemoryStore):
         """多行队列只清命中行：new id 与 old id 任一命中均算涉及。"""
-        old1, _ = self._conflict(store, "k1")
-        _, new2 = self._conflict(store, "k2")
+        old1, new1 = self._conflict(store, "k1")
+        old2, new2 = self._conflict(store, "k2")
         out = store.review_resolve([old1, new2])
-        assert out == {"resolved": 2, "remaining": 0}
+        assert out == {
+            "resolved": 2,
+            "remaining": 0,
+            "rows": [{"old": old1, "new": new1}, {"old": old2, "new": new2}],
+            "archived": [old1, new2],
+        }
 
-        self._conflict(store, "k3")
-        _, new4 = self._conflict(store, "k4")
+        old3, new3 = self._conflict(store, "k3")
+        old4, new4 = self._conflict(store, "k4")
         out = store.review_resolve([new4])
-        assert out == {"resolved": 1, "remaining": 1}
+        assert out == {
+            "resolved": 1,
+            "remaining": 1,
+            "rows": [{"old": old4, "new": new4}],
+            "archived": [new4],
+        }
 
     def test_resolve_atomic_on_unknown_id(self, store: MemoryStore):
         """任一 id 未命中 ⇒ 整体拒绝、队列原样保留：登记是原子动作，不做半清。"""
@@ -240,13 +255,13 @@ class TestReviewResolve:
     def test_resolve_all_clears_and_is_idempotent(self, store: MemoryStore):
         self._conflict(store, "k1")
         self._conflict(store, "k2")
-        assert store.review_resolve(all=True) == {"resolved": 2, "remaining": 0}
+        assert store.review_resolve(all=True) == {"resolved": 2, "remaining": 0, "archived": []}
         assert store.review_queue() == []
-        assert store.review_resolve(all=True) == {"resolved": 0, "remaining": 0}
+        assert store.review_resolve(all=True) == {"resolved": 0, "remaining": 0, "archived": []}
 
     def test_resolve_without_queue_file(self, store: MemoryStore):
         """队列文件尚不存在（无冲突史）：--all 幂等空转；按 id 是未命中错误。"""
-        assert store.review_resolve(all=True) == {"resolved": 0, "remaining": 0}
+        assert store.review_resolve(all=True) == {"resolved": 0, "remaining": 0, "archived": []}
         with pytest.raises(ValueError, match="not found"):
             store.review_resolve(["nope"])
 
@@ -257,6 +272,28 @@ class TestReviewResolve:
         after = store.git_log(50)
         assert len(after) > len(before)
         assert any("review resolve 1 entries" in line for line in after)
+
+    def test_resolve_archives_dropped_side(self, store: MemoryStore):
+        """裁决的废置方 = 调用方传入的 id：清行同时归档该条，对侧保留活动区。
+
+        为何归档必须跟随清行动作：2026-10-05 运维实测，历次 review resolve
+        只清行不归档，废置旧版（uses=0）全部滞留活动区，又被蒸馏候选的
+        uses≥1 门槛滤出人审视野——同 key 多版本并存就是这么累积的。
+        """
+        old, new = self._conflict(store, "k1")
+        out = store.review_resolve([old])
+        assert out["archived"] == [old]
+        assert store.get(old)["archived"] is True
+        assert store.get(new)["archived"] is False
+        assert store.stats()["archived"] == 1
+
+    def test_resolve_all_clears_without_archiving(self, store: MemoryStore):
+        """--all 只清行：队列行本身不表达裁决方向（old/new 任一可保留），
+        自动归档需要调用方逐行指认——缺这个信息就不动手，不做方向推断。"""
+        old, _ = self._conflict(store, "k1")
+        out = store.review_resolve(all=True)
+        assert out == {"resolved": 1, "remaining": 0, "archived": []}
+        assert store.get(old)["archived"] is False
 
 
 class TestCli:
@@ -295,16 +332,21 @@ class TestCli:
         assert out == {"found": False, "missing": ["nope", "alsono"]}
 
     def test_cli_review_resolve_roundtrip(self, tmp_path: Path, capsys):
-        """CLI 缝：制造同 key 冲突 → 按旧 id resolve → 返回清除计数。"""
+        """CLI 缝：制造同 key 冲突 → 按旧 id resolve → 清行 + 归档废置方。"""
         root = str(tmp_path / "rr")
         assert cli_main(["--root", root, "write", "甲版本事实", "fact", "agent-cli", "--key", "rk"]) == 0
         old = json.loads(capsys.readouterr().out)["id"]
         assert cli_main(["--root", root, "write", "乙版本事实不同内容", "fact", "agent-cli", "--key", "rk"]) == 0
-        capsys.readouterr()
+        new = json.loads(capsys.readouterr().out)["id"]
 
         assert cli_main(["--root", root, "review-resolve", old]) == 0
         out = json.loads(capsys.readouterr().out)
-        assert out == {"resolved": 1, "remaining": 0}
+        assert out == {
+            "resolved": 1,
+            "remaining": 0,
+            "rows": [{"old": old, "new": new}],
+            "archived": [old],
+        }
 
     def test_cli_review_resolve_unknown_id_returns_exit_2(self, tmp_path: Path, capsys):
         """接口错误约定的 CLI 侧翻译：未命中 id ⇒ stderr JSON + exit 2，不裸栈。"""

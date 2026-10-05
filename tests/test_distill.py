@@ -129,6 +129,38 @@ class TestDistillPlan:
         with pytest.raises(ValueError):
             store.distill_plan(ns="not-a-ns")
 
+    def test_key_duplicates_flagged_beyond_activity_gate(self, store: MemoryStore):
+        """同 key 多版本专项（2026-10-05 运维盲区修复）：清行未归档的废置旧版
+        uses=0，被主候选的 uses≥1 门槛滤出人审视野——专项段不受窗口/活性门
+        限制，按「同 ns 同 type 同 key 组员 ≥2」圈出全组成员，判断段据此做归档取舍。
+        """
+        stale = store.write(
+            content="proj-x 的旧版结论", type="fact", source="agent-a",
+            key="proj-x", created=_days_ago(40),
+        )
+        fresh = store.write(
+            content="proj-x 的新版结论", type="fact", source="agent-a",
+            key="proj-x", created=_days_ago(1),
+        )
+        plan = store.distill_plan(min_uses=1, window_days=30)
+        # 两条都够不着主候选（uses=0；stale 还超窗）——专项段是独立于主清单的盲区
+        assert plan["candidates"] == []
+        dups = plan["key_duplicates"]
+        assert len(dups) == 1
+        assert dups[0]["type"] == "fact"
+        assert dups[0]["key"] == "proj-x"
+        # created 升序：旧版在前，判断段按「留新归旧」取舍得一目了然
+        assert [m["id"] for m in dups[0]["members"]] == [stale["id"], fresh["id"]]
+
+    def test_key_duplicates_ignores_single_keyless_and_cross_type_or_ns(self, store: MemoryStore):
+        """单条 key、无 key、同 key 不同 type、私有 ns 同 key 均不成组。"""
+        store.write(content="唯一一条", type="fact", source="agent-a", key="solo")
+        store.write(content="无 key 的经历", type="episode", source="agent-a")
+        store.write(content="同名 key 但类型不同", type="insight", source="agent-a", key="solo")
+        store.write(content="私有 ns 的同 key", type="fact", source="agent-zcode", ns="agent-zcode", key="solo")
+        plan = store.distill_plan(min_uses=0, ns="_shared")
+        assert plan["key_duplicates"] == []
+
 
 class TestDistillApply:
     def test_apply_is_atomic_write_links_archive_single_commit(self, store: MemoryStore):

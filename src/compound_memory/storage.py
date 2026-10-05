@@ -54,6 +54,12 @@ VEC_POOL = 16
 # 合法 id（YYYYMMDD_hex6）与现有全部 ns 取值均落在 [A-Za-z0-9_-] 内。
 _PATH_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
+# key 是 fact/insight 同 key 更新的稳定锚点，格式约束在落库单点（_write_new，
+# write/batch/distill-apply 共用）：小写字母数字段以短横线连接。原为纯文档约定、
+# write 无校验，2026-10-05 单日多会话沉淀出成批日期前缀 key——日期化 key 天然
+# 一次性（id 已含日期），等于放弃同 key 更新通道。日期前缀的取舍归文档，这里只守字符集与结构。
+_KEY_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
 ARCHIVE_USES_THRESHOLD = 3
 CONF_USE_BUMP = 0.1
 CONF_CROSS_AGENT_BUMP = 0.15
@@ -567,6 +573,10 @@ class MemoryStore:
         外部 ns fixture（显式字段落库的测试种子）。"""
         if type not in MEMORY_TYPES:
             raise ValueError(f"type must be one of {MEMORY_TYPES}, got: {type!r}")
+        if key and not _KEY_RE.match(key):
+            raise ValueError(
+                f"key must match {_KEY_RE.pattern} (lowercase alphanumeric segments joined by dashes), got: {key!r}"
+            )
         self._check_ns(ns)
         if ns.startswith("agent-") and source not in (ns, ns[len("agent-"):]):
             raise PermissionError(f"namespace {ns!r} is private to its owner; writer is {source!r}")
@@ -841,9 +851,11 @@ class MemoryStore:
     ) -> dict[str, Any]:
         """蒸馏候选扫描：窗口 + 活性门过滤，产出带信号标注的建议清单（只标注不合并）。
 
-        三类信号：merge_with（同 ns 同 type 同 key，强信号）、possible_dup_of
+        主候选三类信号：merge_with（同 ns 同 type 同 key，强信号）、possible_dup_of
         （BM25 normalized_similarity ≥ DISTILL_DUP_SIM_THRESHOLD，弱信号）、
         promotion_candidate（episode 高活性，晋升建议——判断后置，#6）。
+        另有 key_duplicates 专项段：同 ns 同 type 同 key 组员 ≥2 的多版本组，
+        不受窗口/活性门限制（废置旧版 uses=0 进不了主候选，运维实测盲区）。
         归档区不参与；过期（valid_until 已过）与坏日期记忆按宁缺勿滥跳过。
 
         reader：候选带正文返回，扫私有 ns 须属主（与 get/search 同规则）。
@@ -867,6 +879,35 @@ class MemoryStore:
         for i, mem in enumerate(cands):
             if mem.key:
                 by_key.setdefault((mem.type, mem.key), []).append(i)
+        # 同 key 多版本专项（2026-10-05 运维盲区）：清行未归档的废置旧版 uses=0，
+        # 会被主候选的 uses≥1 活性门滤出人审视野——专项段不受窗口/活性门限制，
+        # 只按「同 ns 同 type 同 key 组员 ≥2」圈出全组成员，判断段据此做归档取舍。
+        key_groups: dict[tuple[str, str], list[Memory]] = {}
+        for mem, _path in self._scan_parsed(self.ns_root / ns):
+            if is_expired(mem, now):
+                continue
+            if recency_age(mem, now) is None:
+                continue  # 坏日期跳过，与主扫描同规（宁缺勿滥）
+            if mem.key:
+                key_groups.setdefault((mem.type, mem.key), []).append(mem)
+        key_duplicates = [
+            {
+                "type": mtype,
+                "key": mkey,
+                "members": [
+                    {
+                        "id": m.id,
+                        "created": m.created,
+                        "uses": m.uses,
+                        "confidence": m.confidence,
+                        "content": m.content,
+                    }
+                    for m in sorted(members, key=lambda m: (m.created, m.id))
+                ],
+            }
+            for (mtype, mkey), members in sorted(key_groups.items())
+            if len(members) >= 2
+        ]
         candidates: list[dict[str, Any]] = []
         for i, mem in enumerate(cands):
             merge_with = (
@@ -895,6 +936,7 @@ class MemoryStore:
             "min_confidence": min_confidence,
             "ns": ns,
             "candidates": candidates,
+            "key_duplicates": key_duplicates,
         }
 
     def distill_apply(
@@ -1028,12 +1070,35 @@ class MemoryStore:
     def review_resolve(self, ids: list[str] | None = None, all: bool = False) -> dict[str, Any]:
         """登记冲突已解决：委托 ReviewQueue 清行，resolved>0 时自动 commit。
 
-        裁决（新旧取舍）归调用方——这里只做登记，不做判断（spec 非目标：不自动裁决冲突）。
+        裁决（新旧取舍）归调用方——按 ids 清行时，传入 id 即裁决的废置方，
+        清行同时把该条归档（对侧保留活动区）；--all 只清行，不携带裁决信息，
+        不自动归档。spec 非目标：不自动裁决冲突——归档跟随调用方指认的废置
+        方，不做方向推断。归档必须跟随清行动作的教训（2026-10-05 运维）：
+        清行不归档时废置旧版（uses=0）滞留活动区，且永不出现在 uses≥1 门槛
+        的蒸馏候选里——同 key 多版本并存由此累积。
         """
-        with self._write_lock():  # 队列文件改写 + 登记提交一个临界区
+        with self._write_lock():  # 队列文件改写 + 归档 + 登记提交一个临界区
             out = self._review_queue.resolve(ids=ids, all=all)
+            if all:
+                out.pop("rows")  # --all 无废置信息，rows 不进返回（CLI 输出同理）
+            archived: list[str] = []
+            if not all and ids:
+                wanted = set(ids)
+                for row in out["rows"]:
+                    for mem_id in (row["old"], row["new"]):
+                        if mem_id not in wanted or mem_id in archived:
+                            continue
+                        mem = self.find(mem_id)
+                        if mem is None or mem.archived:
+                            continue
+                        self._archive(mem)
+                        archived.append(mem_id)
             if out["resolved"]:
-                self._commit(f"review resolve {out['resolved']} entries")
+                message = f"review resolve {out['resolved']} entries"
+                if archived:
+                    message += " (archived: " + ", ".join(archived) + ")"
+                self._commit(message)
+            out["archived"] = archived
         return out
 
     def stats(self) -> dict[str, Any]:
