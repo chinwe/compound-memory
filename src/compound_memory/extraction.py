@@ -38,14 +38,14 @@ insight 候选；提供 store 时对 _shared 做词面去重标注（likely_dup_
 
 from __future__ import annotations
 
-import datetime as dt
 import json
 import re
 import shutil
 import sqlite3
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterator
 
 from .model import Memory
 from .scoring import doc_text, tokenize
@@ -99,23 +99,19 @@ EXTRACT_DUP_COVERAGE = 0.5
 SENTENCE_SPLIT = "。！？!?；;\n"
 
 
-def _texts_from_messages(messages: Any) -> list[str]:
-    """messages 数组 → 剥壳去注入后的真实用户话块。"""
+def collect_user_texts(raw_texts: Any) -> list[str]:
+    """宿主无关的公共尾巴：剥壳滤注入（_unwrap_user_text）→ 收集 → 保序去重。
+
+    各宿主 parser 只负责把自家格式走到「原始文本块」这一步（结构性过滤是
+    真差异，留在各自 parser），注入过滤与去重共用这一堵墙——原先在四个
+    parser 里各复制一份。
+    """
     out: list[str] = []
-    if not isinstance(messages, list):
-        return out
-    for message in messages:
-        if not isinstance(message, dict) or message.get("role") != "user":
-            continue
-        content = message.get("content")
-        blocks = content if isinstance(content, list) else [{"type": "text", "text": str(content)}]
-        for block in blocks:
-            if not isinstance(block, dict) or block.get("type") not in ("text", "input_text"):
-                continue
-            cleaned = _unwrap_user_text((block.get("text") or "").strip())
-            if cleaned:
-                out.append(cleaned)
-    return out
+    for raw in raw_texts:
+        cleaned = _unwrap_user_text(raw.strip())
+        if cleaned:
+            out.append(cleaned)
+    return _dedupe(out)
 
 
 def _unwrap_user_text(text: str) -> str | None:
@@ -164,7 +160,7 @@ def user_texts_from_zcode_db(path: Path) -> list[str]:
         ).fetchall()
     finally:
         con.close()
-    texts: list[str] = []
+    raws: list[str] = []
     for (raw,) in rows:
         # json_valid + '$.type'='text' 已在 SQL 侧保证只剩合法 JSON 的 object
         # 形状行（非 object 的 json_extract 返回 NULL，被 WHERE 过滤）——这里
@@ -173,10 +169,8 @@ def user_texts_from_zcode_db(path: Path) -> list[str]:
         metadata = part.get("metadata")
         if part.get("synthetic") or (isinstance(metadata, dict) and metadata.get("visibility") == "model-only"):
             continue
-        cleaned = _unwrap_user_text((part.get("text") or "").strip())
-        if cleaned:
-            texts.append(cleaned)
-    return _dedupe(texts)
+        raws.append(part.get("text") or "")
+    return collect_user_texts(raws)
 
 
 def user_texts_from_claude_log(path: Path) -> list[str]:
@@ -187,7 +181,7 @@ def user_texts_from_claude_log(path: Path) -> list[str]:
     包装、local-command-stdout、tool_result 块、"[Request interrupted]" 提示
     不是用户话。
     """
-    texts: list[str] = []
+    raws: list[str] = []
     for event in _iter_json_lines(path):
         if not isinstance(event, dict) or event.get("type") != "user":
             continue
@@ -198,15 +192,10 @@ def user_texts_from_claude_log(path: Path) -> list[str]:
         blocks = [content] if isinstance(content, str) else content if isinstance(content, list) else []
         for block in blocks:
             if isinstance(block, str):
-                text = block
+                raws.append(block)
             elif isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text") or ""
-            else:
-                continue
-            cleaned = _unwrap_user_text(text.strip())
-            if cleaned:
-                texts.append(cleaned)
-    return _dedupe(texts)
+                raws.append(block.get("text") or "")
+    return collect_user_texts(raws)
 
 
 def _zstd_decompress(path: Path) -> str:
@@ -231,7 +220,7 @@ def user_texts_from_dsh_session(path: Path) -> list[str]:
     文本模式硬猜。session.origin=='subagent' 的子会话是主 agent 派活文本
     （第三人称转述，与 WorkBuddy subagents/ 同型噪声），整场返回空。
     """
-    texts: list[str] = []
+    raws: list[str] = []
     subagent = False
     for line in _zstd_decompress(path).splitlines():
         line = line.strip()
@@ -256,10 +245,8 @@ def user_texts_from_dsh_session(path: Path) -> list[str]:
         content = data.get("content") if isinstance(data, dict) else None
         for block in content if isinstance(content, list) else []:
             if isinstance(block, dict) and block.get("type") == "text":
-                cleaned = _unwrap_user_text((block.get("text") or "").strip())
-                if cleaned:
-                    texts.append(cleaned)
-    return [] if subagent else _dedupe(texts)
+                raws.append(block.get("text") or "")
+    return [] if subagent else collect_user_texts(raws)
 
 
 def user_texts_from_session_log(path: Path) -> list[str]:
@@ -268,12 +255,16 @@ def user_texts_from_session_log(path: Path) -> list[str]:
     每行一个事件，只取 type=="message" && role=="user" 的 input_text 块——
     function_call / reasoning / file-history-snapshot 等事件不是用户话。
     """
-    texts: list[str] = []
+    raws: list[str] = []
     for event in _iter_json_lines(path):
         if not isinstance(event, dict) or event.get("type") != "message" or event.get("role") != "user":
             continue
-        texts.extend(_texts_from_messages([event]))
-    return _dedupe(texts)
+        content = event.get("content")
+        blocks = content if isinstance(content, list) else [{"type": "text", "text": str(content)}]
+        for block in blocks:
+            if isinstance(block, dict) and block.get("type") in ("text", "input_text"):
+                raws.append(block.get("text") or "")
+    return collect_user_texts(raws)
 
 
 def _iter_json_lines(path: Path) -> list[Any]:
@@ -320,7 +311,7 @@ def _dup_of(store: MemoryStore, quote: str) -> str | None:
     q_tokens = set(tokenize(quote))
     if not q_tokens:
         return None
-    candidates = store._candidates(sorted(q_tokens), {"_shared"})
+    candidates = store.lexical_candidates(sorted(q_tokens), {"_shared"})
     best_id, best_cov = None, 0.0
     for mem in candidates:
         coverage = len(q_tokens & set(tokenize(doc_text(mem)))) / len(q_tokens)
@@ -381,25 +372,8 @@ def _is_zcode_db(path: Path) -> bool:
     return {"message", "part"} <= names
 
 
-def detect_transcript_kind(path: Path) -> str:
-    """按内容形状判定 transcript 形态：session-log / zcode-db / claude-log /
-    dsh-session / unsupported。
-
-    不靠文件名约定——各家都把日志叫 .jsonl / .sqlite / .zstd。也不只看第一
-    行：较新会话以 session-meta / mode 等元事件开头，只看首行会把它们全判成
-    unsupported 静默跳过。
-
-    SQLite 按魔数 + message/part 表形状识别；zstd 按帧魔数识别（dsh 会话）；
-    model-io 快照与 trace 是 retired 源（只剩最近几个会话 / 首轮 user 消息），
-    判 unsupported 而非 unknown——给出行内理由并指向受支持源，避免"看似扫过、
-    实则大面积漏"。
-    """
-    with open(path, "rb") as fh:
-        raw = fh.read(DETECT_HEAD_CHARS)
-    if raw.startswith(SQLITE_MAGIC):
-        return "zcode-db" if _is_zcode_db(path) else "unsupported"
-    if raw.startswith(ZSTD_MAGIC):
-        return "dsh-session"
+def _head_json_events(raw: bytes) -> Iterator[dict]:
+    """文件头部的 jsonl 事件流（坏行/非 object 跳过）——形态探测共用。"""
     head = raw.decode("utf-8", errors="replace")
     for line in head.splitlines()[:DETECT_MAX_LINES]:
         line = line.strip()
@@ -409,45 +383,149 @@ def detect_transcript_kind(path: Path) -> str:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if not isinstance(event, dict):
-            continue
-        if event.get("type") == "message":
-            return "session-log"
-        if event.get("type") == "user" and isinstance(event.get("message"), dict):
-            return "claude-log"
-    return "unsupported"
+        if isinstance(event, dict):
+            yield event
 
 
-PARSERS = {
-    "session-log": user_texts_from_session_log,
-    "zcode-db": user_texts_from_zcode_db,
-    "claude-log": user_texts_from_claude_log,
-    "dsh-session": user_texts_from_dsh_session,
-}
+def _sniff_session_log(raw: bytes, path: Path) -> bool:
+    return any(e.get("type") == "message" for e in _head_json_events(raw))
 
-UNSUPPORTED_HINT = (
-    "不支持的 transcript 形态：{path}。受支持的源有——"
-    "WorkBuddy session log（~/.workbuddy/projects/<项目>/<sessionId>.jsonl）、"
-    "ZCode 会话库（~/.zcode/cli/db/db.sqlite）、"
-    "Claude Code session log（~/.claude/projects/<项目>/<sessionId>.jsonl）、"
-    "DeepSeek Harness session（~/.dsh/sessions/<项目>/<会话>/session.jsonl.zstd）；"
-    "jsonl 传目录则批量扫。"
+
+def _sniff_claude_log(raw: bytes, path: Path) -> bool:
+    return any(
+        e.get("type") == "user" and isinstance(e.get("message"), dict) for e in _head_json_events(raw)
+    )
+
+
+def _sniff_zcode_db(raw: bytes, path: Path) -> bool:
+    return raw.startswith(SQLITE_MAGIC) and _is_zcode_db(path)
+
+
+def _sniff_dsh_session(raw: bytes, path: Path) -> bool:
+    return raw.startswith(ZSTD_MAGIC)
+
+
+@dataclass(frozen=True)
+class HostSpec:
+    """一个宿主 transcript 的全套知识——parser、内容嗅探、批量 glob、提示文案。
+
+    宿主知识的单一定义点：新增宿主 = 一个 parser 函数 + 一行 HOSTS 表，
+    形态探测、目录批量、unsupported 提示、CLI 帮助全部由表驱动，勿在
+    别处新增分支（2026-10-05 表驱动化前的散点教训：6 处 2 文件）。
+    """
+
+    key: str  # transcript kind（manifest parser 字段、_host_for 查找键）
+    parser: Callable[[Path], list[str]]  # 宿主文件 → 原始文本块 → collect_user_texts
+    sniff: Callable[[bytes, Path], bool]  # 内容形态嗅探（文件头原始字节 + 路径）
+    dir_globs: tuple[str, ...]  # extract_dir 批量 glob（空 = 无目录批量形态）
+    label: str  # unsupported 提示里的宿主名
+    location: str  # unsupported 提示里的落点说明
+    summary_en: str  # CLI --help 里的英文一句话描述
+
+
+# 表序即探测优先序：二进制魔数（sqlite/zstd）先于文本行嗅探，WorkBuddy/Claude
+# 各按自家事件形态判定（真实文件互不串形；理论上混合形态按表序先命中先返回）
+HOSTS: tuple[HostSpec, ...] = (
+    HostSpec(
+        key="zcode-db",
+        parser=user_texts_from_zcode_db,
+        sniff=_sniff_zcode_db,
+        dir_globs=(),
+        label="ZCode 会话库",
+        location="~/.zcode/cli/db/db.sqlite",
+        summary_en="the ZCode session database (~/.zcode/cli/db/db.sqlite, full history)",
+    ),
+    HostSpec(
+        key="dsh-session",
+        parser=user_texts_from_dsh_session,
+        sniff=_sniff_dsh_session,
+        # dsh 会话文件有两代文件名（session.jsonl.zstd / session.v3.jsonl.zstd），
+        # 事件形态相同——glob 只认旧名会静默漏掉新会话（实测 25 个里 14 个是 v3）
+        dir_globs=("*/*/session*.jsonl.zstd",),
+        label="DeepSeek Harness session",
+        location="~/.dsh/sessions/<项目>/<会话>/session.jsonl.zstd",
+        summary_en="DeepSeek Harness zstd-compressed session files (~/.dsh/sessions)",
+    ),
+    HostSpec(
+        key="session-log",
+        parser=user_texts_from_session_log,
+        sniff=_sniff_session_log,
+        dir_globs=("*/*.jsonl",),
+        label="WorkBuddy session log",
+        location="~/.workbuddy/projects/<项目>/<sessionId>.jsonl",
+        summary_en="WorkBuddy session log jsonl (~/.workbuddy/projects)",
+    ),
+    HostSpec(
+        key="claude-log",
+        parser=user_texts_from_claude_log,
+        sniff=_sniff_claude_log,
+        dir_globs=("*/*.jsonl",),
+        label="Claude Code session log",
+        location="~/.claude/projects/<项目>/<sessionId>.jsonl",
+        summary_en="Claude Code session log jsonl (~/.claude/projects)",
+    ),
+)
+
+# 退役源说明（不随 HOSTS 变化）：trace / rollout 快照只剩部分轮次，接进来是假阴性
+RETIRED_SOURCES_NOTE = (
     "WorkBuddy traces/ 与 ZCode rollout/model-io 快照不接入：都只剩部分轮次，"
     "接进来是'看似扫过、实则大面积漏'的假阴性。"
 )
 
 
+def _host_for(kind: str) -> HostSpec | None:
+    return next((h for h in HOSTS if h.key == kind), None)
+
+
+def unsupported_hint(path: Path) -> str:
+    """unsupported 判定的行内理由：受支持源清单由 HOSTS 表生成（新宿主自动出现）。"""
+    return (
+        f"不支持的 transcript 形态：{path}。受支持的源有——"
+        + "；".join(f"{h.label}（{h.location}）" for h in HOSTS)
+        + "；jsonl 传目录则批量扫。"
+        + RETIRED_SOURCES_NOTE
+    )
+
+
+def supported_hosts_summary_en() -> str:
+    """CLI --help 用的英文宿主清单（同表生成，宿主增删只改表）。"""
+    return "; ".join(h.summary_en for h in HOSTS)
+
+
+def detect_transcript_kind(path: Path) -> str:
+    """按内容形状判定 transcript 形态（HOSTS 表驱动，依表序先命中先返回）：
+    session-log / zcode-db / claude-log / dsh-session，认不出为 unsupported。
+
+    不靠文件名约定——各家都把日志叫 .jsonl / .sqlite / .zstd。也不只看第一
+    行：较新会话以 session-meta / mode 等元事件开头，只看首行会把它们全判成
+    unsupported 静默跳过（嗅探谓词扫文件头的前若干行）。
+
+    SQLite 按魔数 + message/part 表形状识别；zstd 按帧魔数识别（dsh 会话）；
+    model-io 快照与 trace 是 retired 源，判 unsupported——给出行内理由并指向
+    受支持源，避免"看似扫过、实则大面积漏"。
+    """
+    with open(path, "rb") as fh:
+        raw = fh.read(DETECT_HEAD_CHARS)
+    for host in HOSTS:
+        if host.sniff(raw, path):
+            return host.key
+    return "unsupported"
+
+
 def extract(transcript: Path, store: MemoryStore) -> dict[str, Any]:
-    """入口：解析 transcript、扫描、清单落 <root>/extract/last-candidates.json。
+    """入口：单文件按内容形态分派（目录走批量扫），解析、扫描、清单落
+    <root>/extract/last-candidates.json。
 
     extract/ 是运行时工件目录（_ensure_layout 统一 gitignore）——清单含会话
     摘录，不进记忆库的审计史；返回摘要供 CLI 打印。
     """
+    if transcript.is_dir():
+        return extract_dir(transcript, store)
     kind = detect_transcript_kind(transcript)
-    parser = PARSERS.get(kind)
-    if parser is None:
-        raise ValueError(UNSUPPORTED_HINT.format(path=transcript))
-    texts = parser(transcript)
+    host = _host_for(kind)
+    if host is None:
+        raise ValueError(unsupported_hint(transcript))
+    texts = host.parser(transcript)
     candidates = scan_texts(texts, store=store)
     return _write_manifest(store, transcript, kind, texts, candidates)
 
@@ -464,7 +542,7 @@ def _write_manifest(
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "last-candidates.json"
     manifest: dict[str, Any] = {
-        "generated": dt.date.today().isoformat(),
+        "generated": store.today(),  # clock seam：日期可测，不读墙钟
         "source": str(source),
         "parser": kind,
         "user_turns": len(texts),
@@ -510,10 +588,10 @@ def extract_dir(
     scan_texts 的 MAX_CANDIDATES 兜底。
     """
     paths: set[Path] = set()
-    # dsh 会话文件有两代文件名（session.jsonl.zstd / session.v3.jsonl.zstd），
-    # 事件形态相同——glob 只认旧名会静默漏掉新会话（实测 25 个里 14 个是 v3）
-    for pattern in ("*/*.jsonl", "*/*/session*.jsonl.zstd"):
-        paths.update(root.glob(pattern))
+    # 批量 glob 来自 HOSTS 表（dsh v3 双代文件名教训在表内注释）——新宿主自动被批量吃到
+    for spec in HOSTS:
+        for pattern in spec.dir_globs:
+            paths.update(root.glob(pattern))
     texts: list[str] = []
     sessions = 0
     unsupported: set[Path] = set()
@@ -522,11 +600,11 @@ def extract_dir(
         if "subagents" in log.parts:
             subagent_files.add(log)
             continue
-        parser = PARSERS.get(detect_transcript_kind(log))
-        if parser is None:
+        host = _host_for(detect_transcript_kind(log))
+        if host is None:
             unsupported.add(log)
             continue
-        texts.extend(parser(log))
+        texts.extend(host.parser(log))
         sessions += 1
         if sessions >= max_sessions:
             break

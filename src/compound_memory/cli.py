@@ -12,7 +12,7 @@ from typing import Any
 
 from . import __version__
 from .embedding import auto_encoder
-from .extraction import extract, extract_dir
+from .extraction import extract, supported_hosts_summary_en
 from .storage import DISTILL_DUP_SIM_THRESHOLD, MEMORY_TYPES, MemoryStore, PROMOTION_USES_THRESHOLD, default_root
 
 
@@ -129,11 +129,8 @@ def cmd_distill_apply(args: argparse.Namespace) -> None:
 
 
 def cmd_extract(args: argparse.Namespace) -> None:
-    target = Path(args.transcript)
-    if target.is_dir():
-        _emit(extract_dir(target, _open_store(args)))
-    else:
-        _emit(extract(target, _open_store(args)))
+    # 单文件/目录分派在 extraction.extract 内（按内容形态与目录批量统一收口）
+    _emit(extract(Path(args.transcript), _open_store(args)))
 
 
 def cmd_git_log(args: argparse.Namespace) -> None:
@@ -218,9 +215,9 @@ def build_parser() -> argparse.ArgumentParser:
         "extract",
         help="scan a session transcript for memory candidates (deterministic pass, no LLM)",
         description="Deterministic candidate extraction from a session transcript. Transcript shapes are "
-        "auto-detected by content (not filename): WorkBuddy session log jsonl, the ZCode session database "
-        "(~/.zcode/cli/db/db.sqlite, full history), Claude Code session log jsonl, and DeepSeek Harness "
-        "zstd-compressed session files. Pass a directory to batch-scan every supported session file under it "
+        "auto-detected by content (not filename): "
+        + supported_hosts_summary_en()
+        + ". Pass a directory to batch-scan every supported session file under it "
         "(<project>/<session>.jsonl layouts and <project>/<session>/session.jsonl.zstd; subagents/ skipped — "
         "their role:user is the team-lead agent's task brief, not the human's own statement). "
         "ZCode rollout/model-io snapshots and WorkBuddy traces/ are deliberately unsupported — they keep only "

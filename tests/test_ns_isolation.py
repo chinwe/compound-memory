@@ -327,3 +327,19 @@ class TestCliReaderFlag:
         assert cli_main(root + ["get", priv_id, "--reader", OWNER_BARE]) == 0
         out = json.loads(capsys.readouterr().out)
         assert out["found"] is True
+
+
+class TestLexicalCandidatesGate:
+    """公开词面候选通道（extraction 复述标注走此正门，替代 _candidates 私有直调）：
+    与 search 同一门禁——agent-* 必须属主，_shared 放行。"""
+
+    def test_private_ns_requires_owner(self, store: MemoryStore):
+        from compound_memory.scoring import tokenize
+
+        _seed(store)
+        with pytest.raises(PermissionError):
+            store.lexical_candidates(tokenize("zcode private draft"), {PRIVATE_NS})
+        hits = store.lexical_candidates(tokenize("zcode private draft"), {PRIVATE_NS}, reader=OWNER)
+        assert [m.id for m in hits]
+        shared = store.lexical_candidates(tokenize("shared public note"), {"_shared"})
+        assert [m.id for m in shared]

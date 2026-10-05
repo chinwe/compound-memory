@@ -31,6 +31,8 @@ from compound_memory.extraction import (
 )
 from compound_memory.storage import MemoryStore
 
+from conftest import CLOCK_DATE
+
 ZSTD_AVAILABLE = shutil.which("zstd") is not None
 requires_zstd = pytest.mark.skipif(not ZSTD_AVAILABLE, reason="zstd CLI not available")
 
@@ -560,3 +562,48 @@ def test_extract_dir_batches_and_skips_subagents(tmp_path: Path, store: MemorySt
     assert "uv" in quotes and "Vercel" in quotes
     assert "鱼吃鱼" not in quotes, "subagent 派活文本不得进清单"
     assert "edge-tts" not in quotes, "skipped 文件不得被解析进清单"
+
+
+def test_manifest_date_uses_store_clock(store: MemoryStore, tmp_path: Path) -> None:
+    """清单 generated 日期走 store 注入的 clock（本 fixture 固定 2026-10-01）——
+    不读墙钟，clock seam 全域一致、日期可测。"""
+    db = _zcode_db(tmp_path / "db-clock.sqlite", [("user", [{"type": "text", "text": "我用 edge-tts 生成中文音频，晓晓语音"}])])
+    extract(db, store)
+    manifest = json.loads((store.root / "extract" / "last-candidates.json").read_text(encoding="utf-8"))
+    assert manifest["generated"] == CLOCK_DATE.isoformat()
+
+
+def test_fifth_host_is_one_table_row(tmp_path: Path, store: MemoryStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """宿主知识单点 locality（回归钉）：新增宿主 = 一个 parser 函数 + 一行 HOSTS 表——
+    形态探测、批量 glob、unsupported 提示、单文件/目录入口全由表驱动，无需改任何
+    分支。假宿主用 FAKE_MAGIC 文件头 + 自家 glob 注入，端到端验证一次接入。"""
+    from compound_memory import extraction
+
+    def _fake_parser(path: Path) -> list[str]:
+        return ["记住：假宿主的部署窗口是周五"]
+
+    fake = extraction.HostSpec(
+        key="fake-host",
+        parser=_fake_parser,
+        sniff=lambda raw, path: raw.startswith(b"FAKE_MAGIC"),
+        dir_globs=("*/*.flog",),
+        label="Fake host session log",
+        location="~/fake/<项目>/<会话>.flog",
+        summary_en="Fake host session files",
+    )
+    monkeypatch.setattr(extraction, "HOSTS", [*extraction.HOSTS, fake])
+
+    flog = tmp_path / "proj-fake" / "s.flog"
+    flog.parent.mkdir()
+    flog.write_bytes(b"FAKE_MAGIC payload")
+    assert extraction.detect_transcript_kind(flog) == "fake-host"
+    assert extraction.extract(flog, store)["parser"] == "fake-host"
+    assert extraction.extract(tmp_path, store)["sessions"] == 1, "目录批量入口的 glob 也来自表"
+    junk = tmp_path / "unknown.bin"
+    junk.write_bytes(b"neither magic nor jsonl")
+    try:
+        extraction.extract(junk, store)
+    except ValueError as exc:
+        assert "Fake host" in str(exc), "unsupported 提示由表生成，新宿主自动出现"
+    else:
+        raise AssertionError("unknown 形态应抛 ValueError")

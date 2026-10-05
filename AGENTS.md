@@ -12,11 +12,14 @@
 
 ## 架构边界
 
-- `src/compound_memory/` 分层：`server.py`（唯一读写边界，恰好 5 个 MCP tool，勿增删）→ `storage.py`（MD+frontmatter 存储、命名空间、git、复利引擎；蒸馏 distill_plan/distill_apply、衰减 decay、归档/复活也都在这个文件）→ `index.py` + `scoring.py` + `review_queue.py`（冲突队列 artifact 的生成/解析/清除）+ `vector_index.py`/`embedding.py`（向量缓存与编码，可选 vec extra，未装自动降级纯词面）；`model.py` 是共享领域模型（从 storage 拆出以打破循环依赖，勿再引入循环 import）。
+- `src/compound_memory/` 分层：`server.py`（唯一读写边界，恰好 5 个 MCP tool，勿增删）→ `storage.py`（MD+frontmatter 存储、命名空间、git、复利引擎；蒸馏 distill_plan/distill_apply、衰减 decay、归档/复活也都在这个文件）→ `index.py` + `scoring.py` + `review_queue.py`（冲突队列 artifact 的生成/解析/清除）+ `vector_index.py`/`embedding.py`（向量缓存与编码，可选 vec extra，未装自动降级纯词面）+ `liveness.py`（两份缓存共用的带外增删探测，2026-10-05 收拢——此前两份复制曾漂移出真 bug）+ `extraction.py`（抽取管线确定性段，宿主知识 HOSTS 表驱动）；`model.py` 是共享领域模型（从 storage 拆出以打破循环依赖，勿再引入循环 import）。
 - 单一定义点，改这些领域前先读对应模块 docstring：
   - `model.TYPE_SPEC`：记忆类型唯一知识源（权重/半衰期/归档 TTL），加类型只改这张表；
   - `scoring.rank`：排序管线与搜索结果形状的唯一位置（权重常量 W_SIM/W_CONF/W_RECENCY/W_TYPE 定义在 scoring.py，改权重只改那里）；
-  - `Index`：拥有"活动记忆必被索引、归档必不在索引"不变量，缓存损坏自动重建、检索降级不报错；活性是 store 级的——读路径自动检测跨进程缓存更新（重载）与带外新增/删除文件（目录 mtime 重建），手编已有文件**内容**需显式 `rebuild-index`；
+  - `Index`：拥有"活动记忆必被索引、归档必不在索引"不变量，缓存损坏自动重建、检索降级不报错；活性是 store 级的——读路径自动检测跨进程缓存更新（重载）与带外新增/删除文件（目录 mtime 重建，探测共用 `liveness.dirs_newer_than` 单点），手编已有文件**内容**需显式 `rebuild-index`；
+  - `MemoryStore.batch`：批量落库正门（逐条校验写穿、批尾一次索引 flush + 一次 commit；失败语义"落地即已提交"，嵌套即 ValueError）。灌库/蒸馏类批量写入一律走它，勿绕过直用 `_save`（experiments 旁路已迁移）；向量侧批尾一次性批量编码，`Index`/`VectorIndex` 的 `defer`/`flush_pending` 仅 batch 调用；
+  - `extraction.HOSTS`：宿主 transcript 知识单一定义点（parser / 内容嗅探 / 批量 glob / 提示文案 / CLI 帮助全由表生成），新增宿主 = 一个函数 + 一行表，勿在别处加分支；公共尾部（剥壳滤注入去重）用 `collect_user_texts`；
+  - `MemoryStore.lexical_candidates`：公开词面候选通道（返回记忆正文的入口，已过身份门禁）——extraction 复述标注走它，勿直调 `_candidates` 私有件；
   - `scoring.recency_age`：新近基准（last_used 优先，created 兜底），直接返回距 today 天数、坏日期返回 None；排序与衰减共用，勿各算各的；
   - `ReviewQueue`：review-queue.md 行格式（生成 + 解析 + fail-safe 保留）单一定义点，勿在别处裸读/裸写队列文件；
   - `MemoryStore` 接口错误约定：调用方错误（参数/越权/自链接）抛 `ValueError`/`PermissionError`（CLI/MCP adapter 各翻译一次），目标不存在返回 `{"found": False}`（按 id 动词恒含 `found` 键）；
