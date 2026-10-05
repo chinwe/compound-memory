@@ -5,9 +5,10 @@
 每题独占一个私有 ns（agent-lme-<qid>），与官方 per-question 评测协议对齐；
 created 取 session 真实日期（保留时序，供 recency 先验与时态题使用）。
 
-性能注记：不走 store.write()——其逐条 _sync_indexes 在 tokens.json 全量重写
-下是 O(n²)，2.4 万条会话不可行；此处直接 _save 落盘，最后一次性 rebuild_index
-（词法 + 向量两份缓存全量重建）。experiments 旁路脚本允许使用内部路径。
+性能注记：走 store.batch() 批式正门——逐条 write 的校验语义不变，
+索引落盘与向量编码收拢批尾一次（逐条 sync 在 tokens.json 全量重写下是
+O(n²)，2.4 万条会话不可行）。私有 ns 播种以 ns 属主身份写入（本脚本即
+该评测 ns 的创建者）。
 """
 from __future__ import annotations
 
@@ -20,7 +21,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from compound_memory.model import TTL_DAYS, Memory  # noqa: E402
 from compound_memory.storage import MemoryStore  # noqa: E402
 
 DATE_RE = re.compile(r"(\d{4})/(\d{2})/(\d{2})")
@@ -63,24 +63,22 @@ def main() -> None:
     store = MemoryStore(args.root, git=False, embedder=embedder)
     mapping: dict[str, str] = {}  # mem_id -> session_id（评测答案对齐用）
     t0 = time.time()
-    for qi, q in enumerate(questions):
-        ns = f"agent-lme-{q['question_id']}"
-        for sid, session, raw_date in zip(q["haystack_session_ids"], q["haystack_sessions"], q["haystack_dates"]):
-            mem = Memory(
-                id=store._new_id(),
-                ns=ns,
-                type="episode",
-                source="longmemeval",
-                created=iso_date(raw_date) or store._today(),
-                content=render_session(session),
-                ttl=TTL_DAYS["episode"],
-            )
-            store._save(mem)
-            mapping[mem.id] = sid
-        if (qi + 1) % 50 == 0:
-            print(f"ingested {qi + 1}/{len(questions)} questions ({time.time() - t0:.0f}s)", flush=True)
-    counts = store.rebuild_index()
-    print(f"rebuild: {counts} total {time.time() - t0:.0f}s")
+    with store.batch():
+        for qi, q in enumerate(questions):
+            ns = f"agent-lme-{q['question_id']}"
+            for sid, session, raw_date in zip(q["haystack_session_ids"], q["haystack_sessions"], q["haystack_dates"]):
+                res = store.write(
+                    content=render_session(session),
+                    type="episode",
+                    source=ns,  # 私有 ns 属主身份：播种器即该评测 ns 的创建者
+                    ns=ns,
+                    created=iso_date(raw_date) or store.today(),
+                )
+                mapping[res["id"]] = sid
+            if (qi + 1) % 50 == 0:
+                print(f"ingested {qi + 1}/{len(questions)} questions ({time.time() - t0:.0f}s)", flush=True)
+    # 批尾 flush 已完成词法落盘与向量批量编码（--vector 时），无需再 rebuild_index
+    print(f"ingest done: {len(mapping)} sessions total {time.time() - t0:.0f}s")
 
     runs_dir = Path(__file__).parent / "runs"
     runs_dir.mkdir(exist_ok=True)

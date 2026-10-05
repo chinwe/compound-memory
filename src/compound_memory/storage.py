@@ -16,9 +16,10 @@ import os
 import shutil
 import subprocess
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable, overload
+from typing import Any, Callable, Iterator, overload
 
 import yaml
 
@@ -119,6 +120,13 @@ def default_root() -> Path:
     return Path(env) if env else Path.home() / ".agents" / "memory"
 
 
+class _Batch:
+    """batch() 的句柄：允许批内覆写提交消息（distill_apply 的溯源消息在产物写入后才凑得齐 id）。"""
+
+    def __init__(self, message: str | None = None) -> None:
+        self.message = message
+
+
 class MemoryStore:
     def __init__(
         self,
@@ -144,6 +152,8 @@ class MemoryStore:
         # 所有调用方自报身份（source/reader/agent）必须与其一致，缺省 reader 自动补真值。
         # 只由 server/cli 入口显式传入，store 自身不读环境变量（测试与库调用保持确定性）。
         self.agent_id = agent_id
+        self._batch_depth = 0  # batch() 嵌套深度（恒 0 或 1：嵌套 batch 是调用方错误）
+        self._batch_ops = 0  # 本批延迟的提交计数（批尾消息与"零操作不提交"判据）
         self._ensure_layout()
         if self.git_enabled and not (self.root / ".git").exists():
             # init commit 仅限首次创建：__init__ 在每次 CLI/MCP 启动都会执行，
@@ -152,11 +162,52 @@ class MemoryStore:
             self._git("add", "-A", check=False)
             self._git("commit", "-qm", "init compound-memory store", check=False)
 
-    def _today(self) -> str:
+    def today(self) -> str:
+        """当前日期（ISO，注入 clock 的公开出口）：created 缺省、抽取清单等消费。"""
         return self._clock().isoformat()
 
     def _new_id(self) -> str:
         return f"{self._clock().strftime('%Y%m%d')}_{uuid.uuid4().hex[:6]}"
+
+    # ---------- 批式落库通道 ----------
+
+    @contextmanager
+    def batch(self, message: str | None = None) -> Iterator[_Batch]:
+        """批量落库的正门：逐条校验照走、commit 与索引落盘收拢批尾（灌库/蒸馏用）。
+
+        - 每条 write 照常逐条校验并立即落盘（写穿），校验语义与单条 write 完全一致；
+          变化只在提交粒度：批尾一次索引 flush（词法落盘一次、向量一次性批量编码）
+          + 一次 git commit。逐条 write 的每条全量重写 tokens.json 是 O(n²) 的来源。
+        - 失败语义「落地即已提交」：批内异常时已写入条目照常 flush + commit
+          （消息注明 partial）后原样上抛——不存在静默半提交。
+        - 批内可见性无承诺：同进程词面读经内存索引可能看到已写入条目，向量路与
+          跨进程读要等批尾 flush——需要一致快照的调用方不要在批内检索。
+        - 嵌套 batch 是调用方错误（ValueError）；feedback/link 等动词的 commit
+          在批内同样延迟（_commit 单点拦截），各动词无需批式特化版本。
+        """
+        if self._batch_depth > 0:
+            raise ValueError("nested batch() is not supported")
+        self._batch_depth += 1
+        self._batch_ops = 0
+        handle = _Batch(message)
+        self.index.defer()
+        self.vector_index.defer()
+        try:
+            yield handle
+        except BaseException:
+            self._end_batch(handle.message, partial=True)
+            raise
+        self._end_batch(handle.message, partial=False)
+
+    def _end_batch(self, message: str | None, partial: bool) -> None:
+        # 先退出批态再 flush：flush 与收尾 commit 不被延迟拦截
+        self._batch_depth -= 1
+        self.index.flush_pending()
+        self.vector_index.flush_pending()
+        if self._batch_ops:
+            suffix = " (partial)" if partial else ""
+            self._commit((message + suffix) if message else f"batch write {self._batch_ops} entries{suffix}")
+            self._batch_ops = 0
 
     # ---------- 布局 / git ----------
 
@@ -186,6 +237,10 @@ class MemoryStore:
         )
 
     def _commit(self, message: str) -> None:
+        if self._batch_depth > 0:
+            # 批内延迟：commit 收拢到 batch() 退出时一次性执行（单点拦截，各动词无需批式特化）
+            self._batch_ops += 1
+            return
         if not self.git_enabled:
             return
         self._git("add", "-A", check=False)
@@ -346,7 +401,9 @@ class MemoryStore:
         valid_from: str | None = None,
         valid_until: str | None = None,
     ) -> tuple[Memory, Memory | None]:
-        """write 的无 commit 核心——distill_apply 复用它把产物写入 + 源归档收进一次 commit。"""
+        """write 的落库核心（无 commit）：commit 由调用方动词收口——单条走 write，
+        批式经 batch()（_commit 单点拦截）。tests 亦用它播种 write 会正当拒绝的
+        外部 ns fixture（显式字段落库的测试种子）。"""
         if type not in MEMORY_TYPES:
             raise ValueError(f"type must be one of {MEMORY_TYPES}, got: {type!r}")
         self._check_ns(ns)
@@ -360,7 +417,7 @@ class MemoryStore:
             ns=ns,
             type=type,
             source=source,
-            created=created or self._today(),
+            created=created or self.today(),
             content=content,
             confidence=0.5 if confidence is None else confidence,
             links=list(links or []),
@@ -420,7 +477,7 @@ class MemoryStore:
                 bump += CONF_CROSS_AGENT_BUMP
             mem.validated_by.append(agent)
         mem.confidence = round(min(1.0, mem.confidence + bump), 3)
-        mem.last_used = self._today()
+        mem.last_used = self.today()
         self._save(mem)
         self._sync_indexes(mem, self._active_rel(mem))
         self._commit(f"feedback {mem.id} by {agent}: uses={mem.uses} conf={mem.confidence}")
@@ -694,25 +751,24 @@ class MemoryStore:
         foreign_ns = sorted({s.ns for s in sources if s is not None and s.ns != ns})
         if foreign_ns:
             raise ValueError(f"distill sources must live in target ns {ns!r}; found in: {foreign_ns}")
-        mem, conflict_with = self._write_new(
-            content,
-            type=type,
-            source=source,
-            ns=ns,
-            key=key,
-            links=source_ids,
-            created=None,
-            confidence=confidence,
-            origin="distillation",
-        )
-        archived: list[str] = []
-        for src in sources:
-            assert src is not None
-            if not src.archived:
-                self._archive(src)
-            archived.append(src.id)
-        self._commit(f"distill apply {mem.id} <- " + ", ".join(archived))
-        result = self._write_result(mem, conflict_with)
+        with self.batch() as batch_ctx:
+            result = self.write(
+                content,
+                type=type,
+                source=source,
+                ns=ns,
+                key=key,
+                links=source_ids,
+                confidence=confidence,
+                origin="distillation",
+            )
+            archived: list[str] = []
+            for src in sources:
+                assert src is not None
+                if not src.archived:
+                    self._archive(src)
+                archived.append(src.id)
+            batch_ctx.message = f"distill apply {result['id']} <- " + ", ".join(archived)
         result["found"] = True
         result["archived_sources"] = archived
         return result
@@ -740,6 +796,21 @@ class MemoryStore:
         counts = self.index.rebuild(self._scan_pairs())
         counts.update(self.vector_index.rebuild(self._scan_pairs()))
         return counts
+
+    def lexical_candidates(
+        self, q_tokens: list[str], nss: set[str], reader: str | None = None
+    ) -> list[Memory]:
+        """公开的词面候选通道：按 query token 取索引命中的活动记忆（正文在内）。
+
+        凡返回记忆正文的新入口都过身份门：agent-* 必须属主（与 search/get 同一
+        规则），_shared 无需身份。extraction 的复述标注（_dup_of）与未来的批量
+        复述检测走此正门，勿直取 _candidates 私有件。
+        """
+        reader = self._resolve_identity(reader, "reader")
+        for ns in nss:
+            self._check_ns(ns)
+            self._check_ns_owner(ns, reader)
+        return self._candidates(q_tokens, nss)
 
     def _candidates(self, q_tokens: list[str], nss: set[str], vec_rels: list[str] | None = None, now: dt.date | None = None) -> list[Memory]:
         """Indexed lookup: 索引活性（跨进程重载/带外重建）由各缓存内部自愈，
