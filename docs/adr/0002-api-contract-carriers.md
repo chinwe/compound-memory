@@ -1,0 +1,3 @@
+# API 契约载体：类型 + 按动词 characterization 测试双钉，机器可读 schema 否决
+
+API 契约由三载体分工承载：结构形状归类型签名（mypy，既有 CI 门禁）；行为语义归按动词组织的 characterization 测试套件（`tests/contracts/`）——唯一带强制力的载体，契约=测试，强制点就是既有 CI pytest 门禁；设计意图归 `docs/contracts/` 契约文档，明示不承载强制、允许漂移、冲突时以测试为准，防止它变成需要同步维护的第二真相源。被否决的机器可读 schema（OpenAPI/JSON Schema 类）因无 SDK 生成消费方而出局——MCP 5 tool 返回形状已由 MCP 层测试钉住，先例研究（mem0/Letta/Zep-Graphiti/LangGraph）显示 schema 只在存在 Fern 类代码生成消费方时值得投入。公开签名不引入 TypedDict/Protocol 收紧（`MemoryStore` 公开方法签名不变是重构红线，形状钉在 MCP 层测试即消费方位置）；内部 collaborator 接口归存储层拆分边界与依赖 seam 裁决。覆盖按层分化：store 层 9 动词 + `batch` 全五要素、MCP 层钉形状与错误翻译、CLI 层只钉命令面存在性、运维方法薄钉；拆分迁移期契约跟测试走，契约测试默认冻结、修改须在 PR 显式标注「契约变更」。决议详情见 #25。
