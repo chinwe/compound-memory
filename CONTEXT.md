@@ -27,7 +27,7 @@ _Avoid_: 数据不出机（字面绝对化会连 search 动线一起禁掉）
 _Avoid_: score、weight（weight 专指类型权重）
 
 **Validity window（有效期）**：
-事实的生效区间标注：`valid_from` 起生效；`valid_until` 当日仍有效、次日起退出检索与邻居召回（get 恒可读，不等于归档）。事实更替仍走 review 队列裁决——valid_until 只管检索可见性，不做自动失效改写。
+事实的生效区间标注：`valid_from` 是生效日期标注，不参与检索可见性（检索无 as-of 语义，未来才生效的事实照常可召回）；`valid_until` 当日仍有效、次日起退出检索与邻居召回（get 恒可读，不等于归档）。事实更替仍走 review 队列裁决——valid_until 只管检索可见性，不做自动失效改写。
 _Avoid_: 过期/expire（口语动词，规范说法是「valid_until 已过」）、TTL（那是类型的归档寿命）
 
 **Compounding（复利）**：
