@@ -1,8 +1,8 @@
 """CLI 层契约（#25 决议第三优先级）：只钉命令面存在性，行为不重测。
 
-CLI 是薄 adapter：16 个子命令名 + 关键 flags（含 D1/D2 的 link --agent 与
-review-resolve --reader）不消失即契约；结构断言走 argparse 公开解析结果
-（flag 被消费 = 存在，落进 unknown = 不存在）。
+CLI 是薄 adapter：17 个子命令名 + 关键 flags（含 D1/D2 的 link --agent 与
+review-resolve --reader、ADR-0009 的 forget --agent/--reason）不消失即契约；
+结构断言走 argparse 公开解析结果（flag 被消费 = 存在，落进 unknown = 不存在）。
 """
 
 from __future__ import annotations
@@ -13,9 +13,9 @@ import pytest
 
 from compound_memory.cli import build_parser
 
-# 16 个子命令（#25 决议钉定的命令面）
+# 17 个子命令（#25 决议钉定的命令面；#48/ADR-0009 契约变更：16→17 加 forget）
 EXPECTED_COMMANDS = {
-    "init", "write", "search", "get", "link", "feedback", "decay", "revive",
+    "init", "write", "search", "get", "link", "feedback", "decay", "revive", "forget",
     "distill-plan", "distill-apply", "stats", "rebuild-index", "review-queue",
     "review-resolve", "git-log", "extract",
 }
@@ -33,7 +33,7 @@ def _flag_consumed(parser: argparse.ArgumentParser, argv: list[str]) -> bool:
 
 
 class TestCommandSurface:
-    def test_exactly_sixteen_subcommands(self):
+    def test_exactly_seventeen_subcommands(self):
         assert set(_subcommands(build_parser())) == EXPECTED_COMMANDS
 
 
@@ -44,9 +44,12 @@ class TestKeyFlags:
         ("command", "argv"),
         [
             # 身份透传：link --agent（D1）/ review-resolve --reader（D2）/
+            # forget --agent/--reason（ADR-0009，私有 ns 属主门禁与动机短语）/
             # get / search / revive / distill-plan 的 --reader
             ("link", ["link", "a", "b", "--agent", "zcode"]),
             ("review-resolve", ["review-resolve", "--reader", "zcode"]),
+            ("forget-agent", ["forget", "id", "--agent", "zcode"]),
+            ("forget-reason", ["forget", "id", "--agent", "zcode", "--reason", "superseded"]),
             ("get", ["get", "id", "--reader", "zcode"]),
             ("search", ["search", "q", "--ns", "agent-zcode", "--reader", "zcode"]),
             ("revive", ["revive", "id", "--reader", "zcode"]),

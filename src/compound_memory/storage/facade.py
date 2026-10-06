@@ -283,6 +283,12 @@ class MemoryStore:
     def revive(self, mem_id: str, reader: str | None = None) -> dict[str, Any]:
         return lifecycle.revive(self, mem_id, reader=reader)
 
+    def forget(self, mem_id: str, agent: str, reason: str | None = None) -> dict[str, Any]:
+        """终态遗忘（ADR-0009/#48，lifecycle 动词）：文件物理移出 + 单条 forget
+        提交留痕，内容仅存 git 历史；不存在/已遗忘返回 {"found": False}（幂等）。
+        入口仅 store + CLI——MCP 恰好 5 tool 红线不动。"""
+        return lifecycle.forget(self, mem_id, agent, reason)
+
     def _archive(self, mem: Memory) -> None:
         """归档薄委托：review/distill 的 Deps 与 tests 播种触达面。"""
         return lifecycle.archive(self, mem)
