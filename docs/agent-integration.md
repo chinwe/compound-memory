@@ -237,6 +237,10 @@ uv run compound-memory extract <transcript|dir>  # 会话抽取清单（P0）：
                                       #   ZCode 直接指库文件：extract ~/.zcode/cli/db/db.sqlite（只读打开）
                                       #   注意 traces/ 与 rollout/model-io 快照不接入（都只剩部分轮次，是假阴性）
 uv run compound-memory git-log        # 审计轨迹（每次写入自动 commit）
+                                      #   消费端降噪（#31）：--grep PATTERN 只留消息匹配的提交（可多次，OR）、
+                                      #   --exclude PATTERN 剔除匹配的提交（可多次）；PATTERN 为正则，作用于
+                                      #   消息段（剥掉 hash），过滤发生在 --limit 取数之后，
+                                      #   如 git-log --exclude feedback
 ```
 
 **蒸馏**（把一批旧记忆沉淀为更高密度产物，判断归调用方 Agent）：
