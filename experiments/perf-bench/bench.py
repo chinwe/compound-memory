@@ -90,23 +90,32 @@ def run_scale(n: int, base_root: Path) -> dict[str, str]:
     store = MemoryStore(root, git=True, embedder=embedder)
     store.search("warmup 配置", include_neighbors=False)  # 暖机建缓存基线，不计入
 
+    def record(key: str, value: str) -> None:
+        # 逐场景增量输出到 stderr：万条档全程数十分钟，末场景被杀/中断时
+        # 已测数字不随 stdout 表格一起丢失（结果表仍在结束时汇总打印）
+        out[key] = value
+        print(f"[scale {n}] {key} = {value}", file=sys.stderr, flush=True)
+
     extra = make_memories(5, seed=n + 1)
-    out: dict[str, str] = {"seed n memories (total)": f"{seed_secs:.1f}s"}
-    out["search lexical narrow, no neighbors (med/search)"] = (
-        f"{bench_search(store, NARROW_QUERIES, repeat=6, include_neighbors=False):.1f}ms"
+    out: dict[str, str] = {}
+    record("seed n memories (total)", f"{seed_secs:.1f}s")
+    record(
+        "search lexical narrow, no neighbors (med/search)",
+        f"{bench_search(store, NARROW_QUERIES, repeat=6, include_neighbors=False):.1f}ms",
     )
-    out["search lexical narrow, default neighbors (med/search)"] = (
-        f"{bench_search(store, NARROW_QUERIES, repeat=6):.1f}ms"
+    record(
+        "search lexical narrow, default neighbors (med/search)",
+        f"{bench_search(store, NARROW_QUERIES, repeat=6):.1f}ms",
     )
-    out["search lexical broad, default (med/search)"] = f"{bench_search(store, BROAD_QUERIES, repeat=6):.1f}ms"
-    out["search vector semantic, default (med/search)"] = f"{bench_search(store, SEMANTIC_QUERIES, repeat=6):.1f}ms"
-    out["write + sync encode + git commit (med)"] = f"{timed_ms(lambda: store.write(**extra.pop()), 5):.1f}ms"
+    record("search lexical broad, default (med/search)", f"{bench_search(store, BROAD_QUERIES, repeat=6):.1f}ms")
+    record("search vector semantic, default (med/search)", f"{bench_search(store, SEMANTIC_QUERIES, repeat=6):.1f}ms")
+    record("write + sync encode + git commit (med)", f"{timed_ms(lambda: store.write(**extra.pop()), 5):.1f}ms")
     # agent 用 'bench'：对 _shared 记忆是跨 agent feedback（覆盖验证加分路径），
     # 对私有 ns agent-bench 的记忆是属主（owner 校验放行；'bench-agent' 会被拒）
-    out["feedback, no re-encode (med)"] = f"{timed_ms(lambda: store.feedback(ids.pop(), 'bench'), 5):.1f}ms"
-    out["reconcile after oob write (med/search)"] = f"{bench_reconcile(root, store, tag=n):.1f}ms"
-    out["stats full scan (total)"] = f"{timed_ms(store.stats, 1) / 1000.0:.2f}s"
-    out["full rebuild-index (total)"] = fmt_ms(timed_ms(store.rebuild_index, 1))
+    record("feedback, no re-encode (med)", f"{timed_ms(lambda: store.feedback(ids.pop(), 'bench'), 5):.1f}ms")
+    record("reconcile after oob write (med/search)", f"{bench_reconcile(root, store, tag=n):.1f}ms")
+    record("stats full scan (total)", f"{timed_ms(store.stats, 1) / 1000.0:.2f}s")
+    record("full rebuild-index (total)", fmt_ms(timed_ms(store.rebuild_index, 1)))
     return out
 
 
