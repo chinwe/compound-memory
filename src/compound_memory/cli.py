@@ -67,12 +67,17 @@ def cmd_search(args: argparse.Namespace) -> None:
             include_neighbors=args.include_neighbors,
             reader=args.reader,
             project=_caller_project(args),
+            explain=args.explain,
         )
     )
 
 
 def cmd_get(args: argparse.Namespace) -> None:
     _emit(_open_store(args).get(args.id, reader=args.reader, project=_caller_project(args)))
+
+
+def cmd_explain(args: argparse.Namespace) -> None:
+    _emit(_open_store(args).explain(args.id, reader=args.reader))
 
 
 def cmd_link(args: argparse.Namespace) -> None:
@@ -215,6 +220,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project", default=None,
                    help="project scope: see global memories plus this project's "
                         "(omitted = global only, fail-closed; falls back to $COMPOUND_MEMORY_PROJECT)")
+    p.add_argument("--explain", action="store_true",
+                   help="attach per-hit ranking components (ranks, RRF score, prior terms, channel) "
+                        "and an evidence summary line to each hit (debugging carrier)")
     p.set_defaults(func=cmd_search)
 
     p = sub.add_parser("get")
@@ -224,6 +232,19 @@ def build_parser() -> argparse.ArgumentParser:
                    help="project scope for neighbor filtering (get itself is always readable; "
                         "falls back to $COMPOUND_MEMORY_PROJECT)")
     p.set_defaults(func=cmd_get)
+    p = sub.add_parser(
+        "explain",
+        help="confidence/evidence composition of one memory (by-id evidence view)",
+        description="By-id evidence view (ADR-0008 presentation boundary): the memory's evidence block "
+        "counts (success/failure/contradiction, last_verified, recent outcome details), cross-host "
+        "validation list (validated_by), derivation marker (origin=distillation products start from an "
+        "explicit zero evidence block and never fold evidence back into their sources), and the current "
+        "confidence. Read-only: no commit. Private agent-* namespaces are owner-only (--reader, same "
+        "rule as get). Unknown ids return {\"found\": false}.",
+    )
+    p.add_argument("id")
+    p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
+    p.set_defaults(func=cmd_explain)
     p = sub.add_parser("link")
     p.add_argument("a"); p.add_argument("b")
     p.add_argument("--agent", default=None, help="caller identity, required for private agent-* namespaces")

@@ -37,6 +37,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | 命令 | 何时用 |
 |---|---|
 | `stats` | 看健康度：uses/confidence 分布、活性、蒸馏产出 |
+| `explain <id> [--reader <agent id>]` | 按 id 看单条记忆的置信度构成（证据计数 success/failure/contradiction、last_verified、最近反馈明细、跨宿主验证明细 validated_by、派生标记、当前 conf）——排查「这条 conf 为什么这么高/低」「这条是不是蒸馏产物」时用；只读不产生提交，私有 ns 加 `--reader` |
 | `rebuild-index` | 手工编辑过记忆文件**内容**后（活性检测只覆盖新增/删除文件） |
 | `review-queue` / `review-resolve` | 处理同 key 冲突队列与 contradiction 争议（人工裁决入口）：`review-resolve <废置id>` 清行并自动归档废置方（对侧保留活动区）；contradiction 争议行裁决二选一——维持原记忆有效用 `review-resolve <争议id> --uphold`（解冻并按 failure −0.2 折算），确错则缺省路径归档；`--all` 只清空队列不归档（争议行解冻但不折算）。私有 `agent-*` ns 的行仅属主可清（加 `--reader`）——`--all` 会静默保留别人的私有行，显式点名则报错；`review-queue` 展示仍全量 |
 | `decay` | 衰减归档，长期未用且少用才动（定时任务跑） |
@@ -63,6 +64,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 |---|---|
 | 宿主看不到 5 个 memory_* 工具 | 手动跑启动命令看报错：多为 uv 不在预期路径，或 `--directory` 指向的仓库位置漂移 |
 | 搜索为空 / 召回不全 | `stats` 看记忆量；怀疑索引损坏 `rebuild-index`（缓存可随时重建，检索降级不报错） |
+| 检索排序不符合预期 / 想知道某条为什么排前 | `memory_search` 传 `explain: true`（CLI `--explain`）看每条 hit 的排序分量（词面/向量 rank、RRF 分、先验折算项、检索通道）与证据摘要；单条记忆的置信度构成用 CLI `explain <id>`（证据计数、跨宿主验证明细、派生标记） |
 | SessionStart 没注入 | hook 任何异常都静默退出；手动跑 `~/.agents/memory/hooks/session_start.py` 查输出是否为合法 `{"additionalContext": ...}` JSON |
 | 写入/读取/反馈 `PermissionError` | ns 越权：日常写读 `_shared`；私有 `agent-*` ns 的读/反馈带 `reader`/`agent`、link 带 `agent`（`agent-<名>` 或 `<名>`） |
 | 报 `contradicts attested agent` | 宿主已注入进程身份（`COMPOUND_MEMORY_AGENT_ID`），自报身份与之矛盾：`source`/`agent` 改填自己的 agent id，`reader` 可直接省略（自动补真值）；仍报错则核对宿主 env 配置 |

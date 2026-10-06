@@ -19,7 +19,7 @@ from typing import Any, Callable, Protocol, overload
 
 from ..index import Index
 from ..liveness import ScanWindow
-from ..model import Memory
+from ..model import Memory, evidence_view
 from ..scoring import DocStats, expired_by_date, is_expired, rank, tokenize
 from ..vector_index import VectorIndex
 from .validation import check_project
@@ -76,6 +76,7 @@ def search(
     include_neighbors: bool = True,
     reader: str | None = None,
     project: str | None = None,
+    explain: bool = False,
 ) -> list[dict[str, Any]]:
     """检索 = 选候选（store 的 layout 职责）+ 排序（scoring.rank 单一定义点）。
 
@@ -92,6 +93,10 @@ def search(
     全局（字段为空）记忆，传了见 全局 ∪ 该项目——过滤收口在候选层单点
     （in_project_scope），词面/向量/邻居三路候选同用；拼错的 slug 响亮抛
     ValueError（与非法 ns 同规，静默空结果会让调用方误判「无相关记忆」）。
+
+    explain 是 opt-in 排障面（#44，ADR-0008 展示边界）：True 时每个 hit 附加
+    `explain` 排序分量对象（rank 单点产出）与 `evidence` 证据摘要行
+    （evidence_summary）；缺省 False 返回形状逐位不变——分量只在请求时付费。
     """
     if top_k < 0:
         raise ValueError(f"top_k must be >= 0, got: {top_k}")
@@ -118,7 +123,7 @@ def search(
     store._scan_window.open()
     vec_sims, vec_rels = vector_recall(store, query, set(scopes), now, project)
     mems, stats, rels_by_id = scored_candidates(store, q_tokens, set(scopes), vec_rels, now, project)
-    return rank(
+    hits = rank(
         query,
         mems,
         now=now,
@@ -131,7 +136,74 @@ def search(
         # 缓存候选的 content 为占位空串：命中条目的正文按 rel 现 parse（top_k 次，
         # 与全候选 parse 相比可忽略）；id→rel 映射由 scored_candidates 给全
         content_loader=(lambda mid: store.parse(store.root / rels_by_id[mid]).content) if rels_by_id else None,
+        explain=explain,
     )
+    if explain and hits:
+        # 证据摘要行（#44）：只对返回的 top_k 现 parse（与 content_loader 同界，
+        # 与候选集大小无关）；hits ⊆ 候选、rels_by_id 恒可定位——防御式 .get
+        # 只是「检索降级不报错」的一致性，不构成预期路径。缓存条目不携带证据块
+        # （_doc_entry 固定键集），按 id 视图的全量明细走 explain 动词。
+        for hit in hits:
+            rel = rels_by_id.get(hit["id"])
+            if rel is not None:
+                hit["evidence"] = evidence_summary(store.parse(store.root / rel))
+    return hits
+
+
+def evidence_summary(mem: Memory) -> dict[str, Any]:
+    """单条记忆的证据摘要行（ADR-0008 展示边界的检索面投影，#44）：计数三元组 +
+    last_verified + origin 派生标记。经 evidence_view 惰性迁移（无块旧记忆读为
+    success_count=uses，读路径不落块）；有界输出——recent 明细与 validated_by
+    全量只走按 id 的 explain 视图，检索面不重复正文与长明细。蒸馏产物
+    （origin=distillation）读出显式零起点 {0,0,0}——「不继承源证据」在检索面可辨。
+    """
+    ev = evidence_view(mem)
+    return {
+        "origin": mem.origin,
+        "success_count": ev.get("success_count", 0),
+        "failure_count": ev.get("failure_count", 0),
+        "contradiction_count": ev.get("contradiction_count", 0),
+        "last_verified": ev.get("last_verified"),
+    }
+
+
+def explain(store: SearchDeps, mem_id: str, reader: str | None = None) -> dict[str, Any]:
+    """按 id 证据视图（ADR-0008 展示边界，#44）：evidence_summary 的按 id 全量形态。
+
+    单条记忆的置信度构成：证据块计数（惰性迁移视图）+ last_verified + recent
+    明细（cap 10，ADR-0007）+ validated_by 跨宿主验证明细（ADR-0008：独立证据
+    = 不同宿主的直接使用证据，source 自验不加成）+ origin/derived 派生标记
+    （蒸馏产物 derived=True——证据显式零起点、不回流源）+ conf/uses 当前值。
+    读路径零提交；门禁同 get（凡返回记忆元数据的新入口先过身份门：私有 ns
+    仅属主，reader 角色；按 id 动词门禁在 find 之后）。入口仅 store + CLI——
+    MCP 恰好 5 tool 红线不动，单条证据视图不经 memory_get 扩参（#44 载体裁决）。
+    """
+    reader = store._resolve_identity(reader, "reader")
+    mem = store.find(mem_id)
+    if mem is None:
+        return {"found": False}
+    store._check_ns_owner(mem.ns, reader)
+    ev = evidence_view(mem)
+    return {
+        "found": True,
+        "id": mem.id,
+        "ns": mem.ns,
+        "type": mem.type,
+        "source": mem.source,
+        "archived": mem.archived,
+        "confidence": mem.confidence,
+        "uses": mem.uses,
+        "origin": mem.origin,
+        "derived": mem.origin == "distillation",
+        "validated_by": list(mem.validated_by),
+        "evidence": {
+            "success_count": ev.get("success_count", 0),
+            "failure_count": ev.get("failure_count", 0),
+            "contradiction_count": ev.get("contradiction_count", 0),
+            "last_verified": ev.get("last_verified"),
+            "recent": [dict(d) for d in ev.get("recent", [])],
+        },
+    }
 
 
 def vector_recall(
