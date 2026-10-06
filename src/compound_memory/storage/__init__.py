@@ -8,9 +8,11 @@
     review-queue.md                  fact/insight 冲突队列
 
 包结构（ADR 0003）：facade.py 承载 MemoryStore；机制层五件（paths/files/
-gitlayer/locking/validation）随 #36 逐件外移；动词层七件归动词票。本
-__init__ 全量 re-export 旧 storage.py 的模块级导入面——包外（tests/cli/
-server/extraction）零改动；新代码用规范路径（如 compound_memory.storage.facade）。
+gitlayer/locking/validation）随 #36 逐件外移；动词层七件已随 #37（读路径
+stats/review/distill/search/indexing）+ #38（写路径 writing/lifecycle）
+逐件外移。本 __init__ 全量 re-export 旧 storage.py 的模块级导入面——包外
+（tests/cli/server/extraction）零改动；新代码用规范路径（如
+compound_memory.storage.facade）。
 """
 
 from __future__ import annotations
@@ -23,12 +25,8 @@ import subprocess
 
 from ..model import MEMORY_TYPES
 from .distill import DISTILL_DUP_SIM_THRESHOLD, PROMOTION_USES_THRESHOLD
-from .facade import (
-    ARCHIVE_USES_THRESHOLD,
-    CONF_CROSS_AGENT_BUMP,
-    CONF_USE_BUMP,
-    MemoryStore,
-)
+from .facade import MemoryStore
+from .lifecycle import ARCHIVE_USES_THRESHOLD, CONF_CROSS_AGENT_BUMP, CONF_USE_BUMP
 from .files import _unlink_file
 from .gitlayer import GIT_IDENTITY, GIT_LOCK_RETRY_DELAYS, _git_available
 from .locking import _Batch
