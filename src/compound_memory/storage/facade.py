@@ -20,7 +20,7 @@ from ..model import MEMORY_TYPES, TTL_DAYS, Memory
 from ..review_queue import ReviewQueue
 from ..scoring import recency_age
 from ..vector_index import VectorIndex
-from . import distill, files, gitlayer, locking, paths, review, search as search_mod, stats as stats_mod, validation
+from . import distill, files, gitlayer, indexing, locking, paths, review, search as search_mod, stats as stats_mod, validation
 from .files import _unlink_file
 from .gitlayer import _git_available
 from .locking import _Batch
@@ -433,21 +433,16 @@ class MemoryStore:
         return paths.active_rel(self.root, mem)
 
     def _sync_indexes(self, mem: Memory, rel_path: str) -> None:
-        """全部写路径的索引收口：词法 + 向量两份缓存一起保活（向量侧 hash 未变时零编码）。"""
-        self.index.sync(mem, rel_path)
-        self.vector_index.sync(mem, rel_path)
+        """索引收口薄委托：实现体在动词件 indexing.py（写路径全部经此收口）。"""
+        indexing.sync_indexes(self, mem, rel_path)
 
     def _scan_pairs(self) -> list[tuple[Memory, str]]:
-        """扫描活动区供 Index 全量重建（注入回调，惰性调用）。"""
-        return [
-            (mem, path.relative_to(self.root).as_posix())
-            for mem, path in self._scan_parsed(self.ns_root)
-        ]
+        """索引扫描薄委托：实现体在动词件 indexing.py（构造注入回调 + tests 触达面）。"""
+        return indexing.scan_pairs(self)
 
     def rebuild_index(self) -> dict[str, Any]:
-        counts = self.index.rebuild(self._scan_pairs())
-        counts.update(self.vector_index.rebuild(self._scan_pairs()))
-        return counts
+        """索引动词转发：实现体在动词件 indexing.py。"""
+        return indexing.rebuild_index(self)
 
     def lexical_candidates(
         self, q_tokens: list[str], nss: set[str], reader: str | None = None
