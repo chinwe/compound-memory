@@ -18,6 +18,10 @@ _Avoid_: category、kind
 记忆的可见范围：`_shared` 全体 Agent 共享；`agent-*` 仅属主 Agent 可读写（读/反馈须带属主身份）。
 _Avoid_: scope、bucket
 
+**Project（项目）**：
+记忆的适用范围：空（缺省）= 跨项目通用；标注后仅在对应项目的检索面可见，与 Namespace（谁可见）正交。
+_Avoid_: scope、tag、label
+
 **Local-first（本地优先）**：
 约束对象是记忆系统服务（存储 / 检索 / 蒸馏的确定性部分）：不外发数据、不依赖外部服务。记忆内容流入调用方 Agent 的模型上下文是 Agent 侧既有的使用契约，不受此约束。
 _Avoid_: 数据不出机（字面绝对化会连 search 动线一起禁掉）
