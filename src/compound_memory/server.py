@@ -17,9 +17,33 @@ from typing import Any, Callable
 from mcp.server.mcpserver import MCPServer
 
 from .embedding import auto_encoder
+from .model import TYPE_SPEC
 from .storage import MEMORY_TYPES, MemoryStore, default_root
 
 mcp = MCPServer("compound-memory")
+
+# docstring 类型面从类型表单点生成（#46）：类型枚举与「建议带 key 的类型」
+# 都源自 TYPE_SPEC——加类型只改表，工具描述自动跟上，不再手工维护第二份列表。
+# f-string 不是 Constant 节点、编译器不会把它赋给 __doc__，故经模块级模板 +
+# description= 显式传入，函数 __doc__ 同源赋值供内省/测试。
+_TYPES_HINT = "|".join(MEMORY_TYPES)
+_KEY_TYPES_HINT = "/".join(t for t, s in TYPE_SPEC.items() if s.key_conflicts)
+_WRITE_DESCRIPTION = (
+    f"Write a memory. type: {_TYPES_HINT}; source: writing agent id; ns: '_shared' or 'agent-<name>'. "
+    f"key: stable id for {_KEY_TYPES_HINT} (enables conflict review). "
+    "Write only stable facts (preferences, conventions, environment constraints, pitfalls), "
+    "not session-temporary details; volatile status notes (in-progress work, remaining todos) "
+    "either carry valid_until or stay out — a stale status memory is worse than none; "
+    "prefer reusing an existing key over a new entry. "
+    "valid_from/valid_until: optional ISO dates (YYYY-MM-DD) marking the fact's validity window — "
+    "once valid_until has passed, the memory is excluded from search results but still readable "
+    "via memory_get. project: optional lowercase-slug scope tag (lowercase alphanumeric segments "
+    "joined by dashes) for workspace-specific memories — tagged memories are hidden from searches "
+    "that do not pass the same project, while untagged (global) memories stay visible everywhere; "
+    "declare your workspace project per the host usage rules and pass it on every write/search in "
+    "that workspace. Returns the stored memory; `conflict: true` means a different version with "
+    "the same key exists and a review entry was queued."
+)
 
 _store: MemoryStore | None = None
 
@@ -49,7 +73,7 @@ def _store_or_configure() -> MemoryStore:
     return _store
 
 
-@mcp.tool(structured_output=False)
+@mcp.tool(structured_output=False, description=_WRITE_DESCRIPTION)
 def memory_write(
     content: str,
     type: str,
@@ -61,7 +85,6 @@ def memory_write(
     valid_until: str | None = None,
     project: str | None = None,
 ) -> dict[str, Any]:
-    """Write a memory. type: episode|fact|insight|skill; source: writing agent id; ns: '_shared' or 'agent-<name>'. key: stable id for fact/insight (enables conflict review). Write only stable facts (preferences, conventions, environment constraints, pitfalls), not session-temporary details; volatile status notes (in-progress work, remaining todos) either carry valid_until or stay out — a stale status memory is worse than none; prefer reusing an existing key over a new entry. valid_from/valid_until: optional ISO dates (YYYY-MM-DD) marking the fact's validity window — once valid_until has passed, the memory is excluded from search results but still readable via memory_get. project: optional lowercase-slug scope tag (lowercase alphanumeric segments joined by dashes) for workspace-specific memories — tagged memories are hidden from searches that do not pass the same project, while untagged (global) memories stay visible everywhere; declare your workspace project per the host usage rules and pass it on every write/search in that workspace. Returns the stored memory; `conflict: true` means a different version with the same key exists and a review entry was queued."""
     return _store_or_configure().write(
         content=content,
         type=type,
@@ -73,6 +96,9 @@ def memory_write(
         valid_until=valid_until,
         project=project,
     )
+
+
+memory_write.__doc__ = _WRITE_DESCRIPTION
 
 
 @mcp.tool(structured_output=False)

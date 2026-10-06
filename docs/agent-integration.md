@@ -38,7 +38,7 @@ uv run --directory <仓库> compound-memory init
 
 | Tool | 用途 | 关键点 |
 |---|---|---|
-| `memory_write` | 写入记忆 | `type`: episode/fact/insight/skill；`source`: 写入方 agent id；fact/insight 建议带稳定 `key`；可选 `valid_from`/`valid_until`（ISO 日期）标注事实有效期——`valid_until` 已过的事实退出检索结果，但 `memory_get` 仍可读；可选 `project`（小写 slug）标注项目作用域——标注后仅同项目会话检索可见，缺省全局 |
+| `memory_write` | 写入记忆 | `type`: episode/fact/insight/skill/decision；`source`: 写入方 agent id；fact/insight/decision 建议带稳定 `key`；可选 `valid_from`/`valid_until`（ISO 日期）标注事实有效期——`valid_until` 已过的事实退出检索结果，但 `memory_get` 仍可读；可选 `project`（小写 slug）标注项目作用域——标注后仅同项目会话检索可见，缺省全局 |
 | `memory_search` | 检索 | 返回 `{"hits": [...]}` 按分数排序；命中自动内嵌最多 3 条一度邻居；`include_neighbors=False` 可关。不传 `ns` 时双通道检索：`_shared` + 调用方自有私有 ns（身份已知时，私有条目自动带出）；显式传 `ns` 只搜该 ns，查 `agent-*` 时必带 `reader`（自己的 agent id），缺省即拒绝。可选 `project`（小写 slug）：**fail-closed**——不传只见全局记忆，传了见 全局 ∪ 该项目 |
 | `memory_get` | 按 id 取回 | 恒含 `found` 键；默认带一度邻居；目标在私有 ns 时必带 `reader`，缺省即拒绝。按 id 恒可读（project 不限制 get 本体）；可选 `project` 只用于邻居带出的适用性过滤（邻居=全局 ∪ 该项目） |
 | `memory_link` | 双向关联两条记忆 | 复利来源②：关联带出；两条记忆必须同 ns，跨 ns 链被拒绝；私有 ns 记忆仅属主可连（`agent` 填自己的 agent id） |
@@ -213,6 +213,7 @@ dsh 通过 MCP client 插件 `@deepseek-ai/dsh-mcp-client` 接入，一个插件
    - `fact`：客观事实（配置、账号、环境参数）——带稳定 `key`，同 key 新版本会触发冲突复核；
    - `insight`：经验教训（怎么绕坑、什么方案有效）——带 `key`；
    - `skill`：可复用的操作方法；
+   - `decision`：已做的选择（选型、方案拍板）——带 `key`，同 key 新决策触发冲突复核；
    - `episode`：事件经历（部署了什么、发生了什么）。
 3. **不写**：一次性、会话内临时信息；记忆内容用中文，与库内既有条目保持一致；更新既有事实优先复用同 `key` 而非新开一条。
 4. **关联**：新记忆与已有记忆有因果/派生关系时用 `memory_link` 连上（必须同 ns；私有 ns 记忆带 `agent` 填自己的 source id），检索时邻居会被自动带出。
@@ -224,7 +225,13 @@ dsh 通过 MCP client 插件 `@deepseek-ai/dsh-mcp-client` 接入，一个插件
 uv run compound-memory stats          # 健康度：uses/confidence 固定桶 + 活性 + 蒸馏产出量
 uv run compound-memory decay          # 衰减归档（launchd/cron 定时跑；长期未用且少用才动）
 uv run compound-memory revive <id>    # 复活归档记忆（CLI 唯一入口）
-uv run compound-memory review-queue   # fact/insight 同 key 冲突队列（人工复核，CLI 唯一入口；展示全量）
+uv run compound-memory forget <id> --agent <agent id> [--reason <动机短语>]  # 终态遗忘（ADR-0009）：
+                                      #   文件物理移出（活动/归档区皆可）+ 单条 commit 留痕，内容仅存 git 历史；
+                                      #   不可复活（对被遗忘记忆 feedback/revive 返回 found: false，恢复 = 带外 git 运维）；
+                                      #   私有 agent-* ns 仅属主可遗忘（--agent 与 feedback 同规）；幂等（不存在/已遗忘
+                                      #   返回 found: false）；--reason 是动机短语（单行限 80 字符），不贴记忆正文；
+                                      #   隐私边界：解决「活动库不再携带」，不解决「历史不再包含」
+uv run compound-memory review-queue   # fact/insight/decision 同 key 冲突队列（人工复核，CLI 唯一入口；展示全量）
 uv run compound-memory review-resolve <废置id> [--reader <agent id>]  # 清行并自动归档废置方；
                                       #   私有 agent-* ns 的行仅属主可清（--reader）；--all 只清行不归档，
                                       #   且对非属主的私有行静默保留

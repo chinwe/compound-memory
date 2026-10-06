@@ -19,8 +19,8 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 
 | 项 | 约定 |
 |---|---|
-| `type` | `fact` 客观事实（配置、账号、环境参数）；`insight` 经验教训；`skill` 可复用操作方法；`episode` 事件经历 |
-| `key` | fact/insight 用稳定英文短横线标识（`user-tts`、`proj-xxx`），格式 `^[a-z0-9]+(-[a-z0-9]+)*$`，`write` 落库前校验（不合规 ValueError）；**禁止日期前缀**——id 已含日期，日期化 key 天然一次性，等于放弃同 key 更新通道（2026-10-05 单日多会话沉淀出成批日期 key 的教训）；更新既有事实复用同 key，新版本与旧版内容不同时返回 `conflict: true` 并入冲突队列 |
+| `type` | `fact` 客观事实（配置、账号、环境参数）；`insight` 经验教训；`skill` 可复用操作方法；`episode` 事件经历；`decision` 已做的选择（选型、方案拍板，长寿如 fact，被新决策取代走冲突裁决） |
+| `key` | fact/insight/decision 用稳定英文短横线标识（`user-tts`、`proj-xxx`），格式 `^[a-z0-9]+(-[a-z0-9]+)*$`，`write` 落库前校验（不合规 ValueError）；**禁止日期前缀**——id 已含日期，日期化 key 天然一次性，等于放弃同 key 更新通道（2026-10-05 单日多会话沉淀出成批日期 key 的教训）；更新既有事实复用同 key，新版本与旧版内容不同时返回 `conflict: true` 并入冲突队列 |
 | `source` | 宿主标识：`agent-workbuddy` / `agent-zcode` / `agent-claude` / `agent-deepseek` |
 | `ns` | 默认 `_shared`；`agent-*` 是私有区，写/读/反馈都只认属主——读私有 ns 须带 `reader`（自己的 agent id，缺省即拒绝），越权抛 `PermissionError`；ns 只允许 `[A-Za-z0-9_-]`（路径组件安全，含 `../`、`/`、`*` 等一律 ValueError——ns 会被直接拼进存储路径）。`memory_search` 不传 `ns` 时自动并搜自有私有区（双通道，见必做动作①） |
 | `valid_from` / `valid_until` | 可选 ISO 日期（YYYY-MM-DD）标注事实有效期；`valid_until` 已过的事实自动退出检索结果（`memory_get` 仍可读）。事实会过时的场景（负责人变更、配置轮换）写新版时带上预期失效日，过期后检索不再被旧值污染 |
@@ -41,6 +41,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | `review-queue` / `review-resolve` | 处理同 key 冲突队列（人工裁决入口）：`review-resolve <废置id>` 清行并自动归档废置方（对侧保留活动区）；`--all` 只清空队列不归档。私有 `agent-*` ns 的行仅属主可清（加 `--reader`）——`--all` 会静默保留别人的私有行，显式点名则报错；`review-queue` 展示仍全量 |
 | `decay` | 衰减归档，长期未用且少用才动（定时任务跑） |
 | `revive <id>` | 复活归档记忆（私有 ns 记忆加 `--reader`） |
+| `forget <id> --agent <agent id> [--reason <动机短语>]` | 终态遗忘（受控删除，ADR-0009）：文件物理移出（活动/归档区皆可）+ 单条 commit 留痕，内容仅存 git 历史。不可复活：对被遗忘记忆 feedback/revive 返回 `found: false`，恢复 = 带外 git 运维（checkout/revert）。私有 `agent-*` ns 仅属主可遗忘（`--agent` 与 feedback 同规）；幂等（不存在/已遗忘返回 `found: false`）。`--reason` 是动机短语（单行、限 80 字符），不贴记忆正文。隐私边界：forget 解决「活动库不再携带」，不解决「历史不再包含」——git 历史清理是另行决策的破坏性运维 |
 | `git-log` | 审计轨迹（每次写入自动 commit）；消费端降噪：`--grep PATTERN`（可多次，OR）只留消息匹配的提交、`--exclude PATTERN`（可多次）剔除匹配的提交，PATTERN 为正则作用于消息段（剥 hash），如 `git-log --exclude feedback` |
 | `extract <transcript\|dir>` | 会话抽取清单（P0）：确定性扫描，候选写 `extract/last-candidates.json`（一次性快照，下次扫描覆盖）。transcript 按内容自动判别四种形态：WorkBuddy session log、ZCode 会话库（`~/.zcode/cli/db/db.sqlite`，全量历史，直接指库文件）、Claude Code session log、DeepSeek Harness session（zstd 压缩，需系统 zstd CLI）。jsonl/zstd 传目录则批量扫（WorkBuddy 与 Claude 同为 `<项目>/<会话>.jsonl`，dsh 为 `<项目>/<会话>/session*.jsonl.zstd`）。`~/.workbuddy/traces/` 与 ZCode rollout/model-io 快照不接入——都只剩部分轮次，接进来是假阴性（理由见下） |
 

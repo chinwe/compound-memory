@@ -43,6 +43,7 @@
 | --- | --- |
 | write | `write {id} ({type}/{ns}) by {source}` |
 | feedback | `feedback {id} by {agent}: uses={uses} conf={confidence}`（前瞻：#43 evidence-based confidence 实施时将扩展 outcome 段，届时按「契约变更」流程同步本表与 `COMMIT_TEMPLATES`） |
+| forget | `forget {id} by {agent}`（携带理由时追加 `: reason={reason}`；reason 是动机短语、单行限 80 字符、不含记忆正文——ADR-0009/#48 契约变更） |
 | link | `link {a} <-> {b}` |
 | decay（decay_sweep 归档） | `decay: archive {ids}` |
 | revive | `revive {id}` |
@@ -55,10 +56,11 @@
 ## 按动词的语义意图（store 层，Tier 1 全五要素）
 
 - **write**：落库正门。id 形如 `YYYYMMDD_hex6`；缺省 confidence 0.5、ns `_shared`、
-  ttl 取自类型规格（episode 90 / fact 与 skill 永不 / insight 180）。key 校验
+  ttl 取自类型规格（episode 90 / fact、skill 与 decision 永不 / insight 180）。key 校验
   （小写字母数字段+短横线）与 validity 校验（ISO 日期、from ≤ until）在 write 单点（P6）。
-  冲突判定（P3）：同 ns ∧ 同 type（仅 fact/insight）∧ 同 key ∧ `content.strip()` 不等
-  ⇒ 入 review 队列并在返回值标 `conflict: true` + `conflicts_with`；episode append-only 不判。
+  冲突判定（P3，#46 起类型维表驱动）：同 ns ∧ 同 type（`TypeSpec.key_conflicts` 标记类型：
+  fact/insight/decision）∧ 同 key ∧ `content.strip()` 不等
+  ⇒ 入 review 队列并在返回值标 `conflict: true` + `conflicts_with`；episode/skill append-only 不判。
 - **search**：检索 = 候选（词面 ∪ 向量 KNN，RRF 融合）+ 排序（`scoring.rank` 单点）。
   空白 query 返回空列表（合法）；非法 ns 抛 ValueError（静默空结果是错误契约）；
   缺省 top_k=5；ns 缺省为双通道（`_shared` ∪ 调用方自有私有 ns，身份已知时），
@@ -75,6 +77,15 @@
   无身份写入口，已收口）；缺失 id 返回 found 信封（先于门禁）。
 - **revive**：归档复活的写侧出口。私有 ns 仅属主（与 get 同属按 id 读路径）；
   活动记忆上的 revive 是幂等零操作（不产生提交）。
+- **forget**：终态遗忘（ADR-0009/#48）。文件经 remover 缝物理移出（作用域 =
+  活动区 ∪ 归档区）+ 恰好一条 forget 提交，内容仅存 git 历史；私有 ns 仅属主
+  （role=agent，与 feedback 同规）；幂等——不存在/已遗忘返回 `{"found": False}`
+  零提交，命中返回删除前快照；顺带幂等清该 id 的 review 队列行（无行是常态，
+  区别于 review_resolve 按 ids 的未命中 ValueError，故 ReviewQueue 另设
+  `clear_for` 而不走 `resolve`）；links 悬空容忍不摘链（find→None 容错覆盖
+  邻居召回与蒸馏候选）；无复活通道（feedback/revive 对被遗忘记忆返回
+  found: False）；stats 不设 forgotten 计数（三态模型零新增例外）；入口仅
+  store + CLI（MCP 恰好 5 tool 红线不动）。
 - **distill_plan**：确定性候选扫描（判断归调用方）。归档区与过期记忆不参与；
   活性门（uses/confidence）+ 窗口（新近基准 last_used 优先）；产出主候选
   （merge_with / possible_dup_of / promotion_candidate 三类信号）与
@@ -100,8 +111,9 @@
 - **MCP 层**：只钉 5 个 tool 名、返回形状（`{"hits": ..., "count": n}` 包装只在
   MCP 层）、`structured_output=False` 单份序列化、异常 → `is_error` 翻译
   （`tests/contracts/test_mcp_surface.py`）；语义不重测；
-- **CLI 层**：只钉 16 个子命令名与关键 flags（含 D1/D2 的 `link --agent`、
-  `review-resolve --reader`）不消失（`tests/contracts/test_cli_surface.py`，
+- **CLI 层**：只钉 17 个子命令名与关键 flags（含 D1/D2 的 `link --agent`、
+  `review-resolve --reader`、ADR-0009 的 `forget --agent/--reason`）
+  （`tests/contracts/test_cli_surface.py`，
   argparse 结构断言）；行为不重测（CLI 是薄 adapter；调用方错误统一翻译为
   stderr JSON + exit 2）；
 - **Tier 2 薄钉**（形状 + 错误）：`find` / `decay_sweep` / `review_queue` /

@@ -5,7 +5,7 @@
     archive/<ns>/<type>/<id>.md      衰减归档（可恢复）
     index/tokens.json                可重建的词法检索缓存
     index/vectors.db                 可重建的向量检索缓存（vec extra，缺失时自动降级）
-    review-queue.md                  fact/insight 冲突队列
+    review-queue.md                  fact/insight/decision 冲突队列
 
 包结构（ADR 0003 终态，#36/#37/#38/#39）：facade.py 承载 MemoryStore
 （构造装配 + get/link 方法体 + 机制薄委托 + 动词一行转发）；机制层五件

@@ -11,7 +11,7 @@
 _Avoid_: 记录、entry、note
 
 **Memory type（记忆类型）**：
-四种之一——episode（经历）、fact（事实）、insight（洞察）、skill（技能）。类型决定检索权重、新近半衰期与归档 TTL，全系统只有一张类型规格表。
+五种之一——episode（经历）、fact（事实）、insight（洞察）、skill（技能）、decision（决策：已做的选择，长寿如 fact，被新决策取代走冲突裁决）。类型决定检索权重、新近半衰期与归档 TTL，全系统只有一张类型规格表。
 _Avoid_: category、kind
 
 **Namespace（命名空间）**：
@@ -51,7 +51,7 @@ _Avoid_: 压缩、summarize（那只是判断段的一个动作）
 _Avoid_: 升级、类型迁移（type 原地变更已禁）
 
 **Review queue（冲突队列）**：
-同 key 同类型的 fact/insight 内容冲突、或显式 contradiction 反馈登记时，等待人工复核的队列。
+同 key 同类型的 fact/insight/decision 内容冲突、或显式 contradiction 反馈登记时，等待人工复核的队列。
 _Avoid_: conflict list
 
 ### 生命周期
