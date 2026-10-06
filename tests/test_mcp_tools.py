@@ -302,6 +302,26 @@ class TestNamespacePermissions:
             res = await client.call_tool("memory_link", {"id_a": shared["id"], "id_b": priv["id"]})
             assert res.is_error
 
+    async def test_private_link_requires_agent_param(self, memroot):
+        """D1（#34）：私有 ns 的 link 仅属主——缺 agent is_error，属主短名放行。"""
+        async with make_client(memroot) as client:
+            a = call(await client.call_tool("memory_write", {
+                "content": "私有关联甲", "type": "fact", "source": "agent-tars", "ns": "agent-tars",
+            }))
+            b = call(await client.call_tool("memory_write", {
+                "content": "私有关联乙", "type": "fact", "source": "agent-tars", "ns": "agent-tars",
+            }))
+            res = await client.call_tool("memory_link", {"id_a": a["id"], "id_b": b["id"]})
+            assert res.is_error
+            forged = await client.call_tool(
+                "memory_link", {"id_a": a["id"], "id_b": b["id"], "agent": "agent-a"}
+            )
+            assert forged.is_error
+            ok = call(await client.call_tool(
+                "memory_link", {"id_a": a["id"], "id_b": b["id"], "agent": "tars"}
+            ))
+            assert ok["found"] is True
+
     async def test_private_feedback_rejects_foreign_agent(self, memroot):
         async with make_client(memroot) as client:
             priv = call(await client.call_tool("memory_write", {

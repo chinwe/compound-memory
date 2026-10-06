@@ -659,7 +659,11 @@ class MemoryStore:
         result["found"] = True
         return result
 
-    def link(self, id_a: str, id_b: str) -> dict[str, Any]:
+    def link(self, id_a: str, id_b: str, agent: str | None = None) -> dict[str, Any]:
+        """双向关联两条记忆（复利来源②）。跨 ns 禁止（ValueError）；同 ns 私有记忆
+        仅属主可连（agent 参数，与 feedback 同规——D1/#34：link 是最后一个无身份
+        写入口，按 id 动词在锁内 find 后过门）；_shared 无需身份。"""
+        agent = self._resolve_identity(agent, "agent")
         if id_a == id_b:
             raise ValueError("cannot link a memory to itself")
         with self._write_lock():  # 读-改-写全程临界区（同 feedback 的丢更新防御）
@@ -672,6 +676,9 @@ class MemoryStore:
             # 且邻居召回本就同 ns 过滤，跨 ns 链对复利无贡献——创建侧直接禁止
             if mem_a.ns != mem_b.ns:
                 raise ValueError(f"cannot link memories across namespaces: {mem_a.ns!r} vs {mem_b.ns!r}")
+            # D1 属主门禁：跨 ns 已在上面拒绝，此处两侧同 ns——私有 ns 的 link
+            # 写入 frontmatter 同属私有数据变更，仅属主可做（fail-closed，缺身份即拒）
+            self._check_ns_owner(mem_a.ns, agent, role="agent")
             if id_b not in mem_a.links:
                 mem_a.links.append(id_b)
             if id_a not in mem_b.links:
@@ -1067,7 +1074,9 @@ class MemoryStore:
         """冲突队列展示行——行格式的生成与解析都在 ReviewQueue。"""
         return self._review_queue.lines()
 
-    def review_resolve(self, ids: list[str] | None = None, all: bool = False) -> dict[str, Any]:
+    def review_resolve(
+        self, ids: list[str] | None = None, all: bool = False, reader: str | None = None
+    ) -> dict[str, Any]:
         """登记冲突已解决：委托 ReviewQueue 清行，resolved>0 时自动 commit。
 
         裁决（新旧取舍）归调用方——按 ids 清行时，传入 id 即裁决的废置方，
@@ -1076,9 +1085,29 @@ class MemoryStore:
         方，不做方向推断。归档必须跟随清行动作的教训（2026-10-05 运维）：
         清行不归档时废置旧版（uses=0）滞留活动区，且永不出现在 uses≥1 门槛
         的蒸馏候选里——同 key 多版本并存由此累积。
+
+        D2（#34，2026-10-06 决议）：清行按属主可见性收口——agent-* 私有 ns
+        的行仅属主可 resolve（可选 reader，与 get/search 同规）；--all 对不可
+        见行静默保留（过滤），显式点名他人私有行 PermissionError 原子拒绝；
+        _shared 行不受影响。review-queue 展示维持全量（张力见 spec：CLI 是
+        本机信任边界，队列行含 content[:40] 片段，MCP 5 tool 不暴露队列）。
         """
+        reader = self._resolve_identity(reader, "reader")
+
+        def may_clear(ns: str) -> bool:
+            # 行级清行许可（D2）：_shared 恒可清；agent-* 行按属主可见性
+            # （fail-closed，身份未知视为不可清）。属主判定单点在
+            # _check_ns_owner，这里只包装成谓词供 ReviewQueue 逐行调用。
+            if not ns.startswith("agent-"):
+                return True
+            try:
+                self._check_ns_owner(ns, reader)
+            except PermissionError:
+                return False
+            return True
+
         with self._write_lock():  # 队列文件改写 + 归档 + 登记提交一个临界区
-            out = self._review_queue.resolve(ids=ids, all=all)
+            out = self._review_queue.resolve(ids=ids, all=all, may_clear=may_clear)
             if all:
                 out.pop("rows")  # --all 无废置信息，rows 不进返回（CLI 输出同理）
             archived: list[str] = []
