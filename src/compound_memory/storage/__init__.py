@@ -35,14 +35,14 @@ from .facade import (
     USES_HISTOGRAM_BUCKETS,
     VEC_POOL,
     _Batch,
-    _PATH_COMPONENT_RE,
     _KEY_RE,
     MemoryStore,
     _check_validity,
     _conf_bucket,
     _git_available,
-    _unlink_file,
     _uses_bucket,
     _within_days,
+    _PATH_COMPONENT_RE,
 )
+from .files import _unlink_file
 from .paths import default_root

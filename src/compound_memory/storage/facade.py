@@ -8,7 +8,6 @@ gitlayer/locking/validation）逐片外移后，facade 对应方法退化为薄�
 from __future__ import annotations
 
 import datetime as dt
-import dataclasses
 import fcntl
 import logging
 import os
@@ -23,34 +22,19 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Iterator, overload
 
-import yaml
-
-from ..index import Index, atomic_write_text
+from ..index import Index
 from ..model import MEMORY_TYPES, TTL_DAYS, Memory
 from ..review_queue import ReviewQueue
 from ..scoring import age_days, doc_text, dup_similarity_matrix, is_expired, rank, recency_age, tokenize
 from ..vector_index import VectorIndex
-from . import paths
+from . import files, paths
+from .files import _PATH_COMPONENT_RE, _unlink_file
 
 # storage 域告警的单点 logger：扫描容错（#20）与向量降级（#19）共用
 logger = logging.getLogger(__name__)
 
-# frontmatter 解析 loader：C 扩展（libyaml）快 ~5x 且与 SafeLoader 语义逐位一致
-# （perf-bench：scan_pairs 的 yaml parse 是对账/统计读路径的最大单项），
-# 无 C 扩展的安装回退纯 Python loader——行为不变，只慢
-try:
-    from yaml import CSafeLoader as _SafeLoader
-except ImportError:  # pragma: no cover - 取决于 PyYAML 是否带 C 扩展
-    from yaml import SafeLoader as _SafeLoader  # type: ignore[assignment]
-
 # 向量召回候选池：词面候选 ∪ 向量 KNN 前 VEC_POOL 条（ns/活性过滤后）
 VEC_POOL = 16
-
-# ns / mem_id 的路径组件白名单：两者都被直接拼进存储路径或 rglob 模式，
-# 来自 LLM/宿主输出，格式不设防时 ns='agent-../../x' 可写出存储根、
-# mem_id='*' 可经 rglob 命中库内任意记忆（2026-10-05 审计 P1-1/P2-3）。
-# 合法 id（YYYYMMDD_hex6）与现有全部 ns 取值均落在 [A-Za-z0-9_-] 内。
-_PATH_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # key 是 fact/insight 同 key 更新的稳定锚点，格式约束在落库单点（_write_new，
 # write/batch/distill-apply 共用）：小写字母数字段以短横线连接。原为纯文档约定、
@@ -74,12 +58,6 @@ PROMOTION_USES_THRESHOLD = 5
 USES_HISTOGRAM_BUCKETS = ("0", "1-2", "3-5", "6-9", "10+")
 CONFIDENCE_HISTOGRAM_BUCKETS = ("<0.3", "0.3-0.6", "0.6-0.8", "0.8-1.0")
 RECENT_WINDOW_DAYS = 7
-
-
-def _unlink_file(path: Path) -> None:
-    """默认删除 adapter（测试侧经 conftest 注入沙箱安全版本）。"""
-    if path.exists():
-        path.unlink()
 
 
 def _git_available() -> bool:
@@ -334,7 +312,7 @@ class MemoryStore:
         if committed.returncode != 0 and "nothing to commit" not in combined:
             print(f"compound-memory: git commit failed: {combined.strip()}", file=sys.stderr)
 
-    # ---------- 文件 IO ----------
+    # ---------- 文件 IO（机制件 files/paths 的薄委托） ----------
 
     def _active_path(self, mem: Memory) -> Path:
         return paths.active_path(self.root, mem)
@@ -343,88 +321,20 @@ class MemoryStore:
         return paths.archive_path(self.root, mem)
 
     def _save(self, mem: Memory) -> None:
-        path = self._archive_path(mem) if mem.archived else self._active_path(mem)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        meta: dict[str, Any] = {}
-        for key, value in asdict(mem).items():
-            if key == "content":
-                continue
-            if value is None or value == "" or value == []:
-                continue
-            if key in ("uses",) and value == 0:
-                continue
-            if key == "archived" and not value:
-                continue
-            meta[key] = value
-        body = "---\n" + yaml.safe_dump(meta, allow_unicode=True, sort_keys=False) + "---\n\n" + mem.content.strip() + "\n"
-        # 原子写出收口到共享单点 atomic_write_text（#18/#21）：中断不留半写、
-        # 临时名唯一、失败清理、权限对齐 open() 默认
-        atomic_write_text(path, body)
+        files.save(mem, self.root)
 
     @staticmethod
     def parse(path: Path) -> Memory:
-        text = path.read_text(encoding="utf-8")
-        if not text.startswith("---\n"):
-            raise ValueError(f"bad memory file (missing frontmatter): {path}")
-        _, fm, body = text.split("---\n", 2)
-        meta = yaml.load(fm, Loader=_SafeLoader) or {}
-        # 合法 YAML 但非映射（手编标量/列表）：统一转解析失败（#20 容错面覆盖），
-        # 否则下面 meta["content"] 抛 TypeError / meta.items() 抛 AttributeError 逃过捕获
-        if not isinstance(meta, dict):
-            raise ValueError(f"bad memory file (frontmatter not a mapping): {path}")
-        meta["content"] = body.strip()
-        defaults = {
-            f.name: f.default
-            for f in dataclasses.fields(Memory)
-            if f.default is not dataclasses.MISSING and f.name != "content"
-        }
-        defaults.pop("content", None)
-        # 缺必填字段（手编文件最常见坏法）转译为 ValueError：统一解析失败面，
-        # 扫描容错与调用方无需各自特判 TypeError
-        try:
-            return Memory(**{**defaults, **{k: v for k, v in meta.items() if k in {f.name for f in dataclasses.fields(Memory)}}})
-        except TypeError as exc:
-            raise ValueError(f"bad memory file (missing required field): {path}: {exc}") from exc
+        return files.parse(path)
 
     def _parse_for_scan(self, path: Path) -> Memory | None:
-        """扫描路径的容错解析（#20）：坏文件跳过并告警，不炸整场扫描。
-
-        只捕解析类异常（缺 frontmatter / 坏 YAML / 非映射 / 缺必填字段 /
-        编码与读盘错误），其他异常照常传播。返回 None 表示跳过；
-        文件本身不动，留给人工处置。全好文件零日志，告警即坏信号。
-        """
-        try:
-            return self.parse(path)
-        except (ValueError, OSError, yaml.YAMLError) as exc:
-            logger.warning("skipping unparseable memory file %s: %s", path, exc)
-            return None
+        return files.parse_for_scan(path)
 
     def _scan_parsed(self, base: Path) -> Iterator[tuple[Memory, Path]]:
-        """按目录扫描 *.md 并容错解析（#20 扫描消费方共用单点）。
-
-        逐条告警之外，结束时对跳过数量做一次汇总告警（#20 验收：
-        数量 + 逐条路径 + 原因，两层都有）。"""
-        skipped = 0
-        for path in sorted(base.rglob("*.md")):
-            mem = self._parse_for_scan(path)
-            if mem is None:
-                skipped += 1
-                continue
-            yield mem, path
-        if skipped:
-            logger.warning("scan skipped %d unparseable memory file(s)", skipped)
+        return files.scan_parsed(base)
 
     def find(self, mem_id: str) -> Memory | None:
-        # mem_id 拼 rglob 模式：非法字符（glob 元字符/路径分隔）不得进入——
-        # '*' 曾命中库内任意第一条且绕过属主检查直泄私有正文（审计 P2-3）。
-        # 非法 id 语义等价于「不可能存在」⇒ 返回 None：全部调用方对 None
-        # 已有容错分支，抛错反而会炸掉邻居召回的「宁缺勿炸」降级。
-        if not _PATH_COMPONENT_RE.match(mem_id):
-            return None
-        for base in (self.ns_root, self.archive_root):
-            for path in base.rglob(f"{mem_id}.md"):
-                return self.parse(path)
-        return None
+        return files.find(mem_id, self.root)
 
     # ---------- 公开接口 ----------
     #
