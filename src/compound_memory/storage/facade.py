@@ -184,10 +184,12 @@ class MemoryStore:
         origin: str | None = None,
         valid_from: str | None = None,
         valid_until: str | None = None,
+        evidence: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """写动词（公开签名不变，WritingDeps 镜像它）。"""
+        """写动词（WritingDeps 镜像它）。evidence 仅蒸馏落库传显式零块（ADR-0008），
+        普通写保持 None（无证据块，惰性迁移面）。"""
         return writing.write(
-            self, content, type, source, ns, key, links, created, confidence, origin, valid_from, valid_until
+            self, content, type, source, ns, key, links, created, confidence, origin, valid_from, valid_until, evidence
         )
 
     def _write_new(
@@ -203,10 +205,23 @@ class MemoryStore:
         origin: str | None,
         valid_from: str | None = None,
         valid_until: str | None = None,
+        evidence: dict[str, Any] | None = None,
     ) -> tuple[Memory, Memory | None]:
         """落库核心（write/batch/distill_apply/tests 四方共用）。"""
         return writing.write_new(
-            self, content, type, source, ns, key, links, created, confidence, origin, valid_from, valid_until
+            self,
+            content,
+            type,
+            source,
+            ns,
+            key,
+            links,
+            created,
+            confidence,
+            origin,
+            valid_from,
+            valid_until,
+            evidence,
         )
 
     @staticmethod
@@ -233,8 +248,9 @@ class MemoryStore:
             result["neighbors"] = neighbors
         return result
 
-    def feedback(self, mem_id: str, agent: str) -> dict[str, Any]:
-        return lifecycle.feedback(self, mem_id, agent)
+    def feedback(self, mem_id: str, agent: str, outcome: str = "success") -> dict[str, Any]:
+        """证据反馈（ADR-0007 折算表）：outcome 缺省 success——老调用方零破坏。"""
+        return lifecycle.feedback(self, mem_id, agent, outcome)
 
     def link(self, id_a: str, id_b: str, agent: str | None = None) -> dict[str, Any]:
         """双向关联两条记忆（复利来源②）。跨 ns 禁止（ValueError）；同 ns 私有记忆
@@ -348,9 +364,14 @@ class MemoryStore:
         return review.review_queue(self)
 
     def review_resolve(
-        self, ids: list[str] | None = None, all: bool = False, reader: str | None = None
+        self,
+        ids: list[str] | None = None,
+        all: bool = False,
+        reader: str | None = None,
+        uphold: bool = False,
     ) -> dict[str, Any]:
-        return review.review_resolve(self, ids=ids, all=all, reader=reader)
+        """冲突/争议裁决登记（uphold=维持：ADR-0007 contradiction 裁决二选之一）。"""
+        return review.review_resolve(self, ids=ids, all=all, reader=reader, uphold=uphold)
 
     def stats(self) -> dict[str, Any]:
         return stats_mod.stats(self)

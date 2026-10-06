@@ -55,6 +55,7 @@ class WritingDeps(Protocol):
         origin: str | None,
         valid_from: str | None = None,
         valid_until: str | None = None,
+        evidence: dict[str, Any] | None = None,
     ) -> tuple[Memory, Memory | None]: ...
     def _write_result(self, mem: Memory, conflict_with: Memory | None) -> dict[str, Any]: ...
 
@@ -78,6 +79,7 @@ def write(
     origin: str | None = None,
     valid_from: str | None = None,
     valid_until: str | None = None,
+    evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """写路径正门：身份裁决 → 有效期校验 → 锁内落库（write_new）+ commit。"""
     source = store._resolve_identity(source, "source")
@@ -95,6 +97,7 @@ def write(
             origin=origin,
             valid_from=valid_from,
             valid_until=valid_until,
+            evidence=evidence,
         )
         store._commit(f"write {mem.id} ({type}/{ns}) by {source}")
     return store._write_result(mem, conflict_with)
@@ -113,10 +116,12 @@ def write_new(
     origin: str | None,
     valid_from: str | None = None,
     valid_until: str | None = None,
+    evidence: dict[str, Any] | None = None,
 ) -> tuple[Memory, Memory | None]:
     """write 的落库核心（无 commit）：commit 由调用方动词收口——单条走 write，
     批式经 batch()（_commit 单点拦截）。tests 亦用它播种 write 会正当拒绝的
-    外部 ns fixture（显式字段落库的测试种子）。"""
+    外部 ns fixture（显式字段落库的测试种子）。evidence 仅蒸馏产物传显式零块
+    （ADR-0008）；普通写保持 None——无块记忆靠惰性迁移语义（ADR-0007）。"""
     if type not in MEMORY_TYPES:
         raise ValueError(f"type must be one of {MEMORY_TYPES}, got: {type!r}")
     check_key(key)
@@ -140,6 +145,7 @@ def write_new(
         origin=origin,
         valid_from=valid_from,
         valid_until=valid_until,
+        evidence=evidence,
     )
     store._save(mem)
     if conflict_with is not None:

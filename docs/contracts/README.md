@@ -42,12 +42,12 @@
 | 动词 | 模板 |
 | --- | --- |
 | write | `write {id} ({type}/{ns}) by {source}` |
-| feedback | `feedback {id} by {agent}: uses={uses} conf={confidence}`（前瞻：#43 evidence-based confidence 实施时将扩展 outcome 段，届时按「契约变更」流程同步本表与 `COMMIT_TEMPLATES`） |
+| feedback | `feedback {id} by {agent}: outcome={outcome} uses={uses} conf={confidence}`（契约变更 #53：ADR-0007 证据事件进消息，outcome 段先行——success/failure/contradiction/obsolete/unknown，全史证据即 git 历史） |
 | link | `link {a} <-> {b}` |
 | decay（decay_sweep 归档） | `decay: archive {ids}` |
 | revive | `revive {id}` |
 | distill_apply | `distill apply {id} <- {source_ids}`（逗号+空格分隔，去重保序） |
-| review_resolve | `review resolve {n} entries (archived: {ids})`（无归档时省略括号段） |
+| review_resolve | `review resolve {n} entries (archived: {ids})`（无归档时省略括号段；uphold 裁决为 `(upheld: {ids})`——契约变更 #53，ADR-0007 contradiction「维持」折算留痕，与 archived 段互斥出现） |
 | batch（默认消息） | `batch write {n} entries`（失败收尾加 ` (partial)` 后缀） |
 | 特殊：启动孤儿对账 | `orphan changes recovered` |
 | 特殊：首建 | `init compound-memory store` |
@@ -66,10 +66,18 @@
   （valid_until 已过）与归档记忆不可见。**不产生提交**。
 - **get**：按 id 恒读——归档、过期（D3：valid_until 只管检索可见性）均可读。
   links 输出与邻居对跨 ns 遗留链脱敏。**不产生提交**。
-- **feedback**：复利闭环。公式（P1）：confidence 每次 +0.1，另 +0.15 仅当
-  「新验证者 ∧ ≠ source」；`validated_by` 去重（同 agent 重复反馈不再加验证分）；
-  round 3 位；封顶 1.0。side effects（P2）：uses+1、last_used=today、**归档记忆自动
-  复活**（回活动区 + 索引同步）、单次 commit（每次 feedback 一 commit，#31 裁决）。
+- **feedback**：复利闭环，证据驱动（ADR-0007/0008，#53 契约变更——原单调公式
+  「每次 +0.1、新验证者 +0.15」被取代，success 缺省路径行为不变）。折算表：
+  success +0.1（跨宿主首验 +0.15，`validated_by` 记忆×宿主去重；验证分只属于
+  success）；failure −0.2 重复累计（地板 0.05，保持可检索可复活）；contradiction
+  数值冻结并登记 review 队列独立行型（裁决经 review_resolve：维持 ⇒ 解冻并折算
+  failure −0.2；确错 ⇒ 归档）；obsolete 无条件立即归档（复活走 feedback 自动
+  复活通道）；unknown 仅记事件。未知 outcome 值 ValueError（调用方错误）。
+  证据块（frontmatter `evidence`：success/failure/contradiction 计数 +
+  last_verified + recent 明细 cap 10）是运行时数值的唯一数据源；无块旧记忆
+  惰性迁移（读为 success_count=uses），首次 feedback 落盘写块。side effects
+  （P2）：uses+1、last_used=today、**归档记忆自动复活**（回活动区 + 索引同步；
+  obsolete 除外——原位归档）、单次 commit（每次 feedback 一 commit，#31 裁决）。
 - **link**：双向关联。跨 ns 禁止（ValueError，原子）；自链 ValueError；
   私有 ns 仅属主（D1：可选 `agent` 参数，对称 feedback——link 是最后一个
   无身份写入口，已收口）；缺失 id 返回 found 信封（先于门禁）。
@@ -82,13 +90,17 @@
 - **distill_apply**：蒸馏落库（原子）。失败语义（P5）：missing 源 ⇒
   `{"found": False, "missing": [...]}` 零操作零提交；跨 ns 源 ⇒ ValueError 整体拒绝；
   源去重保序；已归档源跳过搬运但仍计入清单。成功：产物（origin=distillation、
-  links 溯源全部源）+ 源批量归档收进恰好一次 commit（消息含产物 id 与源清单）。
-- **review_resolve**：冲突裁决登记。输入互斥（ids 或 --all）；未命中 id ⇒
+  links 溯源全部源、证据块显式零起点 {0,0,0}——ADR-0008，产物 feedback 永不
+  折算回源）+ 源批量归档收进恰好一次 commit（消息含产物 id 与源清单）。
+- **review_resolve**：冲突/争议裁决登记。输入互斥（ids 或 --all）；未命中 id ⇒
   ValueError 原子拒绝（P4）。传入 id = 裁决废置方：清行同时归档它，对侧保留；
-  `--all` 只清行、不归档、不产出 rows。D2：私有 ns 的行仅属主可 resolve
-  （可选 reader；`--all` 对不可见行静默保留并如实计数 remaining）；**展示维持全量**
-  （张力：CLI 是本机信任边界、MCP 5 tool 不暴露队列、行含 content[:40] 片段——
-  这是有意决策而非遗漏）。
+  `--all` 只清行、不归档、不产出 rows。uphold=True（#53，ADR-0007 contradiction
+  裁决「维持」）：传入 id 是被维持方——清行不归档、该次争议折算 failure −0.2；
+  仅适用 contradiction 行型（点名冲突行 ValueError 原子拒绝）。
+  D2：私有 ns 的行仅属主可 resolve（可选 reader；contradiction 行不携带 ns，
+  按记忆定位走同一门；`--all` 对不可见行静默保留并如实计数 remaining）；
+  **展示维持全量**（张力：CLI 是本机信任边界、MCP 5 tool 不暴露队列、行含
+  content[:40] 片段——这是有意决策而非遗漏）。
 - **batch**：批量落库正门。逐条校验写穿（批内非法条目照样抛错，已写入条目以
   partial 提交后原样上抛——「落地即已提交」）；批尾一次索引 flush + 一次 commit；
   嵌套 batch 是调用方错误；所有写动词（feedback/link/decay/…）的提交在批内

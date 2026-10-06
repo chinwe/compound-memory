@@ -16,7 +16,7 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol, overload
 
-from ..model import Memory
+from ..model import Memory, zero_evidence
 from ..scoring import doc_text, dup_similarity_matrix, is_expired, recency_age
 from .locking import _Batch
 
@@ -54,6 +54,7 @@ class DistillDeps(Protocol):
         origin: str | None = None,
         valid_from: str | None = None,
         valid_until: str | None = None,
+        evidence: dict[str, Any] | None = None,
     ) -> dict[str, Any]: ...
     def _archive(self, mem: Memory) -> None: ...
 
@@ -203,6 +204,7 @@ def distill_apply(
             links=source_ids,
             confidence=confidence,
             origin="distillation",
+            evidence=zero_evidence(),  # ADR-0008：产物证据显式零起点，不继承源计数（双重计数）
         )
         archived: list[str] = []
         for src in sources:
