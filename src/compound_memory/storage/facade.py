@@ -185,11 +185,12 @@ class MemoryStore:
         valid_from: str | None = None,
         valid_until: str | None = None,
         evidence: dict[str, Any] | None = None,
+        project: str | None = None,
     ) -> dict[str, Any]:
         """写动词（WritingDeps 镜像它）。evidence 仅蒸馏落库传显式零块（ADR-0008），
         普通写保持 None（无证据块，惰性迁移面）。"""
         return writing.write(
-            self, content, type, source, ns, key, links, created, confidence, origin, valid_from, valid_until, evidence
+            self, content, type, source, ns, key, links, created, confidence, origin, valid_from, valid_until, evidence, project
         )
 
     def _write_new(
@@ -206,30 +207,25 @@ class MemoryStore:
         valid_from: str | None = None,
         valid_until: str | None = None,
         evidence: dict[str, Any] | None = None,
+        project: str | None = None,
     ) -> tuple[Memory, Memory | None]:
         """落库核心（write/batch/distill_apply/tests 四方共用）。"""
         return writing.write_new(
-            self,
-            content,
-            type,
-            source,
-            ns,
-            key,
-            links,
-            created,
-            confidence,
-            origin,
-            valid_from,
-            valid_until,
-            evidence,
+            self, content, type, source, ns, key, links, created, confidence, origin, valid_from, valid_until, evidence, project
         )
 
     @staticmethod
     def _write_result(mem: Memory, conflict_with: Memory | None) -> dict[str, Any]:
         return writing.write_result(mem, conflict_with)
 
-    def get(self, mem_id: str, include_neighbors: bool = True, reader: str | None = None) -> dict[str, Any]:
+    def get(
+        self, mem_id: str, include_neighbors: bool = True, reader: str | None = None, project: str | None = None
+    ) -> dict[str, Any]:
+        """按 id 读恒可读（显式寻址不受限：valid_until 与 project 都不影响 get 本体）；
+        project 只用于邻居带出的适用性过滤（读方声明了项目才带出该项目邻居，
+        与 ns 脱敏先例同型——否则旁路泄漏）。"""
         reader = self._resolve_identity(reader, "reader")
+        validation.check_project(project)  # 拼错的 slug 响亮报错，不静默当全局
         mem = self.find(mem_id)
         if mem is None:
             return {"found": False}
@@ -244,7 +240,11 @@ class MemoryStore:
                 same_ns_links.append(l)
         result["links"] = same_ns_links
         if include_neighbors and mem.links:
-            neighbors = [asdict(n) for n in (self.find(l) for l in same_ns_links) if n is not None]
+            neighbors = [
+                asdict(n)
+                for n in (self.find(l) for l in same_ns_links)
+                if n is not None and search_mod.in_project_scope(n.project, project)
+            ]
             result["neighbors"] = neighbors
         return result
 
@@ -288,8 +288,9 @@ class MemoryStore:
         top_k: int = 5,
         include_neighbors: bool = True,
         reader: str | None = None,
+        project: str | None = None,
     ) -> list[dict[str, Any]]:
-        return search_mod.search(self, query, ns, top_k, include_neighbors, reader)
+        return search_mod.search(self, query, ns, top_k, include_neighbors, reader, project)
 
     # ---------- 衰减 / 归档 / 复活（动词件 lifecycle.py） ----------
 
@@ -298,6 +299,12 @@ class MemoryStore:
 
     def revive(self, mem_id: str, reader: str | None = None) -> dict[str, Any]:
         return lifecycle.revive(self, mem_id, reader=reader)
+
+    def forget(self, mem_id: str, agent: str, reason: str | None = None) -> dict[str, Any]:
+        """终态遗忘（ADR-0009/#48，lifecycle 动词）：文件物理移出 + 单条 forget
+        提交留痕，内容仅存 git 历史；不存在/已遗忘返回 {"found": False}（幂等）。
+        入口仅 store + CLI——MCP 恰好 5 tool 红线不动。"""
+        return lifecycle.forget(self, mem_id, agent, reason)
 
     def _archive(self, mem: Memory) -> None:
         """归档薄委托：review/distill 的 Deps 与 tests 播种触达面。"""
@@ -349,10 +356,11 @@ class MemoryStore:
         return indexing.rebuild_index(self)
 
     def lexical_candidates(
-        self, q_tokens: list[str], nss: set[str], reader: str | None = None
+        self, q_tokens: list[str], nss: set[str], reader: str | None = None,
+        project: str | None = None,
     ) -> list[Memory]:
         """公开词面候选正门（extraction 复述标注走它）。"""
-        return search_mod.lexical_candidates(self, q_tokens, nss, reader=reader)
+        return search_mod.lexical_candidates(self, q_tokens, nss, reader=reader, project=project)
 
     # ---------- 冲突 / 统计 ----------
 

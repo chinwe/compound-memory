@@ -22,12 +22,24 @@ from ..liveness import ScanWindow
 from ..model import Memory
 from ..scoring import DocStats, expired_by_date, is_expired, rank, tokenize
 from ..vector_index import VectorIndex
+from .validation import check_project
 
 # storage 域告警的单点 logger：向量降级（#19）的观测出口
 logger = logging.getLogger(__name__)
 
 # 向量召回候选池：词面候选 ∪ 向量 KNN 前 VEC_POOL 条（ns/活性过滤后）
 VEC_POOL = 16
+
+
+def in_project_scope(mem_project: str | None, project: str | None) -> bool:
+    """project 适用性谓词（ADR 0010，检索过滤的收口单点）：字段为空 = 全局通用，
+    任何读方可见；已标注 = 仅声明同一项目的读方可见。读方未声明项目
+    （project=None）⇒ 只见全局（fail-closed：「没声明项目 = 全局会话」，
+    项目记忆不外溢；与私有 ns 忘带 reader 即拒的诚实缺省同型）。
+
+    该谓词只做适用性判定，可见性/属主判定（ns 轴）先行不变——私有 ns ∩
+    project 是两级门依次收窄，不在此合并。"""
+    return mem_project is None or mem_project == project
 
 
 class SearchDeps(Protocol):
@@ -63,6 +75,7 @@ def search(
     top_k: int = 5,
     include_neighbors: bool = True,
     reader: str | None = None,
+    project: str | None = None,
 ) -> list[dict[str, Any]]:
     """检索 = 选候选（store 的 layout 职责）+ 排序（scoring.rank 单一定义点）。
 
@@ -74,9 +87,15 @@ def search(
     （无身份时退化为单 _shared，与旧版缺省一致）；显式传 ns 保持单 ns 精确语义。
     reader 是调用方身份，ns=agent-* 时必填且须为属主（读侧 owner 校验，
     与 write 的越权抛 PermissionError 对称）。
+
+    project 是调用方工作区的适用性上下文（ADR 0010，fail-closed）：不传只见
+    全局（字段为空）记忆，传了见 全局 ∪ 该项目——过滤收口在候选层单点
+    （in_project_scope），词面/向量/邻居三路候选同用；拼错的 slug 响亮抛
+    ValueError（与非法 ns 同规，静默空结果会让调用方误判「无相关记忆」）。
     """
     if top_k < 0:
         raise ValueError(f"top_k must be >= 0, got: {top_k}")
+    check_project(project)
     if ns is None:
         reader = store._resolve_identity(reader, "reader")
         scopes = ["_shared"]
@@ -97,14 +116,16 @@ def search(
         return []
     # 读动词开 scan 共享窗口：向量 KNN 与词法候选两路对账共用一遍 scan（#41）
     store._scan_window.open()
-    vec_sims, vec_rels = vector_recall(store, query, set(scopes), now)
-    mems, stats, rels_by_id = scored_candidates(store, q_tokens, set(scopes), vec_rels, now)
+    vec_sims, vec_rels = vector_recall(store, query, set(scopes), now, project)
+    mems, stats, rels_by_id = scored_candidates(store, q_tokens, set(scopes), vec_rels, now, project)
     return rank(
         query,
         mems,
         now=now,
         top_k=top_k,
-        neighbor_lookup=(lambda mid: active_neighbors(store, mid, set(scopes), now)) if include_neighbors else None,
+        neighbor_lookup=(
+            lambda mid: active_neighbors(store, mid, set(scopes), now, project)
+        ) if include_neighbors else None,
         vec_sims=vec_sims,
         doc_stats=stats,
         # 缓存候选的 content 为占位空串：命中条目的正文按 rel 现 parse（top_k 次，
@@ -114,13 +135,14 @@ def search(
 
 
 def vector_recall(
-    store: SearchDeps, query: str, nss: set[str], now: dt.date
+    store: SearchDeps, query: str, nss: set[str], now: dt.date, project: str | None = None
 ) -> tuple[dict[str, float] | None, list[str]]:
     """向量召回：查询编码 + KNN（大池取回后按 ns 集合/去重收敛到 VEC_POOL）。
 
     返回 (vec_sims, vec_rels)；embedder 未注入或任何故障 ⇒ (None, []) 纯词面降级。
-    过期记忆与归档同等排除——候选并集两侧同一套活性语义，不给过期记忆留向量旁路。
-    """
+    过期记忆与归档同等排除——候选并集两侧同一套活性语义，不给过期记忆留向量旁路；
+    project 适用性同此（ADR 0010）：向量路召回的项目记忆按同一谓词滤除，
+    不给适用性过滤留旁路。"""
     if store._embedder is None:
         return None, []
     try:
@@ -142,6 +164,8 @@ def vector_recall(
             mem = store.parse(path)
             if mem.archived or mem.ns not in nss or is_expired(mem, now):
                 continue
+            if not in_project_scope(mem.project, project):
+                continue
             sims[mem_id] = cos
             rels.append(rel_path)
         return (sims or None), rels
@@ -153,12 +177,16 @@ def vector_recall(
         return None, []
 
 
-def active_neighbors(store: SearchDeps, mem_id: str, nss: set[str], now: dt.date) -> list[Memory]:
+def active_neighbors(
+    store: SearchDeps, mem_id: str, nss: set[str], now: dt.date, project: str | None = None
+) -> list[Memory]:
     """邻居召回的数据源：hit 的一度 links，归档/过期邻居不召回（截断/上限/去环归 rank）。
 
     ns 集合过滤是访问控制的一部分，不可省：_shared 记忆若链到 agent-* 私有记忆，
     邻居会把私有正文带进调用方不可见的检索结果（2026-10-03 实测泄漏）；
     集合由 search 按"调用方可见的 ns"圈定（双通道 = _shared ∪ 自有私有 ns）。
+    project 适用性同此（ADR 0010）：邻居带出按读方 project 滤除（与 get 的
+    邻居过滤同规，否则项目记忆经邻居旁路泄漏进全局会话）。
     """
     mem = store.find(mem_id)
     if mem is None:
@@ -171,25 +199,29 @@ def active_neighbors(store: SearchDeps, mem_id: str, nss: set[str], now: dt.date
             and not neighbor.archived
             and not is_expired(neighbor, now)
             and neighbor.ns in nss
+            and in_project_scope(neighbor.project, project)
         ):
             out.append(neighbor)
     return out
 
 
 def lexical_candidates(
-    store: SearchDeps, q_tokens: list[str], nss: set[str], reader: str | None = None
+    store: SearchDeps, q_tokens: list[str], nss: set[str], reader: str | None = None,
+    project: str | None = None,
 ) -> list[Memory]:
     """公开的词面候选通道：按 query token 取索引命中的活动记忆（正文在内）。
 
     凡返回记忆正文的新入口都过身份门：agent-* 必须属主（与 search/get 同一
     规则），_shared 无需身份。extraction 的复述标注（_dup_of）与未来的批量
-    复述检测走此正门，勿直取 candidates 私有件。
+    复述检测走此正门，勿直取 candidates 私有件。project 适用性过同套门禁
+    （ADR 0010）：不传只见全局——extraction 缺省调用即全局视野，不构成旁路。
     """
     reader = store._resolve_identity(reader, "reader")
+    check_project(project)
     for ns in nss:
         store._check_ns(ns)
         store._check_ns_owner(ns, reader)
-    return candidates(store, q_tokens, nss)
+    return candidates(store, q_tokens, nss, project=project)
 
 
 def _mem_from_entry(entry: dict[str, Any]) -> Memory:
@@ -210,6 +242,9 @@ def _mem_from_entry(entry: dict[str, Any]) -> Memory:
         uses=int(entry.get("uses", 0)),
         last_used=entry.get("last_used"),
         valid_until=entry.get("valid_until"),
+        # 严格取键：条目缺 project（旧版缓存/损坏）⇒ KeyError 回退 parse 读真值，
+        # 绝不静默当全局——那会让带 project 的记忆在快路径被多放行（fail-closed 破洞）
+        project=entry["project"],
     )
 
 
@@ -240,6 +275,7 @@ def scored_candidates(
     nss: set[str],
     vec_rels: list[str] | None = None,
     now: dt.date | None = None,
+    project: str | None = None,
 ) -> tuple[list[Memory], list[DocStats | None], dict[str, str]]:
     """检索的候选来源（#41 快路径 + parse 回退），返回三元组：
 
@@ -250,6 +286,8 @@ def scored_candidates(
     视图；过期经条目 valid_until 判（expired_by_date 与 is_expired 同源）。
     无条目（向量路独有召回、条目字段损坏）回退 parse——与旧候选路径行为
     逐位一致。ns 前缀剪枝与文件存在性复查照旧：防的是索引与手编文件的漂移。
+    project 适用性过滤（ADR 0010）在候选产出前的唯一收口：条目路径与 parse
+    路径输出的 Memory 视图都过同一谓词，两条路径过滤语义逐位一致。
     """
     prefixes = tuple(f"namespaces/{ns}/" for ns in nss)
     rels = _merged_candidate_rels(store, q_tokens, vec_rels)
@@ -280,6 +318,8 @@ def scored_candidates(
             if mem.archived or (now is not None and is_expired(mem, now)):
                 continue
             stat = None
+        if not in_project_scope(mem.project, project):
+            continue
         out.append(mem)
         stats.append(stat)
         rels_by_id[mem.id] = rel
@@ -292,13 +332,15 @@ def candidates(
     nss: set[str],
     vec_rels: list[str] | None = None,
     now: dt.date | None = None,
+    project: str | None = None,
 ) -> list[Memory]:
     """Indexed lookup（parse 路径，lexical_candidates 的数据源）：索引活性
     （跨进程重载/带外重建）由各缓存内部自愈，
     这里全信索引命中，只逐一复查文件存在性与 ns 集合/活性——防的是索引
     词条与手编文件内容的漂移（改内容不改目录 mtime，那条路走显式 rebuild）。
     vec_rels 非空时，向量 KNN 命中（rel_path 由向量缓存给出）并入候选并集。
-    now 提供时同步排除过期记忆（valid_until 已过 ⇒ 检索不可见，get 不受限）。
+    now 提供时同步排除过期记忆（valid_until 已过 ⇒ 检索不可见，get 不受限）；
+    project 适用性过滤（ADR 0010）与活性同点：不匹配读方上下文的记忆不进候选。
     ns 前缀剪枝在 parse 之前：活动区 rel 必为 namespaces/<ns>/...（索引不收
     归档），常见词命中近全库的大库上把 ns 过滤提前省掉全部越界 parse。"""
     prefixes = tuple(f"namespaces/{ns}/" for ns in nss)
@@ -309,6 +351,10 @@ def candidates(
         if path is None:
             continue
         mem = store.parse(path)
-        if not mem.archived and not (now is not None and is_expired(mem, now)):
+        if (
+            not mem.archived
+            and not (now is not None and is_expired(mem, now))
+            and in_project_scope(mem.project, project)
+        ):
             out.append(mem)
     return out

@@ -31,6 +31,13 @@ def _open_store(args: argparse.Namespace) -> MemoryStore:
     )
 
 
+def _caller_project(args: argparse.Namespace) -> str | None:
+    """调用方 project 上下文（ADR 0010）：显式 --project 优先，COMPOUND_MEMORY_PROJECT
+    作 CLI 回退便利通道。env 只在 adapter 层读，store 自身不读环境变量——与
+    COMPOUND_MEMORY_AGENT_ID 同型，保测试与库调用的确定性。"""
+    return args.project or os.environ.get("COMPOUND_MEMORY_PROJECT") or None
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     store = _open_store(args)
     _emit({"ok": True, "root": str(store.root)})
@@ -46,6 +53,7 @@ def cmd_write(args: argparse.Namespace) -> None:
             key=args.key,
             valid_from=args.valid_from,
             valid_until=args.valid_until,
+            project=_caller_project(args),
         )
     )
 
@@ -58,12 +66,13 @@ def cmd_search(args: argparse.Namespace) -> None:
             top_k=args.top_k,
             include_neighbors=args.include_neighbors,
             reader=args.reader,
+            project=_caller_project(args),
         )
     )
 
 
 def cmd_get(args: argparse.Namespace) -> None:
-    _emit(_open_store(args).get(args.id, reader=args.reader))
+    _emit(_open_store(args).get(args.id, reader=args.reader, project=_caller_project(args)))
 
 
 def cmd_link(args: argparse.Namespace) -> None:
@@ -85,6 +94,10 @@ def cmd_decay(args: argparse.Namespace) -> None:
 
 def cmd_revive(args: argparse.Namespace) -> None:
     _emit(_open_store(args).revive(args.id, reader=args.reader))
+
+
+def cmd_forget(args: argparse.Namespace) -> None:
+    _emit(_open_store(args).forget(args.id, args.agent, reason=args.reason))
 
 
 def cmd_stats(args: argparse.Namespace) -> None:
@@ -186,6 +199,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--valid-from", default=None, help="ISO date: fact valid from (annotation)")
     p.add_argument("--valid-until", default=None,
                    help="ISO date: fact expires after this day (excluded from search, still readable via get)")
+    p.add_argument("--project", default=None,
+                   help="project scope slug for workspace-specific memories "
+                        "(omitted = global; falls back to $COMPOUND_MEMORY_PROJECT)")
     p.set_defaults(func=cmd_write)
 
     p = sub.add_parser("search")
@@ -196,11 +212,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
     p.add_argument("--no-neighbors", dest="include_neighbors", action="store_false",
                    help="omit embedded one-hop neighbors from hits")
+    p.add_argument("--project", default=None,
+                   help="project scope: see global memories plus this project's "
+                        "(omitted = global only, fail-closed; falls back to $COMPOUND_MEMORY_PROJECT)")
     p.set_defaults(func=cmd_search)
 
     p = sub.add_parser("get")
     p.add_argument("id")
     p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
+    p.add_argument("--project", default=None,
+                   help="project scope for neighbor filtering (get itself is always readable; "
+                        "falls back to $COMPOUND_MEMORY_PROJECT)")
     p.set_defaults(func=cmd_get)
     p = sub.add_parser("link")
     p.add_argument("a"); p.add_argument("b")
@@ -218,6 +240,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("id")
     p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
     p.set_defaults(func=cmd_revive)
+    p = sub.add_parser(
+        "forget",
+        help="terminally remove a memory (ADR-0009): file physically removed, one audit commit; content survives only in git history",
+        description="Terminal controlled deletion (ADR-0009): the memory file is physically removed "
+        "(active or archive area) and exactly one forget commit keeps the audit trail — content "
+        "survives only in git history, recovery is out-of-band git surgery (checkout/revert), there "
+        "is no in-system revive. Idempotent: an unknown or already-forgotten id returns "
+        '{"found": false}. Private agent-* namespaces are owner-only (--agent, same rule as '
+        "feedback). forget solves 'the active library no longer carries it', not 'history no longer "
+        "contains it' — history cleanup stays a destructive out-of-band operation. The optional "
+        "--reason is a motive phrase, never memory content (single line, capped at 80 chars).",
+    )
+    p.add_argument("id")
+    p.add_argument("--agent", required=True, help="caller identity (agent role; private ns is owner-only)")
+    p.add_argument("--reason", default=None, help="optional motive phrase (single line, max 80 chars)")
+    p.set_defaults(func=cmd_forget)
     p = sub.add_parser(
         "distill-plan",
         help="scan distillation candidates and print a signal-annotated list",

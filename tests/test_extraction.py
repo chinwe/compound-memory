@@ -20,6 +20,9 @@ import pytest
 from compound_memory.cli import main as cli_main
 from compound_memory.extraction import (
     MAX_CANDIDATES,
+    PITFALL_PATTERNS,
+    STATEMENT_PATTERNS,
+    _match_pattern,
     detect_transcript_kind,
     extract,
     extract_dir,
@@ -29,6 +32,7 @@ from compound_memory.extraction import (
     user_texts_from_session_log,
     user_texts_from_zcode_db,
 )
+from compound_memory.model import MEMORY_TYPES
 from compound_memory.storage import MemoryStore
 
 from conftest import CLOCK_DATE
@@ -281,6 +285,16 @@ def test_scan_caps_candidates() -> None:
     """上限截断：喋喋不休的会话不产生无限清单。"""
     texts = [f"我用工具 {i} 完成部署" for i in range(MAX_CANDIDATES + 10)]
     assert len(scan_texts(texts)) == MAX_CANDIDATES
+
+
+def test_suggested_type_labels_are_backed_by_type_spec() -> None:
+    """#50 附注防线：suggested_type 标签绝不能跑在 TYPE_SPEC 前面——
+    建议值没有类型背书时，跟随建议的 memory_write 会直接 ValueError。
+    对全部模式逐个探测，任何模式加表而类型缺背书即在此红。"""
+    probes = [f"{p} something" for p in STATEMENT_PATTERNS] + [f"{p} something" for p in PITFALL_PATTERNS]
+    labels = {_match_pattern(s)[0] for s in probes}
+    assert labels, "pattern table must yield at least one suggested label"
+    assert labels <= set(MEMORY_TYPES)
 
 
 def test_scan_dedup_marks_existing_memory(store: MemoryStore) -> None:
