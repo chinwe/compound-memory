@@ -55,10 +55,11 @@
 ## 按动词的语义意图（store 层，Tier 1 全五要素）
 
 - **write**：落库正门。id 形如 `YYYYMMDD_hex6`；缺省 confidence 0.5、ns `_shared`、
-  ttl 取自类型规格（episode 90 / fact 与 skill 永不 / insight 180）。key 校验
+  ttl 取自类型规格（episode 90 / fact、skill 与 decision 永不 / insight 180）。key 校验
   （小写字母数字段+短横线）与 validity 校验（ISO 日期、from ≤ until）在 write 单点（P6）。
-  冲突判定（P3）：同 ns ∧ 同 type（仅 fact/insight）∧ 同 key ∧ `content.strip()` 不等
-  ⇒ 入 review 队列并在返回值标 `conflict: true` + `conflicts_with`；episode append-only 不判。
+  冲突判定（P3，#46 起类型维表驱动）：同 ns ∧ 同 type（`TypeSpec.key_conflicts` 标记类型：
+  fact/insight/decision）∧ 同 key ∧ `content.strip()` 不等
+  ⇒ 入 review 队列并在返回值标 `conflict: true` + `conflicts_with`；episode/skill append-only 不判。
 - **search**：检索 = 候选（词面 ∪ 向量 KNN，RRF 融合）+ 排序（`scoring.rank` 单点）。
   空白 query 返回空列表（合法）；非法 ns 抛 ValueError（静默空结果是错误契约）；
   缺省 top_k=5；ns 缺省为双通道（`_shared` ∪ 调用方自有私有 ns，身份已知时），

@@ -1,6 +1,6 @@
 """Review queue（冲突队列）：review-queue.md 的生成、解析与清除——行格式单一定义点。
 
-每行一条冲突记录，由 MemoryStore._write_new 在同 key fact/insight 内容冲突时 append；
+每行一条冲突记录，由 MemoryStore._write_new 在同 key fact/insight/decision 内容冲突时 append；
 裁决（新旧取舍）归调用方，这里只登记、展示与清除，不做判断、不碰 git。
 
 行结构（append 生成，机器写入）：old/new 记忆 id 各在 "(` 与 " (" 边界；

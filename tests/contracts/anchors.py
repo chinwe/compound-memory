@@ -25,7 +25,9 @@ PRIVATE_NS = "agent-zcode"
 # #31 决议钉定的写路径提交消息模板（七写动词 + batch 两形态 + 三类特殊提交中的两个）。
 # 正则整体锚定（^...$），分组名供断言取字段。
 COMMIT_TEMPLATES: dict[str, str] = {
-    "write": r"^write (?P<id>\S+) \((?P<type>episode|fact|insight|skill)/(?P<ns>\S+)\) by (?P<source>\S+)$",
+    # 【契约变更 #46】write 模板的 type alternation 扩入 decision（类型表新增行），
+    # 模板格式本身（write {id} ({type}/{ns}) by {source}）未动。
+    "write": r"^write (?P<id>\S+) \((?P<type>episode|fact|insight|skill|decision)/(?P<ns>\S+)\) by (?P<source>\S+)$",
     "feedback": r"^feedback (?P<id>\S+) by (?P<agent>\S+): uses=(?P<uses>\d+) conf=(?P<conf>\d+(?:\.\d+)?)$",
     "link": r"^link (?P<a>\S+) <-> (?P<b>\S+)$",
     "decay": r"^decay: archive (?P<ids>\S+(?:, \S+)*)$",
