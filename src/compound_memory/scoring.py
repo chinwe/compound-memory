@@ -16,8 +16,9 @@ from __future__ import annotations
 import datetime as dt
 import math
 import re
-from collections.abc import Callable
-from typing import Any
+from collections import Counter
+from collections.abc import Callable, Sequence
+from typing import Any, NamedTuple
 
 from .model import TYPE_SPEC, Memory
 
@@ -89,25 +90,58 @@ def recency_age(mem: Memory, now: dt.date) -> int | None:
     return age_days(mem.last_used or mem.created, now)
 
 
+class DocStats(NamedTuple):
+    """单篇候选文档的 token 统计（#41 候选 token 源接口）。
+
+    tf 是全量 token 频表（值 = 出现次数）、dl 是 tokenize 后的 token 总数；
+    BM25 的 tf/df/dl/avgdl 全部可由它推出，与「tokenize 即时列表」数学等价。
+    缓存路径（Index 的 per-doc 频表）免 parse 直接供给，词面路径由 tokenize
+    现算——同一套 bm25_scores_from_stats 实现，勿再写第二份 BM25 数学。
+    """
+
+    tf: dict[str, int]
+    dl: int
+
+
+def doc_stats_from_tokens(tokens: list[str]) -> DocStats:
+    """tokenize 列表 → DocStats（词面路径的即时统计；缓存路径直接读频表）。"""
+    return DocStats(tf=dict(Counter(tokens)), dl=len(tokens))
+
+
 def bm25_scores(
     query_tokens: list[str],
     docs_tokens: list[list[str]],
     k1: float = 1.5,
     b: float = 0.75,
 ) -> list[float]:
-    """各文档对 query 的 BM25 相关度；无匹配时返回 0.0。"""
-    n_docs = len(docs_tokens)
+    """各文档对 query 的 BM25 相关度（token 列表入参的兼容包装，#41 前
+    的唯一形态）；数学本体在 bm25_scores_from_stats 单点。"""
+    return bm25_scores_from_stats(query_tokens, [doc_stats_from_tokens(d) for d in docs_tokens], k1=k1, b=b)
+
+
+def bm25_scores_from_stats(
+    query_tokens: list[str],
+    docs: list[DocStats],
+    k1: float = 1.5,
+    b: float = 0.75,
+) -> list[float]:
+    """BM25 数学本体（单一定义点）：候选以 DocStats 频表供给。
+
+    与 token 列表版本逐位等价——tf = 频表计数（= doc.count）、df = 含该
+    token 的候选数（频表键即去重集）、dl/avgdl 同源；无匹配返回 0.0。
+    """
+    n_docs = len(docs)
     if n_docs == 0 or not query_tokens:
         return [0.0] * n_docs
-    avgdl = sum(len(d) for d in docs_tokens) / n_docs or 1.0
+    avgdl = sum(d.dl for d in docs) / n_docs or 1.0
     df: dict[str, int] = {}
-    for doc in docs_tokens:
-        for tok in set(doc):
+    for doc in docs:
+        for tok in doc.tf:
             df[tok] = df.get(tok, 0) + 1
     scores: list[float] = []
-    for doc in docs_tokens:
-        dl = len(doc) or 1
-        tf = {t: doc.count(t) for t in set(doc) if t in query_tokens}
+    for doc in docs:
+        dl = doc.dl or 1
+        tf = {t: c for t, c in doc.tf.items() if t in query_tokens}
         rel = 0.0
         for tok, freq in tf.items():
             idf = math.log((n_docs - df[tok] + 0.5) / (df[tok] + 0.5) + 1)
@@ -116,17 +150,27 @@ def bm25_scores(
     return scores
 
 
+def expired_by_date(valid_until: str | None, today: dt.date) -> bool:
+    """valid_until 原语：字符串直判过期（#41）。
+
+    is_expired 的 Memory 判定与词法缓存条目（无 Memory 形态，只有先验字段）
+    共用这一处日期语义，勿各算各的。
+    """
+    if not valid_until:
+        return False
+    remaining = age_days(valid_until, today)
+    return remaining is not None and remaining > 0
+
+
 def is_expired(mem: Memory, today: dt.date) -> bool:
     """valid_until 已过 ⇒ True（valid_until 当日仍有效，次日过期）。
 
     坏/缺 valid_until 返回 False——坏数据不冒充过期（与 _within_days 同哲学：
     宁可少排除，不因坏日期静默吞掉一条记忆）。valid_from 不参与判定：
-    检索没有 as-of 语义，未来才生效的记忆照常可召回。
+    检索没有 as-of 语义，未来才生效的记忆照常可召回。日期本体在
+    expired_by_date（缓存条目路径复用）。
     """
-    if not mem.valid_until:
-        return False
-    remaining = age_days(mem.valid_until, today)
-    return remaining is not None and remaining > 0
+    return expired_by_date(mem.valid_until, today)
 
 
 def recency_score(mem: Memory, now: dt.date) -> float:
@@ -174,6 +218,8 @@ def rank(
     top_k: int = 5,
     neighbor_lookup: Callable[[str], list[Memory]] | None = None,
     vec_sims: dict[str, float] | None = None,
+    doc_stats: Sequence[DocStats | None] | None = None,
+    content_loader: Callable[[str], str] | None = None,
 ) -> list[dict[str, Any]]:
     """排序管线：query 与候选记忆进，最终搜索结果出。
 
@@ -185,12 +231,20 @@ def rank(
     BM25 归一分进 0.70 槽——与历史行为逐位一致。提供时走双路 RRF 融合：
     词面路（rel>0 才参与）与向量路各出一列 rank，RRF norm 作主序、先验压到
     PRIOR_EPSILON 做 tie-break；词面零命中但向量召回的候选由此进入结果。
+
+    doc_stats（#41 候选 token 源）：与 candidates 对齐的 per-doc 频表；提供位
+    免 tokenize（缓存路径），None 位与不传整体都回退 tokenize(doc_text)。
+    content_loader（mem_id → 正文）：提供时命中的 content 经它现取（缓存候选
+    的正文延迟 parse），缺省取 mem.content——两条路径输出逐位一致。
     """
     q_tokens = tokenize(query)
     if not q_tokens:
         return []
-    docs = [tokenize(doc_text(m)) for m in candidates]
-    rels = bm25_scores(q_tokens, docs)
+    stats: list[DocStats] = []
+    for i, mem in enumerate(candidates):
+        cached = doc_stats[i] if doc_stats is not None else None
+        stats.append(cached if cached is not None else doc_stats_from_tokens(tokenize(doc_text(mem))))
+    rels = bm25_scores_from_stats(q_tokens, stats)
     by_id = {m.id: (m, rel) for m, rel in zip(candidates, rels)}
     hits: list[dict[str, Any]] = []
 
@@ -205,7 +259,7 @@ def rank(
                 "type": mem.type,
                 "ns": mem.ns,
                 "source": mem.source,
-                "content": mem.content,
+                "content": content_loader(mem.id) if content_loader is not None else mem.content,
             }
         )
 
