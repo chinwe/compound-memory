@@ -42,6 +42,11 @@ NEIGHBOR_CONTENT_CHARS = 80
 # 抬不动正确答案与高置信噪声之间的真实 rank 差（recall-audit 失效模式②的根治）。
 RRF_K = 60
 PRIOR_EPSILON = 0.04
+# 双路先验内部的 conf/recency/type 配比（vec-spike S5 形态）：rank 打分与
+# explain 分量折算共用同一组配比，勿写第二份（改先验配比只改这里）。
+PRIOR_MIX_CONF = 0.5
+PRIOR_MIX_RECENCY = 0.3
+PRIOR_MIX_TYPE = 0.2
 
 
 def _cjk_bigrams(run: list[str]) -> list[str]:
@@ -211,6 +216,12 @@ def final_score(sim: float, confidence: float, recency: float, mtype: str) -> fl
     return W_SIM * sim + W_CONF * confidence + W_RECENCY * recency + W_TYPE * TYPE_WEIGHT.get(mtype, 0.5)
 
 
+def _ranks_by_rel(candidates: list[Memory], rels: list[float]) -> dict[str, int]:
+    """rel 降序的 1-based rank 表：RRF 词面路与 explain 分量共用同一构造（单一拷贝）。"""
+    ordered = sorted(((m.id, rel) for m, rel in zip(candidates, rels) if rel > 0), key=lambda t: -t[1])
+    return {mid: r for r, (mid, _) in enumerate(ordered, 1)}
+
+
 def rank(
     query: str,
     candidates: list[Memory],
@@ -220,6 +231,7 @@ def rank(
     vec_sims: dict[str, float] | None = None,
     doc_stats: Sequence[DocStats | None] | None = None,
     content_loader: Callable[[str], str] | None = None,
+    explain: bool = False,
 ) -> list[dict[str, Any]]:
     """排序管线：query 与候选记忆进，最终搜索结果出。
 
@@ -231,11 +243,19 @@ def rank(
     BM25 归一分进 0.70 槽——与历史行为逐位一致。提供时走双路 RRF 融合：
     词面路（rel>0 才参与）与向量路各出一列 rank，RRF norm 作主序、先验压到
     PRIOR_EPSILON 做 tie-break；词面零命中但向量召回的候选由此进入结果。
+    similarity 字段语义随路径标注在 explain.path：单路 = BM25 归一分，
+    双路 = 归一化 RRF 融合分（fused/rrf_max）——字段名不动（默认 hit 形状
+    红线），语义歧义由 opt-in 分量消解（#44）。
 
     doc_stats（#41 候选 token 源）：与 candidates 对齐的 per-doc 频表；提供位
     免 tokenize（缓存路径），None 位与不传整体都回退 tokenize(doc_text)。
     content_loader（mem_id → 正文）：提供时命中的 content 经它现取（缓存候选
     的正文延迟 parse），缺省取 mem.content——两条路径输出逐位一致。
+
+    explain 是 opt-in 排障面（#44，ADR-0008 展示边界）：True 时每个 hit 附加
+    `explain` 分量对象（检索通道 lexical/vector/both、路径 linear/rrf、词面/
+    向量 rank、RRF 原始分、先验原始输入与按权重折算的 terms）；terms 之和与
+    score 在 epsilon 内对账，两条路径同构。缺省 False 输出形状逐位不变。
     """
     q_tokens = tokenize(query)
     if not q_tokens:
@@ -248,37 +268,56 @@ def rank(
     by_id = {m.id: (m, rel) for m, rel in zip(candidates, rels)}
     hits: list[dict[str, Any]] = []
 
-    def emit(mem: Memory, sim: float, score: float) -> None:
+    def emit(mem: Memory, sim: float, score: float, expl: dict[str, Any] | None = None) -> None:
         # content 先占位：emit 会发生在每个正分候选上（不止 top_k），正文
         # 现取（parse）必须推迟到切片后——否则宽查询把省下的候选 parse 又
         # 在 emit 里全数吃回（perf-bench #41 实测教训）
-        hits.append(
-            {
-                "id": mem.id,
-                "score": round(score, 4),
-                "similarity": round(sim, 4),
-                "confidence": mem.confidence,
-                "uses": mem.uses,
-                "type": mem.type,
-                "ns": mem.ns,
-                "source": mem.source,
-                "content": "" if content_loader is not None else mem.content,
-            }
-        )
+        hit: dict[str, Any] = {
+            "id": mem.id,
+            "score": round(score, 4),
+            "similarity": round(sim, 4),
+            "confidence": mem.confidence,
+            "uses": mem.uses,
+            "type": mem.type,
+            "ns": mem.ns,
+            "source": mem.source,
+            "content": "" if content_loader is not None else mem.content,
+        }
+        if expl is not None:
+            hit["explain"] = expl
+        hits.append(hit)
 
     if vec_sims is None:
+        lex_ranks = _ranks_by_rel(candidates, rels) if explain else None
         for mem, rel in zip(candidates, rels):
             if rel <= 0:
                 continue
             sim = normalized_similarity(rel, len(q_tokens))
-            score = final_score(sim, mem.confidence, recency_score(mem, now), mem.type)
-            emit(mem, sim, score)
+            rec = recency_score(mem, now)
+            tw = TYPE_WEIGHT.get(mem.type, 0.5)
+            score = final_score(sim, mem.confidence, rec, mem.type)
+            expl = None
+            if explain and lex_ranks is not None:
+                # 单路：final_score 四分量各按权重折算，terms 之和即 score
+                expl = {
+                    "channel": "lexical",
+                    "path": "linear",
+                    "lexical_rank": lex_ranks[mem.id],
+                    "vector_rank": None,
+                    "rrf_score": None,
+                    "similarity": round(sim, 4),
+                    "recency_score": round(rec, 4),
+                    "type_weight": tw,
+                    "terms": {
+                        "similarity": round(W_SIM * sim, 4),
+                        "confidence": round(W_CONF * mem.confidence, 4),
+                        "recency": round(W_RECENCY * rec, 4),
+                        "type": round(W_TYPE * tw, 4),
+                    },
+                }
+            emit(mem, sim, score, expl)
     else:
-        lexical = sorted(
-            ((m.id, rel) for m, rel in zip(candidates, rels) if rel > 0),
-            key=lambda t: -t[1],
-        )
-        lexical_rank = {mid: r for r, (mid, _) in enumerate(lexical, 1)}
+        lexical_rank = _ranks_by_rel(candidates, rels)
         vec_rank = {
             mid: r
             for r, (mid, _) in enumerate(
@@ -294,10 +333,38 @@ def rank(
                 fused += 1.0 / (RRF_K + vec_rank[mem.id])
             if fused <= 0:
                 continue  # 两路都不在场：不该出现在结果里（调用方候选并集含兜底）
-            rec_n = (recency_score(mem, now) - 0.5) / 0.5  # 底座归一回 [0,1]
-            prior = 0.5 * mem.confidence + 0.3 * rec_n + 0.2 * TYPE_WEIGHT.get(mem.type, 0.5)
+            rec = recency_score(mem, now)
+            rec_n = (rec - 0.5) / 0.5  # 底座归一回 [0,1]
+            tw = TYPE_WEIGHT.get(mem.type, 0.5)
+            prior = PRIOR_MIX_CONF * mem.confidence + PRIOR_MIX_RECENCY * rec_n + PRIOR_MIX_TYPE * tw
             sim = fused / rrf_max
-            emit(mem, sim, sim + PRIOR_EPSILON * prior)
+            expl = None
+            if explain:
+                # 双路：similarity 槽即归一化融合分，先验三分量按 ε×配比折算，
+                # terms 之和 = sim + ε·prior = score
+                if mem.id in lexical_rank and mem.id in vec_rank:
+                    channel = "both"
+                elif mem.id in lexical_rank:
+                    channel = "lexical"
+                else:
+                    channel = "vector"
+                expl = {
+                    "channel": channel,
+                    "path": "rrf",
+                    "lexical_rank": lexical_rank.get(mem.id),
+                    "vector_rank": vec_rank.get(mem.id),
+                    "rrf_score": round(fused, 4),
+                    "similarity": round(sim, 4),
+                    "recency_score": round(rec, 4),
+                    "type_weight": tw,
+                    "terms": {
+                        "similarity": round(sim, 4),
+                        "confidence": round(PRIOR_EPSILON * PRIOR_MIX_CONF * mem.confidence, 4),
+                        "recency": round(PRIOR_EPSILON * PRIOR_MIX_RECENCY * rec_n, 4),
+                        "type": round(PRIOR_EPSILON * PRIOR_MIX_TYPE * tw, 4),
+                    },
+                }
+            emit(mem, sim, sim + PRIOR_EPSILON * prior, expl)
     hits.sort(key=lambda h: -h["score"])
     top = hits[:top_k]
     if content_loader is not None:
