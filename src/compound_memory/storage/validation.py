@@ -47,6 +47,18 @@ def check_key(key: str | None) -> None:
         )
 
 
+def check_project(project: str | None) -> None:
+    """project slug 校验（ADR 0010）：复用 key 格式正则（小写字母数字段以短横线
+    连接），写侧落库单点与检索侧入口共用本谓词；None = 未标注（全局），放行。
+    空串不等价于「未携带」——落库会成为对所有读方都不可见的幽灵字段，响亮拒绝。"""
+    if project is None:
+        return
+    if not _KEY_RE.match(project):
+        raise ValueError(
+            f"project must match {_KEY_RE.pattern} (lowercase alphanumeric segments joined by dashes), got: {project!r}"
+        )
+
+
 def check_ns(ns: str) -> None:
     """ns 格式校验（write/search 共用）：非法 ns 是调用方错误，必须抛错——
     search 侧静默返回空结果会让 agent 误判"无相关记忆"。

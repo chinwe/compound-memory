@@ -54,6 +54,7 @@ class DistillDeps(Protocol):
         origin: str | None = None,
         valid_from: str | None = None,
         valid_until: str | None = None,
+        project: str | None = None,
     ) -> dict[str, Any]: ...
     def _archive(self, mem: Memory) -> None: ...
 
@@ -194,6 +195,15 @@ def distill_apply(
         foreign_ns = sorted({s.ns for s in sources if s is not None and s.ns != ns})
         if foreign_ns:
             raise ValueError(f"distill sources must live in target ns {ns!r}; found in: {foreign_ns}")
+        # 蒸馏产物继承源的 project（ADR 0010，同项目提纯）。可见面包含不变量：
+        # 产物可见面必须 ⊆ 源可见面——任一源已标注项目 ⇒ 产物必须跟着标注
+        # （全局产物会把项目源的内容泄进全局会话）；全部源为全局 ⇒ 产物全局。
+        # 源标注了两个不同项目则无单一适用域，显式拒绝（与跨 ns 拒绝同型），
+        # 让调用方按项目拆分蒸馏。
+        distinct_projects = sorted({s.project for s in sources if s is not None and s.project is not None})
+        if len(distinct_projects) > 1:
+            raise ValueError(f"distill sources must share one project scope; found: {distinct_projects}")
+        product_project = distinct_projects[0] if distinct_projects else None
         result = store.write(
             content,
             type=type,
@@ -203,6 +213,7 @@ def distill_apply(
             links=source_ids,
             confidence=confidence,
             origin="distillation",
+            project=product_project,
         )
         archived: list[str] = []
         for src in sources:

@@ -61,6 +61,10 @@ class TestKeyFlags:
             ("write-ns", ["write", "c", "fact", "a", "--ns", "_shared"]),
             ("write-key", ["write", "c", "fact", "a", "--key", "k"]),
             ("write-validity", ["write", "c", "fact", "a", "--valid-from", "2026-01-01", "--valid-until", "2026-12-31"]),
+            # project 作用域（ADR 0010）：write/search/get 三动词的 --project
+            ("write-project", ["write", "c", "fact", "a", "--project", "agenthub"]),
+            ("search-project", ["search", "q", "--project", "agenthub"]),
+            ("get-project", ["get", "id", "--project", "agenthub"]),
             # distill-apply 的溯源 flags
             ("distill-apply-sources", ["distill-apply", "c", "insight", "a", "--sources", "id1,id2"]),
             ("distill-apply-confidence", ["distill-apply", "c", "insight", "a", "--sources", "id1", "--confidence", "0.7"]),

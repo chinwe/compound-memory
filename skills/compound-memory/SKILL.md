@@ -9,7 +9,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 
 ## 三个必做动作（复利闭环）
 
-1. **任务开始先检索**：接到非琐碎任务，先 `memory_search` 按任务关键词查相关记忆（用户偏好、项目背景、环境坑）。默认检索即双通道：`_shared` + 本宿主私有 ns（身份已知时自动并入，私有条目无需单独补搜）；显式传 `ns` 则只搜该 ns（精确语义）。
+1. **任务开始先检索**：接到非琐碎任务，先 `memory_search` 按任务关键词查相关记忆（用户偏好、项目背景、环境坑）。默认检索即双通道：`_shared` + 本宿主私有 ns（身份已知时自动并入，私有条目无需单独补搜）；显式传 `ns` 则只搜该 ns（精确语义）。**project 作用域（ADR 0010）**：检索缺省 fail-closed——不传 `project` 只见全局（未标注）记忆；宿主使用规则声明了工作区项目时，检索与写入都带上该 `project=<slug>`，即可见 全局 ∪ 该项目。
 2. **采纳即反馈**：命中且**实际采纳**后必须调 `memory_feedback`（`agent` 填本宿主 source id）——复利闭环的核心动作，漏掉它记忆库就不增值。归档记忆被 feedback 自动复活。
 3. **任务结束沉淀**：会话确认的稳定事实（用户偏好、项目约定、环境限制、踩坑结论）用 `memory_write` 写入，判据见下表；一次性、会话内临时信息只存在于会话。
 
@@ -24,6 +24,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | `source` | 宿主标识：`agent-workbuddy` / `agent-zcode` / `agent-claude` / `agent-deepseek` |
 | `ns` | 默认 `_shared`；`agent-*` 是私有区，写/读/反馈都只认属主——读私有 ns 须带 `reader`（自己的 agent id，缺省即拒绝），越权抛 `PermissionError`；ns 只允许 `[A-Za-z0-9_-]`（路径组件安全，含 `../`、`/`、`*` 等一律 ValueError——ns 会被直接拼进存储路径）。`memory_search` 不传 `ns` 时自动并搜自有私有区（双通道，见必做动作①） |
 | `valid_from` / `valid_until` | 可选 ISO 日期（YYYY-MM-DD）标注事实有效期；`valid_until` 已过的事实自动退出检索结果（`memory_get` 仍可读）。事实会过时的场景（负责人变更、配置轮换）写新版时带上预期失效日，过期后检索不再被旧值污染 |
+| `project` | 可选项目作用域 slug（`^[a-z0-9]+(-[a-z0-9]+)*$`，与 key 同格式，落库前校验）：标注后该记忆只对声明同一项目的会话检索可见（未标注 = 全局通用）。宿主使用规则声明「本工作区 project=<slug>」后，该工作区的 `memory_write` / `memory_search` 每次携带；CLI 另有 `COMPOUND_MEMORY_PROJECT` env 回退（adapter 层读，store 不读环境变量）。跨项目通用的事实**不要**标 project |
 | `状态类事实` | 进行时/待办类内容（「剩余待办」「已就绪待…」）易腐：要么带 `valid_until`，要么改写成不含进行时态的稳定事实；写前自问「这条一个月后还成立吗」，拿不准就不写——过时的状态记忆比没有更糟 |
 | 内容 | 中文，与库内既有条目一致 |
 
@@ -67,5 +68,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | 报 `contradicts attested agent` | 宿主已注入进程身份（`COMPOUND_MEMORY_AGENT_ID`），自报身份与之矛盾：`source`/`agent` 改填自己的 agent id，`reader` 可直接省略（自动补真值）；仍报错则核对宿主 env 配置 |
 | `write` 报 `key must match` | key 格式不合规（禁大写/下划线/空格/日期前缀）：改用小写字母数字段以短横线连接（`proj-xxx`）；key 是同 key 更新的锚点，日期化会让事实更新退化成不断新增 |
 | 写入返回 `conflict: true` | 内容与既有版本不同，已入冲突队列；裁决后 `review-resolve <废置id>` 清行并自动归档废置方（索引同步、自动 commit，无需 rebuild）；`--all` 只清行不归档（无裁决信息） |
+| 项目记忆检索不到 | 先核对调用方 `project` 参数（或 CLI `COMPOUND_MEMORY_PROJECT`）与记忆标注一致；检索缺省 fail-closed 只见全局记忆（ADR 0010），声明对应项目才见 全局 ∪ 该项目；按 id 的 `memory_get` 不受 project 限制，可先取回核对 frontmatter |
+| 报 `project must match` | project slug 格式不合规（禁大写/下划线/空格/连续横线）：与 key 同格式，改用小写字母数字段以短横线连接 |
 
 架构与复利机制见仓库 `README.md`，术语见 `CONTEXT.md`。
