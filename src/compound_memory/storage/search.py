@@ -1,10 +1,12 @@
 """检索动词（动词件，#37）：search / vector_recall / active_neighbors /
-candidates / lexical_candidates + VEC_POOL。
+candidates / scored_candidates / lexical_candidates + VEC_POOL。
 
 检索 = 选候选（store 的 layout 职责）+ 排序（scoring.rank 单一定义点），
-结果形状逐位不变（契约 test_search 钉住）。门禁执行时序不动：search 是
-参数型动词，ns 校验在函数入口（ADR 0003 裁决 5）。VEC_POOL 随宿主动词
-（裁决 6），__init__ re-export 保旧导入名。
+结果形状逐位不变（契约 test_search 钉住）。#41 候选快路径：词法缓存给出
+per-doc token 统计的候选免 parse 进 rank（宽查询大候选集的成本大头是逐
+候选 yaml parse），缓存无条目的候选回退 parse——两条路径输出逐位一致。
+门禁执行时序不动：search 是参数型动词，ns 校验在函数入口（ADR 0003
+裁决 5）。VEC_POOL 随宿主动词（裁决 6），__init__ re-export 保旧导入名。
 """
 
 from __future__ import annotations
@@ -15,8 +17,9 @@ from pathlib import Path
 from typing import Any, Callable, Protocol, overload
 
 from ..index import Index
+from ..liveness import ScanWindow
 from ..model import Memory
-from ..scoring import is_expired, rank, tokenize
+from ..scoring import DocStats, expired_by_date, is_expired, rank, tokenize
 from ..vector_index import VectorIndex
 
 # storage 域告警的单点 logger：向量降级（#19）的观测出口
@@ -38,6 +41,7 @@ class SearchDeps(Protocol):
     vector_index: VectorIndex
     _clock: Callable[[], dt.date]
     _embedder: Callable[[list[str]], list[list[float]]] | None
+    _scan_window: ScanWindow
 
     def parse(self, path: Path) -> Memory: ...
     def find(self, mem_id: str) -> Memory | None: ...
@@ -90,14 +94,21 @@ def search(
     q_tokens = tokenize(query)
     if not q_tokens:
         return []
+    # 读动词开 scan 共享窗口：向量 KNN 与词法候选两路对账共用一遍 scan（#41）
+    store._scan_window.open()
     vec_sims, vec_rels = vector_recall(store, query, set(scopes), now)
+    mems, stats, rels_by_id = scored_candidates(store, q_tokens, set(scopes), vec_rels, now)
     return rank(
         query,
-        candidates(store, q_tokens, set(scopes), vec_rels, now),
+        mems,
         now=now,
         top_k=top_k,
         neighbor_lookup=(lambda mid: active_neighbors(store, mid, set(scopes), now)) if include_neighbors else None,
         vec_sims=vec_sims,
+        doc_stats=stats,
+        # 缓存候选的 content 为占位空串：命中条目的正文按 rel 现 parse（top_k 次，
+        # 与全候选 parse 相比可忽略）；id→rel 映射由 scored_candidates 给全
+        content_loader=(lambda mid: store.parse(store.root / rels_by_id[mid]).content) if rels_by_id else None,
     )
 
 
@@ -180,6 +191,84 @@ def lexical_candidates(
     return candidates(store, q_tokens, nss)
 
 
+def _mem_from_entry(entry: dict[str, Any]) -> Memory:
+    """缓存条目 → 候选视图 Memory（content 为占位空串）。
+
+    只覆盖 rank 消费的字段（排序先验 + emit 身份）；命中条目的正文经
+    content_loader 现取（top_k 次 parse），不在缓存里复制正文。字段损坏
+    （缺键/类型异）抛 KeyError/TypeError/ValueError，由调用方回退 parse。
+    """
+    return Memory(
+        id=entry["id"],
+        ns=entry["ns"],
+        type=entry["type"],
+        source=entry["source"],
+        created=entry["created"],
+        content="",
+        confidence=float(entry["confidence"]),
+        uses=int(entry.get("uses", 0)),
+        last_used=entry.get("last_used"),
+        valid_until=entry.get("valid_until"),
+    )
+
+
+def scored_candidates(
+    store: SearchDeps,
+    q_tokens: list[str],
+    nss: set[str],
+    vec_rels: list[str] | None = None,
+    now: dt.date | None = None,
+) -> tuple[list[Memory], list[DocStats | None], dict[str, str]]:
+    """检索的候选来源（#41 快路径 + parse 回退），返回三元组：
+
+    (candidates, 对齐的 per-doc DocStats——回退位为 None, id → rel 映射)。
+
+    词法缓存（tokens.json v2 docs）有条目的 rel 免 parse：token 频表直接供
+    rank 的 BM25，先验（confidence/uses/日期/type）与身份从条目重建 Memory
+    视图；过期经条目 valid_until 判（expired_by_date 与 is_expired 同源）。
+    无条目（向量路独有召回、条目字段损坏）回退 parse——与旧候选路径行为
+    逐位一致。ns 前缀剪枝与文件存在性复查照旧：防的是索引与手编文件的漂移。
+    """
+    prefixes = tuple(f"namespaces/{ns}/" for ns in nss)
+    rels = list(store.index.candidates(q_tokens))
+    for rel_path in vec_rels or []:
+        if rel_path not in rels:
+            rels.append(rel_path)
+    entries = store.index.doc_entries(rels)
+    out: list[Memory] = []
+    stats: list[DocStats | None] = []
+    rels_by_id: dict[str, str] = {}
+    for rel in rels:
+        if not rel.startswith(prefixes):
+            continue
+        path = store.root / rel
+        if not path.exists():
+            continue
+        entry = entries.get(rel)
+        mem: Memory | None = None
+        stat: DocStats | None = None
+        if entry is not None:
+            try:
+                mem = _mem_from_entry(entry)
+                tf = entry["tf"]
+                if not isinstance(tf, dict):
+                    raise TypeError("entry tf is not a mapping")  # 手编损坏条目：降级 parse
+                stat = DocStats(tf=tf, dl=int(entry["len"]))
+                if now is not None and expired_by_date(entry.get("valid_until"), now):
+                    continue
+            except (KeyError, TypeError, ValueError):
+                mem = None  # 条目字段损坏：降级 parse（检索降级不报错）
+        if mem is None:
+            mem = store.parse(path)
+            if mem.archived or (now is not None and is_expired(mem, now)):
+                continue
+            stat = None
+        out.append(mem)
+        stats.append(stat)
+        rels_by_id[mem.id] = rel
+    return out, stats, rels_by_id
+
+
 def candidates(
     store: SearchDeps,
     q_tokens: list[str],
@@ -187,7 +276,8 @@ def candidates(
     vec_rels: list[str] | None = None,
     now: dt.date | None = None,
 ) -> list[Memory]:
-    """Indexed lookup: 索引活性（跨进程重载/带外重建）由各缓存内部自愈，
+    """Indexed lookup（parse 路径，lexical_candidates 的数据源）：索引活性
+    （跨进程重载/带外重建）由各缓存内部自愈，
     这里全信索引命中，只逐一复查文件存在性与 ns 集合/活性——防的是索引
     词条与手编文件内容的漂移（改内容不改目录 mtime，那条路走显式 rebuild）。
     vec_rels 非空时，向量 KNN 命中（rel_path 由向量缓存给出）并入候选并集。
