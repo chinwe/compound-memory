@@ -1,11 +1,12 @@
-"""MemoryStore 组合点（facade，ADR 0003 / #36+#37）：机制件装配 + 动词目录。
+"""MemoryStore 组合点（facade，ADR 0003 / #36+#37+#38）：机制件装配 + 动词目录。
 
-机制五件（paths/files/gitlayer/locking/validation，#36）与读路径动词五件
-（stats/review/distill/search/indexing，#37）已外移，facade 现承载：构造
-装配与锁/commit/git/文件 IO/门禁的薄委托（门禁执行时序不动）、get/link
-方法体（ADR 裁决 2：留层保「动词目录」可读性）、写路径动词方法体
-（write/_write_new/feedback/decay_sweep/revive/_archive/_move_to_active，
-外移归 #38）、读路径动词的一行转发。包级布局与旧导入面见 __init__.py。
+机制五件（paths/files/gitlayer/locking/validation，#36）与动词七件
+（读路径 stats/review/distill/search/indexing，#37；写路径 writing/lifecycle，
+#38）已全部外移，facade 现承载：构造装配与锁/commit/git/文件 IO/门禁的
+薄委托（门禁执行时序不动）、get/link 方法体（ADR 裁决 2：留层保「动词
+目录」可读性）、机制件与写核心的薄委托（_write_new/_write_result/
+_archive/_move_to_active 等 tests 与动词 Deps 的触达面）、其余动词的一行
+转发。包级布局与旧导入面见 __init__.py。
 """
 
 from __future__ import annotations
@@ -19,19 +20,14 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, overload
 
 from ..index import Index
-from ..model import MEMORY_TYPES, TTL_DAYS, Memory
+from ..model import Memory
 from ..review_queue import ReviewQueue
-from ..scoring import recency_age
 from ..vector_index import VectorIndex
-from . import distill, files, gitlayer, indexing, locking, paths, review, search as search_mod, stats as stats_mod, validation
+from . import distill, files, gitlayer, indexing, lifecycle, locking, paths, review, search as search_mod, stats as stats_mod, validation, writing
 from .files import _unlink_file
 from .gitlayer import _git_available
 from .locking import _Batch
-from .validation import _PATH_COMPONENT_RE, check_key, check_validity as _check_validity
-
-ARCHIVE_USES_THRESHOLD = 3
-CONF_USE_BUMP = 0.1
-CONF_CROSS_AGENT_BUMP = 0.15
+from .validation import _PATH_COMPONENT_RE
 
 
 class MemoryStore:
@@ -187,24 +183,21 @@ class MemoryStore:
         valid_from: str | None = None,
         valid_until: str | None = None,
     ) -> dict[str, Any]:
-        source = self._resolve_identity(source, "source")
-        _check_validity(valid_from, valid_until)
-        with self._write_lock():
-            mem, conflict_with = self._write_new(
-                content,
-                type=type,
-                source=source,
-                ns=ns,
-                key=key,
-                links=links,
-                created=created,
-                confidence=confidence,
-                origin=origin,
-                valid_from=valid_from,
-                valid_until=valid_until,
-            )
-            self._commit(f"write {mem.id} ({type}/{ns}) by {source}")
-        return self._write_result(mem, conflict_with)
+        """写动词转发：实现体在动词件 writing.py（公开签名不变，DistillDeps 镜像无需动）。"""
+        return writing.write(
+            self,
+            content,
+            type=type,
+            source=source,
+            ns=ns,
+            key=key,
+            links=links,
+            created=created,
+            confidence=confidence,
+            origin=origin,
+            valid_from=valid_from,
+            valid_until=valid_until,
+        )
 
     def _write_new(
         self,
@@ -220,46 +213,26 @@ class MemoryStore:
         valid_from: str | None = None,
         valid_until: str | None = None,
     ) -> tuple[Memory, Memory | None]:
-        """write 的落库核心（无 commit）：commit 由调用方动词收口——单条走 write，
-        批式经 batch()（_commit 单点拦截）。tests 亦用它播种 write 会正当拒绝的
-        外部 ns fixture（显式字段落库的测试种子）。"""
-        if type not in MEMORY_TYPES:
-            raise ValueError(f"type must be one of {MEMORY_TYPES}, got: {type!r}")
-        check_key(key)
-        self._check_ns(ns)
-        if ns.startswith("agent-") and source not in (ns, ns[len("agent-"):]):
-            raise PermissionError(f"namespace {ns!r} is private to its owner; writer is {source!r}")
-        conflict_with: Memory | None = None
-        if key and type in ("fact", "insight"):
-            conflict_with = self._find_by_key(ns, type, key, exclude_content=content)
-        mem = Memory(
-            id=self._new_id(),
-            ns=ns,
+        """落库核心薄委托：实现体在动词件 writing.py（write/batch/distill_apply/tests 四方共用）。"""
+        return writing.write_new(
+            self,
+            content,
             type=type,
             source=source,
-            created=created or self.today(),
-            content=content,
-            confidence=0.5 if confidence is None else confidence,
-            links=list(links or []),
-            ttl=TTL_DAYS[type],
+            ns=ns,
             key=key,
+            links=links,
+            created=created,
+            confidence=confidence,
             origin=origin,
             valid_from=valid_from,
             valid_until=valid_until,
         )
-        self._save(mem)
-        if conflict_with is not None:
-            self._review_queue.append(conflict_with, mem)
-        self._sync_indexes(mem, self._active_rel(mem))
-        return mem, conflict_with
 
     @staticmethod
     def _write_result(mem: Memory, conflict_with: Memory | None) -> dict[str, Any]:
-        result = asdict(mem)
-        result["conflict"] = conflict_with is not None
-        if conflict_with is not None:
-            result["conflicts_with"] = conflict_with.id
-        return result
+        """写结果组装薄委托：实现体在动词件 writing.py。"""
+        return writing.write_result(mem, conflict_with)
 
     def get(self, mem_id: str, include_neighbors: bool = True, reader: str | None = None) -> dict[str, Any]:
         reader = self._resolve_identity(reader, "reader")
@@ -282,31 +255,8 @@ class MemoryStore:
         return result
 
     def feedback(self, mem_id: str, agent: str) -> dict[str, Any]:
-        agent = self._resolve_identity(agent, "agent")
-        # 读-改-写全程临界区：find 在锁外时并发 feedback 同一记忆会读到同一
-        # 快照、后写覆盖前者，uses/confidence 丢更新（2026-10-05 并发测试实证）
-        with self._write_lock():
-            mem = self.find(mem_id)
-            if mem is None:
-                return {"found": False}
-            # 私有记忆只有属主可反馈：防外来 agent 刷 uses/confidence、混入 validated_by 或复活归档
-            self._check_ns_owner(mem.ns, agent, role="agent")
-            if mem.archived:
-                self._move_to_active(mem)
-            mem.uses += 1
-            bump = CONF_USE_BUMP
-            if agent not in mem.validated_by:
-                if agent != mem.source:
-                    bump += CONF_CROSS_AGENT_BUMP
-                mem.validated_by.append(agent)
-            mem.confidence = round(min(1.0, mem.confidence + bump), 3)
-            mem.last_used = self.today()
-            self._save(mem)
-            self._sync_indexes(mem, self._active_rel(mem))
-            self._commit(f"feedback {mem.id} by {agent}: uses={mem.uses} conf={mem.confidence}")
-        result = asdict(mem)
-        result["found"] = True
-        return result
+        """生命周期动词转发：实现体与阈值常量在动词件 lifecycle.py（锁链原样）。"""
+        return lifecycle.feedback(self, mem_id, agent)
 
     def link(self, id_a: str, id_b: str, agent: str | None = None) -> dict[str, Any]:
         """双向关联两条记忆（复利来源②）。跨 ns 禁止（ValueError）；同 ns 私有记忆
@@ -350,55 +300,23 @@ class MemoryStore:
             self, query, ns=ns, top_k=top_k, include_neighbors=include_neighbors, reader=reader
         )
 
-    # ---------- 衰减 / 归档 / 复活 ----------
+    # ---------- 衰减 / 归档 / 复活（动词件 lifecycle.py） ----------
 
     def decay_sweep(self) -> list[str]:
-        now = self._clock()
-        with self._write_lock():  # 批量归档 + 收尾 commit 一个临界区
-            archived: list[str] = []
-            for mem, _path in self._scan_parsed(self.ns_root):
-                if mem.ttl is None:
-                    continue
-                age = recency_age(mem, now)
-                if age is None:
-                    continue  # 坏/缺日期：跳过该条而非崩掉整场扫描（宁可不归档，不因坏数据丢记忆）
-                if age > mem.ttl and mem.uses < ARCHIVE_USES_THRESHOLD:
-                    self._archive(mem)
-                    archived.append(mem.id)
-            if archived:
-                self._commit("decay: archive " + ", ".join(archived))
-        return archived
+        """生命周期动词转发：实现体在动词件 lifecycle.py（单临界区原样）。"""
+        return lifecycle.decay_sweep(self)
 
     def revive(self, mem_id: str, reader: str | None = None) -> dict[str, Any]:
-        reader = self._resolve_identity(reader, "reader")
-        with self._write_lock():  # 读-改-写全程临界区（同 feedback 的丢更新防御）
-            mem = self.find(mem_id)
-            if mem is None:
-                return {"found": False}
-            # revive 返回全文，与 get 同属按 id 读路径：私有 ns 仅属主可复活
-            self._check_ns_owner(mem.ns, reader)
-            if mem.archived:
-                self._move_to_active(mem)
-                self._save(mem)
-                self._commit(f"revive {mem_id}")
-        result = asdict(mem)
-        result["found"] = True
-        return result
+        """生命周期动词转发：实现体在动词件 lifecycle.py（锁链与门禁时序原样）。"""
+        return lifecycle.revive(self, mem_id, reader=reader)
 
     def _archive(self, mem: Memory) -> None:
-        src = self._active_path(mem)
-        old_rel = src.relative_to(self.root).as_posix()
-        mem.archived = True
-        self._save(mem)
-        self._remover(src)
-        self._sync_indexes(mem, old_rel)
+        """归档薄委托：实现体在动词件 lifecycle.py（review/distill 的 Deps 与 tests 触达面）。"""
+        return lifecycle.archive(self, mem)
 
     def _move_to_active(self, mem: Memory) -> None:
-        src = self._archive_path(mem)
-        mem.archived = False
-        self._save(mem)
-        self._remover(src)
-        self._sync_indexes(mem, self._active_rel(mem))
+        """复活搬移薄委托：实现体在动词件 lifecycle.py（feedback/revive 经属性查找回跳）。"""
+        return lifecycle.move_to_active(self, mem)
 
     # ---------- 蒸馏（确定性段；判断/摘要交调用方 Agent，CONTEXT.md: Distillation） ----------
 
