@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-import re
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterator
@@ -19,6 +18,7 @@ import yaml
 from ..index import atomic_write_text
 from ..model import Memory
 from . import paths
+from .validation import _PATH_COMPONENT_RE
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +29,6 @@ try:
     from yaml import CSafeLoader as _SafeLoader
 except ImportError:  # pragma: no cover - 取决于 PyYAML 是否带 C 扩展
     from yaml import SafeLoader as _SafeLoader  # type: ignore[assignment]
-
-# ns / mem_id 的路径组件白名单：两者都被直接拼进存储路径或 rglob 模式，
-# 来自 LLM/宿主输出，格式不设防时 ns='agent-../../x' 可写出存储根、
-# mem_id='*' 可经 rglob 命中库内任意记忆（2026-10-05 审计 P1-1/P2-3）。
-# 合法 id（YYYYMMDD_hex6）与现有全部 ns 取值均落在 [A-Za-z0-9_-] 内。
-# （#36 片 f 迁往 validation.py，与 ns 校验共用同一单点）
-_PATH_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def _unlink_file(path: Path) -> None:

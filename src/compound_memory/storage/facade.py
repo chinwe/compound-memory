@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-import re
 import subprocess
 import uuid
 from contextlib import AbstractContextManager, contextmanager
@@ -22,22 +21,17 @@ from ..model import MEMORY_TYPES, TTL_DAYS, Memory
 from ..review_queue import ReviewQueue
 from ..scoring import age_days, doc_text, dup_similarity_matrix, is_expired, rank, recency_age, tokenize
 from ..vector_index import VectorIndex
-from . import files, gitlayer, locking, paths
-from .files import _PATH_COMPONENT_RE, _unlink_file
+from . import files, gitlayer, locking, paths, validation
+from .files import _unlink_file
 from .gitlayer import _git_available
 from .locking import _Batch
+from .validation import _PATH_COMPONENT_RE, check_key, check_validity as _check_validity
 
 # storage 域告警的单点 logger：扫描容错（#20）与向量降级（#19）共用
 logger = logging.getLogger(__name__)
 
 # 向量召回候选池：词面候选 ∪ 向量 KNN 前 VEC_POOL 条（ns/活性过滤后）
 VEC_POOL = 16
-
-# key 是 fact/insight 同 key 更新的稳定锚点，格式约束在落库单点（_write_new，
-# write/batch/distill-apply 共用）：小写字母数字段以短横线连接。原为纯文档约定、
-# write 无校验，2026-10-05 单日多会话沉淀出成批日期前缀 key——日期化 key 天然
-# 一次性（id 已含日期），等于放弃同 key 更新通道。日期前缀的取舍归文档，这里只守字符集与结构。
-_KEY_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 ARCHIVE_USES_THRESHOLD = 3
 CONF_USE_BUMP = 0.1
@@ -83,19 +77,6 @@ def _within_days(date_str: str, days: int, now: dt.date) -> bool:
     不回退 created，语义差异留在调用处。"""
     age = age_days(date_str, now)
     return age is not None and 0 <= age <= days
-
-
-def _check_validity(valid_from: str | None, valid_until: str | None) -> None:
-    """有效期字段校验（write 单点）：ISO date 格式 + from<=until，坏输入响亮抛 ValueError。"""
-    for name, value in (("valid_from", valid_from), ("valid_until", valid_until)):
-        if value is None:
-            continue
-        try:
-            dt.date.fromisoformat(value)
-        except (ValueError, TypeError):
-            raise ValueError(f"{name} must be an ISO date (YYYY-MM-DD), got: {value!r}")
-    if valid_from and valid_until and dt.date.fromisoformat(valid_from) > dt.date.fromisoformat(valid_until):
-        raise ValueError(f"valid_from {valid_from!r} is after valid_until {valid_until!r}")
 
 
 class MemoryStore:
@@ -219,40 +200,13 @@ class MemoryStore:
 
     @staticmethod
     def _check_ns(ns: str) -> None:
-        """ns 格式校验（write/search 共用）：非法 ns 是调用方错误，必须抛错——
-        search 侧静默返回空结果会让 agent 误判"无相关记忆"。
-
-        字符集白名单先行于前缀检查：ns 直接拼进存储路径（_active_path），
-        "agent-../../x" 曾可把 .md 写出存储根（2026-10-05 审计 P1-1）——
-        白名单同时封死穿越、glob 元字符与路径分隔，且必须在越权检查之前
-        （恶意 ns 自证身份的 owner 校验没有资格先跑）。
-        """
-        if not _PATH_COMPONENT_RE.match(ns):
-            raise ValueError(f"ns contains characters outside [A-Za-z0-9_-]: {ns!r}")
-        if ns != "_shared" and not ns.startswith("agent-"):
-            raise ValueError("ns must be '_shared' or start with 'agent-'")
+        """门禁薄委托：定义单点在 validation.check_ns（执行时序不动）。"""
+        validation.check_ns(ns)
 
     @staticmethod
     def _check_ns_owner(ns: str, identity: str | None, role: str = "reader") -> None:
-        """读/反馈侧 owner 校验：agent-* 私有 ns 只有属主宿主可读、可反馈。
-
-        与 write 的 `_check_ns + PermissionError` 对称——写侧已保证非属主写不进
-        私有 ns，读侧若不校验则任何宿主显式传 ns=agent-<别人> 即可越权读全量
-        （2026-10-03 实测：search 签名原本无调用方身份参数，跨宿主零阻力）；
-        feedback 侧不校验则外来 agent 可刷 uses/confidence 或复活归档。
-
-        identity 缺省时对 _shared 放行、对 agent-* 拒绝：宁可不读，不猜身份。
-        role 只是让报错指引对得上调用方的参数名（reader / agent）。
-        """
-        if not ns.startswith("agent-"):
-            return
-        owner = ns[len("agent-"):]
-        if identity in (ns, owner):
-            return
-        raise PermissionError(
-            f"namespace {ns!r} is private to {owner!r}; {role} is {identity!r}. "
-            f"Pass {role}={ns!r} or {role}={owner!r} if you are that host."
-        )
+        """门禁薄委托：定义单点在 validation.check_ns_owner（执行时序不动）。"""
+        validation.check_ns_owner(ns, identity, role)
 
     @overload
     def _resolve_identity(self, value: str, role: str) -> str: ...
@@ -261,25 +215,8 @@ class MemoryStore:
     def _resolve_identity(self, value: None, role: str) -> str | None: ...
 
     def _resolve_identity(self, value: str | None, role: str) -> str | None:
-        """身份裁决：进程注入（agent_id）优先于调用方自报。
-
-        - 未启用 attestation（agent_id 为空）⇒ 原样放行，行为同旧版（自报身份）。
-        - 调用方缺省 ⇒ 自动补进程身份（诚实缺省，如 search 私有 ns 忘带 reader）。
-        - 调用方与进程身份等价（agent-x / x 两种形式）⇒ 归一化为 agent_id，
-          保证 validated_by 等记录字段去重一致。
-        - 调用方与进程身份矛盾 ⇒ 响亮报错（伪造/配错宿主都该炸，不该静默改写）。
-        """
-        if self.agent_id is None:
-            return value
-        if value is None:
-            return self.agent_id
-        accepted = {self.agent_id, self.agent_id.removeprefix("agent-")}
-        if value in accepted:
-            return self.agent_id
-        raise PermissionError(
-            f"{role} {value!r} contradicts attested agent {self.agent_id!r} "
-            f"(COMPOUND_MEMORY_AGENT_ID); the process identity wins"
-        )
+        """身份裁决薄委托：定义单点在 validation.resolve_identity（self.agent_id 注入）。"""
+        return validation.resolve_identity(value, role, self.agent_id)
 
     def write(
         self,
@@ -333,10 +270,7 @@ class MemoryStore:
         外部 ns fixture（显式字段落库的测试种子）。"""
         if type not in MEMORY_TYPES:
             raise ValueError(f"type must be one of {MEMORY_TYPES}, got: {type!r}")
-        if key and not _KEY_RE.match(key):
-            raise ValueError(
-                f"key must match {_KEY_RE.pattern} (lowercase alphanumeric segments joined by dashes), got: {key!r}"
-            )
+        check_key(key)
         self._check_ns(ns)
         if ns.startswith("agent-") and source not in (ns, ns[len("agent-"):]):
             raise PermissionError(f"namespace {ns!r} is private to its owner; writer is {source!r}")
