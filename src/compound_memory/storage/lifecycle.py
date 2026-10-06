@@ -1,8 +1,9 @@
 """生命周期动词（动词件，#38）：feedback / decay_sweep / revive / archive / move_to_active。
 
 复利引擎写侧（feedback）+ 衰减归档/复活（decay_sweep/revive）。阈值常量
-随宿主动词模块（ADR 0003 裁决 6），__init__ re-export 保旧导入名。锁语义
-逐位保持（红线自查）：feedback/revive 的「find → 门禁 → 改 → save → sync
+随宿主动词模块（ADR 0003 裁决 6）单一定义于此；包级公开面收窄（#39）
+后不再 re-export，storage.lifecycle 是唯一导入路径（见 __init__ docstring）。
+锁语义逐位保持（红线自查）：feedback/revive 的「find → 门禁 → 改 → save → sync
 → commit」整链在 _write_lock 内——find 在锁外时并发 feedback 同一记忆会
 读到同一快照、后写覆盖前者，uses/confidence 丢更新（2026-10-05 并发测试
 实证）；decay_sweep 的「扫描 + 归档 + 收尾 commit」是单临界区。门禁执行
@@ -23,7 +24,7 @@ from typing import Any, Callable, Iterator, Protocol, overload
 from ..model import Memory
 from ..scoring import recency_age
 
-# 归档/置信度阈值（lifecycle 单一定义点，__init__ re-export 保旧名）：
+# 归档/置信度阈值（lifecycle 单一定义点，storage.lifecycle 是唯一导入路径）：
 # ARCHIVE_USES_THRESHOLD 是衰减扫描的归档存活线（uses 达线免归档）；
 # CONF_USE_BUMP 每次使用分、CONF_CROSS_AGENT_BUMP 新验证者跨 agent 加成
 # （P1 公式：bump = 0.1/次 + 0.15 仅当「新验证者 ∧ ≠source」，契约 test_feedback 钉住）

@@ -120,12 +120,8 @@ class VectorIndex:
                 if mem.id in seen:
                     continue
                 seen.add(mem.id)
-                entry = known.get(mem.id)
-                if entry is not None and entry[0] == _content_hash(mem):
-                    if entry[1] != rel:
-                        self._engine.update_rel(mem.id, rel)
-                    continue
-                changed.append((mem, rel))
+                if not self._entry_up_to_date(known, mem, rel):
+                    changed.append((mem, rel))
             if changed:
                 embedder = self._embedder
                 assert embedder is not None
@@ -142,6 +138,20 @@ class VectorIndex:
             return self._path.stat().st_mtime_ns
         except OSError:
             return None
+
+    def _entry_up_to_date(
+        self, known: dict[str, tuple[str, str]], mem: Memory, rel: str
+    ) -> bool:
+        """单条缓存对账（flush_pending/_reconcile/sync 共用判定形状）：
+        entries 命中且内容 hash 未变 ⇒ 条目有效，仅修 rel 漂移（update_rel）
+        并返回 True；否则返回 False，由调用方走编码 upsert（sync/_reconcile
+        单条现编，flush_pending 攒批批量编码）。"""
+        entry = known.get(mem.id)
+        if entry is not None and entry[0] == _content_hash(mem):
+            if entry[1] != rel:
+                self._engine.update_rel(mem.id, rel)
+            return True
+        return False
 
     def _reconcile(self) -> None:
         """带外增删的增量对账：只编码 diff（新增/内容变更），未变更零编码。
@@ -163,15 +173,11 @@ class VectorIndex:
                 if mid not in active_ids:
                     self._engine.remove(mid)
             for mem, rel in active:
-                entry = known.get(mem.id)
-                if entry is not None and entry[0] == _content_hash(mem):
-                    if entry[1] != rel:
-                        self._engine.update_rel(mem.id, rel)
-                    continue
-                embedder = self._embedder
-                assert embedder is not None
-                vec = embedder([doc_text(mem)])[0]
-                self._engine.upsert(mem.id, rel, mem.ns, _content_hash(mem), vec)
+                if not self._entry_up_to_date(known, mem, rel):
+                    embedder = self._embedder
+                    assert embedder is not None
+                    vec = embedder([doc_text(mem)])[0]
+                    self._engine.upsert(mem.id, rel, mem.ns, _content_hash(mem), vec)
             self._engine.commit()
             # 对账落盘后刷新基线，与 sync/rebuild 同款语义（避免自触发 stale）
             self._rebuilt_stamp = self._db_stamp()
@@ -193,17 +199,11 @@ class VectorIndex:
         try:
             if mem.archived:
                 self._engine.remove(mem.id)
-            else:
-                new_hash = _content_hash(mem)
-                entry = self._engine.entries().get(mem.id)
-                if entry is not None and entry[0] == new_hash:
-                    if entry[1] != rel_path:
-                        self._engine.update_rel(mem.id, rel_path)
-                else:
-                    embedder = self._embedder
-                    assert embedder is not None
-                    vec = embedder([doc_text(mem)])[0]
-                    self._engine.upsert(mem.id, rel_path, mem.ns, new_hash, vec)
+            elif not self._entry_up_to_date(self._engine.entries(), mem, rel_path):
+                embedder = self._embedder
+                assert embedder is not None
+                vec = embedder([doc_text(mem)])[0]
+                self._engine.upsert(mem.id, rel_path, mem.ns, _content_hash(mem), vec)
             self._engine.commit()
             # 自己写盘后刷新基线，避免写路径落盘的文件/缓存 mtime 差在下次读路径
             # 被误判成"带外增删"而触发多余全量重建（与词法 Index._save 同思路）

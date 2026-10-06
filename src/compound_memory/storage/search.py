@@ -6,7 +6,8 @@ candidates / scored_candidates / lexical_candidates + VEC_POOL。
 per-doc token 统计的候选免 parse 进 rank（宽查询大候选集的成本大头是逐
 候选 yaml parse），缓存无条目的候选回退 parse——两条路径输出逐位一致。
 门禁执行时序不动：search 是参数型动词，ns 校验在函数入口（ADR 0003
-裁决 5）。VEC_POOL 随宿主动词（裁决 6），__init__ re-export 保旧导入名。
+裁决 5）。VEC_POOL 随宿主动词（裁决 6）单一定义于此；包级公开面收窄
+（#39）后不再 re-export，storage.search 是唯一导入路径（见 __init__ docstring）。
 """
 
 from __future__ import annotations
@@ -212,6 +213,27 @@ def _mem_from_entry(entry: dict[str, Any]) -> Memory:
     )
 
 
+def _merged_candidate_rels(
+    store: SearchDeps, q_tokens: list[str], vec_rels: list[str] | None
+) -> list[str]:
+    """候选骨架（candidates/scored_candidates 共享）前半：rels 并集——
+    词法索引命中在前，向量 KNN 命中（去重）排尾。"""
+    rels = list(store.index.candidates(q_tokens))
+    for rel_path in vec_rels or []:
+        if rel_path not in rels:
+            rels.append(rel_path)
+    return rels
+
+
+def _live_rel_path(store: SearchDeps, rel: str, prefixes: tuple[str, ...]) -> Path | None:
+    """候选骨架后半：ns 前缀剪枝（parse 之前省掉越界 parse）+ 文件存在复查
+    （防索引词条与手编文件的漂移）；越界或文件缺失返回 None。"""
+    if not rel.startswith(prefixes):
+        return None
+    path = store.root / rel
+    return path if path.exists() else None
+
+
 def scored_candidates(
     store: SearchDeps,
     q_tokens: list[str],
@@ -230,19 +252,14 @@ def scored_candidates(
     逐位一致。ns 前缀剪枝与文件存在性复查照旧：防的是索引与手编文件的漂移。
     """
     prefixes = tuple(f"namespaces/{ns}/" for ns in nss)
-    rels = list(store.index.candidates(q_tokens))
-    for rel_path in vec_rels or []:
-        if rel_path not in rels:
-            rels.append(rel_path)
+    rels = _merged_candidate_rels(store, q_tokens, vec_rels)
     entries = store.index.doc_entries(rels)
     out: list[Memory] = []
     stats: list[DocStats | None] = []
     rels_by_id: dict[str, str] = {}
     for rel in rels:
-        if not rel.startswith(prefixes):
-            continue
-        path = store.root / rel
-        if not path.exists():
+        path = _live_rel_path(store, rel, prefixes)
+        if path is None:
             continue
         entry = entries.get(rel)
         mem: Memory | None = None
@@ -285,17 +302,13 @@ def candidates(
     ns 前缀剪枝在 parse 之前：活动区 rel 必为 namespaces/<ns>/...（索引不收
     归档），常见词命中近全库的大库上把 ns 过滤提前省掉全部越界 parse。"""
     prefixes = tuple(f"namespaces/{ns}/" for ns in nss)
-    rels = list(store.index.candidates(q_tokens))
-    for rel_path in vec_rels or []:
-        if rel_path not in rels:
-            rels.append(rel_path)
+    rels = _merged_candidate_rels(store, q_tokens, vec_rels)
     out: list[Memory] = []
     for rel in rels:
-        if not rel.startswith(prefixes):
+        path = _live_rel_path(store, rel, prefixes)
+        if path is None:
             continue
-        path = store.root / rel
-        if path.exists():
-            mem = store.parse(path)
-            if not mem.archived and not (now is not None and is_expired(mem, now)):
-                out.append(mem)
+        mem = store.parse(path)
+        if not mem.archived and not (now is not None and is_expired(mem, now)):
+            out.append(mem)
     return out

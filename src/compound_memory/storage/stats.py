@@ -1,7 +1,8 @@
 """统计动词（动词件，#37）：stats 健康度扫描 + 桶函数/桶常量随宿主模块。
 
 桶常量与桶函数是 stats 的领域件（ADR 0003 裁决 6），随动词外移至此；
-包级 __init__ re-export 保旧导入名（_uses_bucket / USES_HISTOGRAM_BUCKETS 等）。
+包级公开面收窄（#39）后不再 re-export，storage.stats 是唯一导入路径
+（_uses_bucket / USES_HISTOGRAM_BUCKETS 等，见 __init__ docstring）。
 """
 
 from __future__ import annotations
