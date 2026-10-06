@@ -41,13 +41,13 @@ uv run --directory <仓库> compound-memory init
 | `memory_write` | 写入记忆 | `type`: episode/fact/insight/skill；`source`: 写入方 agent id；fact/insight 建议带稳定 `key`；可选 `valid_from`/`valid_until`（ISO 日期）标注事实有效期——`valid_until` 已过的事实退出检索结果，但 `memory_get` 仍可读 |
 | `memory_search` | 检索 | 返回 `{"hits": [...]}` 按分数排序；命中自动内嵌最多 3 条一度邻居；`include_neighbors=False` 可关。不传 `ns` 时双通道检索：`_shared` + 调用方自有私有 ns（身份已知时，私有条目自动带出）；显式传 `ns` 只搜该 ns，查 `agent-*` 时必带 `reader`（自己的 agent id），缺省即拒绝 |
 | `memory_get` | 按 id 取回 | 恒含 `found` 键；默认带一度邻居；目标在私有 ns 时必带 `reader`，缺省即拒绝 |
-| `memory_link` | 双向关联两条记忆 | 复利来源②：关联带出；两条记忆必须同 ns，跨 ns 链被拒绝 |
+| `memory_link` | 双向关联两条记忆 | 复利来源②：关联带出；两条记忆必须同 ns，跨 ns 链被拒绝；私有 ns 记忆仅属主可连（`agent` 填自己的 agent id） |
 | `memory_feedback` | 上报"这条记忆被实际采纳了" | uses+1、conf+0.1；**跨 Agent 验证额外 +0.15**；归档记忆被 feedback 自动复活；私有 ns 记忆仅属主可反馈。**采纳后必须调用** |
 
 ### 统一约定（各宿主必须一致）
 
 - **`source` agent id**：WorkBuddy → `agent-workbuddy`；ZCode → `agent-zcode`；Claude Code → `agent-claude`；DeepSeek Harness → `agent-deepseek`。id 用宿主标识而非个性化名字（如 TARS），保证稳定不随命名变化；跨 Agent 验证加分依赖 id 互不相同。
-- **namespace**：默认写 `_shared`（全体可见）；`agent-<name>` 是私有区，仅属主可写、读/反馈也须属主身份（`reader`/`agent` 填自己的 agent id，缺省即拒绝）。检索不传 `ns` 时自动并搜自有私有区（双通道）。ns 只允许字符 `[A-Za-z0-9_-]`（ns 会被直接拼进存储路径，含 `../`、`/`、`*` 等一律 ValueError，2026-10-05 审计加固）。日常任务一律用默认值即可。
+- **namespace**：默认写 `_shared`（全体可见）；`agent-<name>` 是私有区，仅属主可写、读/反馈/关联也须属主身份（`reader`/`agent` 填自己的 agent id，缺省即拒绝）。检索不传 `ns` 时自动并搜自有私有区（双通道）。ns 只允许字符 `[A-Za-z0-9_-]`（ns 会被直接拼进存储路径，含 `../`、`/`、`*` 等一律 ValueError，2026-10-05 审计加固）。日常任务一律用默认值即可。
 - **进程身份注入（建议必配）**：宿主配置的 `env` 加 `COMPOUND_MEMORY_AGENT_ID: <本宿主 agent id>`。注入后存储层以进程身份裁决一切自报身份（source/reader/agent）：缺省自动补真值、等价形式（`agent-x`/`x`）归一化、矛盾响亮拒绝——模型谎报身份失效，伪造 source 污染跨 Agent 验证的通道一并关闭。未注入则保持自报身份模式（协作边界，非安全边界）。
 - **写什么**：稳定事实（用户偏好、项目约定、环境限制、踩坑结论）才写；一次性、会话内临时信息不写。任务状态类（进行时/待办）内容易腐：要么带 `valid_until`、要么改写成不含进行时态的稳定事实——过时的状态记忆比没有更糟。内容用中文，key 用稳定英文短横线标识（如 `user-tts`、`proj-xxx`）。
 
@@ -214,7 +214,7 @@ dsh 通过 MCP client 插件 `@deepseek-ai/dsh-mcp-client` 接入，一个插件
    - `skill`：可复用的操作方法；
    - `episode`：事件经历（部署了什么、发生了什么）。
 3. **不写**：一次性、会话内临时信息；记忆内容用中文，与库内既有条目保持一致；更新既有事实优先复用同 `key` 而非新开一条。
-4. **关联**：新记忆与已有记忆有因果/派生关系时用 `memory_link` 连上，检索时邻居会被自动带出。
+4. **关联**：新记忆与已有记忆有因果/派生关系时用 `memory_link` 连上（必须同 ns；私有 ns 记忆带 `agent` 填自己的 source id），检索时邻居会被自动带出。
 5. **邻居是线索不是结论**：search/get 返回的 `neighbors` 只做上下文参考，采纳哪条以 hit 本身为准。
 
 ## 7. 运维与蒸馏（CLI，所有宿主共用）
@@ -223,7 +223,10 @@ dsh 通过 MCP client 插件 `@deepseek-ai/dsh-mcp-client` 接入，一个插件
 uv run compound-memory stats          # 健康度：uses/confidence 固定桶 + 活性 + 蒸馏产出量
 uv run compound-memory decay          # 衰减归档（launchd/cron 定时跑；长期未用且少用才动）
 uv run compound-memory revive <id>    # 复活归档记忆（CLI 唯一入口）
-uv run compound-memory review-queue   # fact/insight 同 key 冲突队列（人工复核，CLI 唯一入口）
+uv run compound-memory review-queue   # fact/insight 同 key 冲突队列（人工复核，CLI 唯一入口；展示全量）
+uv run compound-memory review-resolve <废置id> [--reader <agent id>]  # 清行并自动归档废置方；
+                                      #   私有 agent-* ns 的行仅属主可清（--reader）；--all 只清行不归档，
+                                      #   且对非属主的私有行静默保留
 uv run compound-memory rebuild-index  # 手编已有文件内容后重建检索缓存
 uv run compound-memory extract <transcript|dir>  # 会话抽取清单（P0）：确定性扫描 →
                                       #   extract/last-candidates.json；Agent 逐条确认后 memory_write 落库
@@ -234,6 +237,10 @@ uv run compound-memory extract <transcript|dir>  # 会话抽取清单（P0）：
                                       #   ZCode 直接指库文件：extract ~/.zcode/cli/db/db.sqlite（只读打开）
                                       #   注意 traces/ 与 rollout/model-io 快照不接入（都只剩部分轮次，是假阴性）
 uv run compound-memory git-log        # 审计轨迹（每次写入自动 commit）
+                                      #   消费端降噪（#31）：--grep PATTERN 只留消息匹配的提交（可多次，OR）、
+                                      #   --exclude PATTERN 剔除匹配的提交（可多次）；PATTERN 为正则，作用于
+                                      #   消息段（剥掉 hash），过滤发生在 --limit 取数之后，
+                                      #   如 git-log --exclude feedback
 ```
 
 **蒸馏**（把一批旧记忆沉淀为更高密度产物，判断归调用方 Agent）：

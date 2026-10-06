@@ -128,6 +128,88 @@ macOS 原始基线（291/220ms）**——Windows 的 git commit 与 sqlite fsync
 开销，量级仍远低于交互阈值，观察即可。规模趋势与 macOS 一致：reconcile
 随 N 线性、broad 随候选集放大、semantic 基本平坦（编码底噪主导）。
 
+## 万条档基线（2026-10-06，vec 模式，macOS 12 x64 / BGE CPU，优化前代码）
+
+ADR 0005 的设计规模档（先测量后优化）：下面第一表是 token stats / 共享 scan
+两项优化动手**前**的基线（HEAD 292164f + bench 工具修复），第二表是优化后
+同机同法对照。跑法：`--scales 10000`（数据落独立 root，seed 阶段 git 关闭）。
+
+| scenario | N=10000 基线 |
+|---|---|
+| seed n memories (total) | 1673.5s |
+| search lexical narrow, no neighbors | 1036.5ms |
+| search lexical narrow, default neighbors | 1148.3ms |
+| search lexical broad, default | 4495.7ms |
+| search vector semantic, default | 102.0ms |
+| write + sync encode + git commit | 576.1ms |
+| feedback, no re-encode | 447.3ms |
+| reconcile after oob write | 11826.6ms |
+| stats full scan (total) | 2.89s |
+| full rebuild-index (total) | 266.41s |
+
+基线观察（对照 ADR 0005 三档预算）：
+
+- **broad 4.5s 超交互预算（≤2s）**：宽查询候选 ≈ 全库（跨簇高频词命中近
+  10000 条），逐候选 read+yaml parse 是成本大头——正是 token stats 的靶子。
+  narrow（单簇 ≈ 500 候选）1.0s、semantic（编码底噪 + 16 条 KNN 命中）102ms
+  在预算内。
+- **reconcile 11.8s 超写后首查预算（≤5s）**：构成 = 词法/向量两遍 scan
+  （各一遍全库 rglob+parse）+ diff 编码 + tokens.json 全量重写（15.1MB）+
+  查询编码——共享 scan 消一遍。
+- seed 1673.5s（~28 分钟）高于线性外推（千条 55.1s ×10 ≈ 9 分钟）：真实
+  外推之外还叠加了 (a) 逐条 write 的 key 冲突扫描与 tokens.json 全量重写
+  随 N 增长（每写一条重 dump 一次，末段单次 >1s），(b) 本次跑测时同机
+  并行了一次全量 pytest（~3.5 分钟 CPU 竞争）。绝对值偏悲观，趋势可靠。
+- 运维路径如实记录不设目标：stats 2.89s、full rebuild 266.4s（≈线性于
+  千条 46.4s×10；onnx 分块编码全程未被沙箱 SIGKILL——ENCODE_CHUNK=32 的
+  内存上界有效）。
+- write 576ms / feedback 447ms：内含 15.1MB tokens.json 全量重写，万条档
+  仍恒定在半秒级（ADR「观察」档）。
+
+## 万条档优化对照（2026-10-06，vec 模式，macOS 12 x64，#41 token stats + 共享 scan）
+
+同机同法对照（seed 各自独立 root）。两项手段：tokens.json v2 per-doc token
+频表（候选路径免 parse 直算 BM25，emit 正文只 parse top_k）+ 词法/向量对账
+共享一遍 scan。**搜索/对账行是 content_loader 修复后用同方法学在已 seed 的
+同规模库上重测**（rank 曾在 emit 阶段对全部正分候选现 parse 正文，把免
+parse 收益吃回大半——修复后数字才代表两项手段的真实效果；seed/write/
+feedback/stats/rebuild 取自修复前代码的全量跑，这几条路径不经过 rank）。
+
+| scenario | N=10000 基线 | N=10000 优化后 | Δ |
+|---|---|---|---|
+| seed n memories (total) | 1673.5s | 2745.0s | **+64%**（见下） |
+| search lexical narrow, no neighbors | 1036.5ms | 113.0ms | −89% |
+| search lexical narrow, default neighbors | 1148.3ms | 187.4ms | −84% |
+| search lexical broad, default | 4495.7ms | **521.9ms** | −88%（≤2s 预算达标） |
+| search vector semantic, default | 102.0ms | 35.3ms | −65% |
+| write + sync encode + git commit | 576.1ms | 593.3ms | 持平 |
+| feedback, no re-encode | 447.3ms | 521.2ms | +17% |
+| reconcile after oob write | 11826.6ms | **5140.0ms** | −57%（≈5s 预算线上） |
+| stats full scan (total) | 2.89s | 2.81s | 持平 |
+| full rebuild-index (total) | 266.41s | 194.05s | −27%（rebuild 共享一遍 scan） |
+
+对照观察（ADR 0005 三档预算逐条对账）：
+
+- **交互读档达标**：broad 0.52s / narrow 0.11-0.19s / semantic 0.035s，
+  全部 ≤2s。宽查询候选 ≈ 全库（~10000 条），免 parse 后剩余成本 =
+  倒排查找 + per-doc 频表 lookup + BM25 + top_k 次 parse（5 次）。
+  narrow default 的 187ms 里仍含每 hit 邻居 `find()` 的 rglob（ADR ①b
+  明确不做的项，~1/3 成本，量级已无压力）。
+- **写后首查 5.14s ≈ 5s 预算线**：构成 = 一遍 scan（全库 rglob+parse，
+  ~4s，yaml parse 为主——ADR ⑤ 手写 parser 明确不做）+ diff 编码 + v2
+  缓存全量重写（~22MB）+ 查询编码。本机是最慢的基准形态（macOS 12 老
+  mac，BGE CPU；Windows 参考机检索路径快 2-4x），跨机看趋势：两遍 scan
+  → 一遍（−57%）与机制预期一致。
+- **seed +64% 是 v2 的代价，如实记录**：逐条 write 每次全量重写 tokens.json，
+  v2 带 per-doc 频表后体积 15.1MB → 22MB（+45%），seed 的 O(N²) 重写项
+  相应变贵；write（593ms）/feedback（521ms，+17%）同步缓涨但仍远低于
+  交互阈值。灌库正门是 `batch()`（批尾一次落盘），不走这条路径；若未来
+  万条级单条写变痛，候选手段是缓存分片或增量序列化，未在 #41 范围。
+- 运维路径：rebuild −27%（两份缓存共享一遍 scan）；stats 不经缓存持平，
+  符合「不设目标只监控」。
+- 机制抽查：万条库上强制 parse 回退路径与缓存快路径的 search 输出逐位
+  一致（含邻居）；v2 缓存损坏/旧版自动重建语义由测试钉住（test_index）。
+
 ## 已知观察（基线暴露，待后续处理）
 
 - ~~向量召回的 mem 解析是 O(候选×N)~~ **已修**：直读 rel_path（见上方对照）。

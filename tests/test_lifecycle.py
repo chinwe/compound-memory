@@ -13,7 +13,8 @@ from pathlib import Path
 import pytest
 
 from compound_memory.cli import main as cli_main
-from compound_memory.storage import MemoryStore, _conf_bucket, _uses_bucket
+from compound_memory.storage import MemoryStore
+from compound_memory.storage.stats import _conf_bucket, _uses_bucket
 from conftest import CLOCK_DATE, sandbox_safe_remove
 
 

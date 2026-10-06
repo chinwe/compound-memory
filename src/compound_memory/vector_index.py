@@ -1,4 +1,4 @@
-"""VectorIndex: 记忆向量缓存（sqlite-vec vec0 表），Index 的姊妹缓存。
+"""VectorIndex: 记忆向量缓存编排层（引擎缝之上的活性/对账/降级不变量）。
 
 不变量与词法 Index 同构（spec「索引即缓存」）：
 - 活动记忆必被索引（内容 hash 变更才重编码——feedback 只动 conf/uses，零编码成本）；
@@ -6,9 +6,16 @@
 - 缓存缺失 ⇒ 全量重建（无 diff 基线）；带外增删 ⇒ 增量对账，只编码 diff——
   跨进程小写入（另一宿主 write/feedback 一条）不再放大成全库重编码。
 
+引擎缝（ADR 0004 / issue #40）：存储机制下沉 vector_engine.VecEngine（引擎只
+存不算），本层只做编排——content-hash 计算、embedder 调用、对账 diff、mtime
+活性基线、batch 暂存都在这。engine 经构造可选参数注入（默认 SqliteVecEngine，
+MemoryStore 构造参数零改动）。
+
 降级契约：embedder=None（未装 vec extra / 模型缺失）时全部动词退化为 no-op /
-空结果，检索自动退纯词面——检索降级不报错。写入路径同样吞缓存故障（索引可
-重建，宁缺勿炸 write）；重建本身再失败才保持 no-op，等待下次读路径重试。
+空结果，检索自动退纯词面——检索降级不报错（三层守卫归属：embedder None 在
+本层 _usable()；SQLITE_VEC_OK 在 vector_engine；VEC_AVAILABLE 在 embedding）。
+写入路径同样吞缓存故障（索引可重建，宁缺勿炸 write）；重建本身再失败才保持
+no-op，等待下次读路径重试。
 
 换 embedding 模型属运维动作：需显式 `rebuild-index`（hash 只校验内容，不校验模型）。
 模型 repo id 与输出维度（建表维度）经 embedding.py 的环境变量解析（单一定义点），
@@ -18,21 +25,13 @@
 from __future__ import annotations
 
 import hashlib
-import sqlite3
 from pathlib import Path
 from typing import Callable
 
-from .embedding import EMBED_DIM
 from .liveness import dirs_newer_than
 from .model import Memory
 from .scoring import doc_text
-
-try:
-    import sqlite_vec
-
-    SQLITE_VEC_OK = True
-except ImportError:  # pragma: no cover - 取决于安装环境是否带 vec extra
-    SQLITE_VEC_OK = False
+from .vector_engine import SqliteVecEngine, VecEngine, VectorEngineError
 
 DB_NAME = "vectors.db"
 # 带外增删检测的目录 mtime 粒度与词法 Index 一致（新增/删除 .md 会更新 ns/type 目录 mtime）
@@ -50,41 +49,23 @@ class VectorIndex:
         root: Path,
         scan_pairs: Callable[[], list[tuple[Memory, str]]],
         embedder: Callable[[list[str]], list[list[float]]] | None,
+        engine: VecEngine | None = None,
     ) -> None:
         self._root = root
         self._scan_pairs = scan_pairs
         self._embedder = embedder
         self._path = root / "index" / DB_NAME
-        self._db: sqlite3.Connection | None = None
+        # 引擎缝：默认 sqlite-vec 实现。注入的引擎须在 _path 落实体文件承载
+        # mtime 基线（fake 引擎在测试侧自行落标记文件）。
+        self._engine: VecEngine = engine if engine is not None else SqliteVecEngine(self._path)
         self._rebuilt_stamp: int | None = None  # 自己重建后落盘的 db mtime 基线
         self._pending: list[tuple[Memory, str]] | None = None  # 非 None = batch() 批式通道中
 
     # ---------- 降级与活性 ----------
 
     def _usable(self) -> bool:
-        return SQLITE_VEC_OK and self._embedder is not None
-
-    def _connect(self) -> sqlite3.Connection | None:
-        """惰性建连 + 建表；损坏/缺失交 _ensure_fresh 重建，仍失败则视为不可用。"""
-        if self._db is not None:
-            return self._db
-        if not self._usable():
-            return None
-        try:
-            db = sqlite3.connect(self._path)
-            db.enable_load_extension(True)
-            sqlite_vec.load(db)
-            db.enable_load_extension(False)
-            db.execute(f"CREATE VIRTUAL TABLE IF NOT EXISTS vecs USING vec0(embedding float[{EMBED_DIM}])")
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS meta ("
-                "mem_id TEXT PRIMARY KEY, rel_path TEXT NOT NULL, ns TEXT NOT NULL, "
-                "content_hash TEXT NOT NULL, vec_row INTEGER NOT NULL)"
-            )
-            self._db = db
-            return db
-        except sqlite3.DatabaseError:
-            return None
+        # embedder None 守卫在本层；引擎依赖守卫（SQLITE_VEC_OK）在 engine.open()
+        return self._embedder is not None
 
     def _ensure_live(self) -> None:
         """写路径保活：db 缺失 ⇒ 重建（不做目录 mtime 检查——write 先落文件再 sync，
@@ -124,46 +105,53 @@ class VectorIndex:
         pending, self._pending = self._pending, None
         if not pending:
             return
-        db = self._connect()
-        if db is None:
+        if not self._usable():
+            return  # 无 embedder ⇒ 整条向量路 no-op（旧 _connect 内嵌的同款守卫）
+        if not self._engine.open():
             return
         try:
-            known = {
-                mid: (content_hash, rel_path)
-                for mid, content_hash, rel_path in db.execute(
-                    "SELECT mem_id, content_hash, rel_path FROM meta"
-                )
-            }
+            known = self._engine.entries()
             seen: set[str] = set()
             changed: list[tuple[Memory, str]] = []
             for mem, rel in pending:
                 if mem.archived:
-                    self._remove(db, mem.id)
+                    self._engine.remove(mem.id)
                     continue
                 if mem.id in seen:
                     continue
                 seen.add(mem.id)
-                entry = known.get(mem.id)
-                if entry is not None and entry[0] == _content_hash(mem):
-                    if entry[1] != rel:
-                        db.execute("UPDATE meta SET rel_path = ? WHERE mem_id = ?", (rel, mem.id))
-                    continue
-                changed.append((mem, rel))
+                if not self._entry_up_to_date(known, mem, rel):
+                    changed.append((mem, rel))
             if changed:
-                assert self._embedder is not None
-                vectors = self._embedder([doc_text(mem) for mem, _ in changed])
+                embedder = self._embedder
+                assert embedder is not None
+                vectors = embedder([doc_text(mem) for mem, _ in changed])
                 for (mem, rel), vec in zip(changed, vectors):
-                    self._upsert(db, mem, rel, vec)
-            db.commit()
+                    self._engine.upsert(mem.id, rel, mem.ns, _content_hash(mem), vec)
+            self._engine.commit()
             self._rebuilt_stamp = self._db_stamp()
-        except (sqlite3.DatabaseError, RuntimeError, OSError):
-            self._discard(db)
+        except (VectorEngineError, RuntimeError, OSError):
+            pass  # 引擎故障已自回收连接，这里只静默降级
 
     def _db_stamp(self) -> int | None:
         try:
             return self._path.stat().st_mtime_ns
         except OSError:
             return None
+
+    def _entry_up_to_date(
+        self, known: dict[str, tuple[str, str]], mem: Memory, rel: str
+    ) -> bool:
+        """单条缓存对账（flush_pending/_reconcile/sync 共用判定形状）：
+        entries 命中且内容 hash 未变 ⇒ 条目有效，仅修 rel 漂移（update_rel）
+        并返回 True；否则返回 False，由调用方走编码 upsert（sync/_reconcile
+        单条现编，flush_pending 攒批批量编码）。"""
+        entry = known.get(mem.id)
+        if entry is not None and entry[0] == _content_hash(mem):
+            if entry[1] != rel:
+                self._engine.update_rel(mem.id, rel)
+            return True
+        return False
 
     def _reconcile(self) -> None:
         """带外增删的增量对账：只编码 diff（新增/内容变更），未变更零编码。
@@ -173,33 +161,28 @@ class VectorIndex:
         已消失（删除/转入归档）的条目移除向量行；内容未变仅 rel_path 漂移
         （手编挪位）只更新 meta。故障保持静默（宁缺勿炸），下次读路径重试。
         """
-        db = self._connect()
-        if db is None:
+        if not self._usable():
+            return  # 无 embedder ⇒ no-op（旧 _connect 内嵌的同款守卫）
+        if not self._engine.open():
             return
         try:
             active = [(mem, rel) for mem, rel in self._scan_pairs() if not mem.archived]
-            known = {
-                mid: (content_hash, rel_path)
-                for mid, content_hash, rel_path in db.execute(
-                    "SELECT mem_id, content_hash, rel_path FROM meta"
-                )
-            }
+            known = self._engine.entries()
             active_ids = {mem.id for mem, _ in active}
             for mid in known:
                 if mid not in active_ids:
-                    self._remove(db, mid)
+                    self._engine.remove(mid)
             for mem, rel in active:
-                entry = known.get(mem.id)
-                if entry is not None and entry[0] == _content_hash(mem):
-                    if entry[1] != rel:
-                        db.execute("UPDATE meta SET rel_path = ? WHERE mem_id = ?", (rel, mem.id))
-                    continue
-                self._upsert(db, mem, rel)
-            db.commit()
+                if not self._entry_up_to_date(known, mem, rel):
+                    embedder = self._embedder
+                    assert embedder is not None
+                    vec = embedder([doc_text(mem)])[0]
+                    self._engine.upsert(mem.id, rel, mem.ns, _content_hash(mem), vec)
+            self._engine.commit()
             # 对账落盘后刷新基线，与 sync/rebuild 同款语义（避免自触发 stale）
             self._rebuilt_stamp = self._db_stamp()
-        except (sqlite3.DatabaseError, RuntimeError, OSError):
-            self._discard(db)
+        except (VectorEngineError, RuntimeError, OSError):
+            pass  # 宁缺勿炸：故障静默，下次读路径重试
 
     # ---------- interface ----------
 
@@ -211,121 +194,58 @@ class VectorIndex:
         if not self._usable():
             return
         self._ensure_live()
-        db = self._connect()
-        if db is None:
+        if not self._engine.open():
             return
         try:
             if mem.archived:
-                self._remove(db, mem.id)
-            else:
-                self._upsert(db, mem, rel_path)
-            db.commit()
+                self._engine.remove(mem.id)
+            elif not self._entry_up_to_date(self._engine.entries(), mem, rel_path):
+                embedder = self._embedder
+                assert embedder is not None
+                vec = embedder([doc_text(mem)])[0]
+                self._engine.upsert(mem.id, rel_path, mem.ns, _content_hash(mem), vec)
+            self._engine.commit()
             # 自己写盘后刷新基线，避免写路径落盘的文件/缓存 mtime 差在下次读路径
             # 被误判成"带外增删"而触发多余全量重建（与词法 Index._save 同思路）
             self._rebuilt_stamp = self._db_stamp()
-        except sqlite3.DatabaseError:
-            self._discard(db)
+        except VectorEngineError:
+            pass  # 引擎故障已自回收，静默降级（embedder 故障沿旧语义上抛，不在此吞）
 
     def knn(self, query_vec: list[float], k: int) -> list[tuple[str, str, float]]:
-        """KNN：[(mem_id, rel_path, cosine)]；vec0 MATCH 返回归一化向量 L2 距离，cos = 1 − d²/2。"""
+        """KNN：[(mem_id, rel_path, cosine)]；L2→余弦换算与 k 收口在引擎内。"""
         if not self._usable():
             return []
         self._ensure_fresh()
-        db = self._connect()
-        if db is None:
+        if not self._engine.open():
             return []
         try:
-            total = db.execute("SELECT count(*) FROM meta").fetchone()[0]
-            if total == 0:
-                return []
-            import sqlite_vec
-
-            rows = db.execute(
-                "SELECT m.mem_id, m.rel_path, v.distance FROM vecs v "
-                "JOIN meta m ON m.vec_row = v.rowid "
-                "WHERE v.embedding MATCH ? AND k = ? ORDER BY v.distance",
-                (sqlite_vec.serialize_float32(query_vec), min(k, total)),
-            ).fetchall()
-            return [(mid, rel, 1.0 - (d ** 2) / 2.0) for mid, rel, d in rows]
-        except sqlite3.DatabaseError:
-            self._discard(db)
+            return self._engine.knn(query_vec, k)
+        except VectorEngineError:
             return []
 
     def rebuild(self, memories: list[tuple[Memory, str]]) -> dict[str, int]:
         """全量重建（批量编码一次完成）；返回计数；不可用/失败时静默跳过。"""
         if not self._usable():
             return {"skipped": 1}
+        if not self._engine.open():
+            # 引擎不可用（依赖缺失/建连失败）在编码之前拦下——不白花编码成本
+            return {"skipped": 1}
+        embedder = self._embedder
+        assert embedder is not None
         try:
             active = [(mem, rel) for mem, rel in memories if not mem.archived]
-            vectors = self._embedder([doc_text(mem) for mem, _ in active])  # type: ignore[misc]
-            db = sqlite3.connect(self._path)
-            db.enable_load_extension(True)
-            sqlite_vec.load(db)
-            db.enable_load_extension(False)
-            db.execute("DROP TABLE IF EXISTS meta")
-            db.execute("DROP TABLE IF EXISTS vecs")
-            db.execute(f"CREATE VIRTUAL TABLE vecs USING vec0(embedding float[{EMBED_DIM}])")
-            db.execute(
-                "CREATE TABLE meta ("
-                "mem_id TEXT PRIMARY KEY, rel_path TEXT NOT NULL, ns TEXT NOT NULL, "
-                "content_hash TEXT NOT NULL, vec_row INTEGER NOT NULL)"
-            )
-            for (mem, rel), vec in zip(active, vectors):
-                cur = db.execute("INSERT INTO vecs(rowid, embedding) VALUES (?, ?)", (None, sqlite_vec.serialize_float32(vec)))
-                db.execute(
-                    "INSERT INTO meta(mem_id, rel_path, ns, content_hash, vec_row) VALUES (?, ?, ?, ?, ?)",
-                    (mem.id, rel, mem.ns, _content_hash(mem), cur.lastrowid),
-                )
-            db.commit()
-            db.close()
-            if self._db is not None:
-                self._discard(self._db)  # 重建用了独立连接，旧引用一并作废
-            self._db = None  # 下次 _connect 重开（拿到新 db）
+            vectors = embedder([doc_text(mem) for mem, _ in active])
+            rows = [
+                (mem.id, rel, mem.ns, _content_hash(mem), vec)
+                for (mem, rel), vec in zip(active, vectors)
+            ]
+            self._engine.rebuild(rows)
             self._rebuilt_stamp = self._db_stamp()
             return {"memories": len(active)}
-        except (sqlite3.DatabaseError, RuntimeError, OSError):
+        except (VectorEngineError, RuntimeError, OSError):
             return {"skipped": 1}
 
     def close(self) -> None:
         """显式释放缓存连接。Windows 上持有句柄会锁住 db 文件，
         需要删/挪 db 的调用方（测试模拟 db 丢失）先关再动。"""
-        self._discard(self._db)
-
-    # ---------- 内部 ----------
-
-    def _upsert(
-        self, db: sqlite3.Connection, mem: Memory, rel_path: str, vec: list[float] | None = None
-    ) -> None:
-        row = db.execute("SELECT content_hash, vec_row FROM meta WHERE mem_id = ?", (mem.id,)).fetchone()
-        new_hash = _content_hash(mem)
-        if row is not None and row[0] == new_hash:
-            db.execute("UPDATE meta SET rel_path = ? WHERE mem_id = ?", (rel_path, mem.id))
-            return
-        import sqlite_vec
-
-        if vec is None:
-            vec = self._embedder([doc_text(mem)])[0]  # type: ignore[misc]
-        if row is not None:
-            db.execute("DELETE FROM vecs WHERE rowid = ?", (row[1],))
-        cur = db.execute("INSERT INTO vecs(rowid, embedding) VALUES (?, ?)", (None, sqlite_vec.serialize_float32(vec)))
-        db.execute(
-            "INSERT INTO meta(mem_id, rel_path, ns, content_hash, vec_row) VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(mem_id) DO UPDATE SET rel_path = ?, content_hash = ?, vec_row = ?",
-            (mem.id, rel_path, mem.ns, new_hash, cur.lastrowid, rel_path, new_hash, cur.lastrowid),
-        )
-
-    def _remove(self, db: sqlite3.Connection, mem_id: str) -> None:
-        row = db.execute("SELECT vec_row FROM meta WHERE mem_id = ?", (mem_id,)).fetchone()
-        if row is not None:
-            db.execute("DELETE FROM vecs WHERE rowid = ?", (row[0],))
-            db.execute("DELETE FROM meta WHERE mem_id = ?", (mem_id,))
-
-    def _discard(self, db: sqlite3.Connection | None) -> None:
-        """坏连接退路：关掉并清引用，后续操作按缺失路径重建。"""
-        if db is not None:
-            try:
-                db.close()
-            except sqlite3.Error:
-                pass
-        if self._db is db:
-            self._db = None
+        self._engine.close()

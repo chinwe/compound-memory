@@ -95,9 +95,9 @@ def memory_get(mem_id: str, include_neighbors: bool = True, reader: str | None =
 
 
 @mcp.tool(structured_output=False)
-def memory_link(id_a: str, id_b: str) -> dict[str, Any]:
-    """Create a bidirectional link between two memories (compounding source #2: association). Both memories must live in the same namespace; cross-namespace links are rejected."""
-    return _store_or_configure().link(id_a, id_b)
+def memory_link(id_a: str, id_b: str, agent: str | None = None) -> dict[str, Any]:
+    """Create a bidirectional link between two memories (compounding source #2: association). Both memories must live in the same namespace; cross-namespace links are rejected. Memories in a private 'agent-<name>' namespace accept links only from the owner (agent = your own source agent id)."""
+    return _store_or_configure().link(id_a, id_b, agent=agent)
 
 
 @mcp.tool(structured_output=False)

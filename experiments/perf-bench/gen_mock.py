@@ -93,7 +93,8 @@ def make_memories(count: int, seed: int = 42, today: dt.date | None = None) -> l
             "confidence": round(rng.uniform(0.3, 1.0), 2),
         }
         if mtype in ("fact", "insight"):
-            mem["key"] = f"bench/{topic_name}/{rng.randint(0, 4)}"
+            # key 白名单：小写字母数字 + 连字符（斜杠分段与中文主题名会被 check_key 拒绝）
+            mem["key"] = f"bench-t{i % len(TOPICS)}-{rng.randint(0, 4)}"
         out.append(mem)
     return out
 

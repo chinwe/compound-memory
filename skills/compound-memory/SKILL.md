@@ -13,7 +13,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 2. **采纳即反馈**：命中且**实际采纳**后必须调 `memory_feedback`（`agent` 填本宿主 source id）——复利闭环的核心动作，漏掉它记忆库就不增值。归档记忆被 feedback 自动复活。
 3. **任务结束沉淀**：会话确认的稳定事实（用户偏好、项目约定、环境限制、踩坑结论）用 `memory_write` 写入，判据见下表；一次性、会话内临时信息只存在于会话。
 
-新记忆与已有记忆有因果/派生关系时用 `memory_link` 双向连上，检索时自动带出邻居（两条记忆必须同 ns，跨 ns 链被拒绝）。邻居是线索不是结论：采纳以 hit 本身为准。
+新记忆与已有记忆有因果/派生关系时用 `memory_link` 双向连上，检索时自动带出邻居（两条记忆必须同 ns，跨 ns 链被拒绝；私有 `agent-*` ns 的两条记忆须带 `agent`＝本宿主 source id，仅属主可连）。邻居是线索不是结论：采纳以 hit 本身为准。
 
 ## 写入约定
 
@@ -37,10 +37,10 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 |---|---|
 | `stats` | 看健康度：uses/confidence 分布、活性、蒸馏产出 |
 | `rebuild-index` | 手工编辑过记忆文件**内容**后（活性检测只覆盖新增/删除文件） |
-| `review-queue` / `review-resolve` | 处理同 key 冲突队列（人工裁决入口）：`review-resolve <废置id>` 清行并自动归档废置方（对侧保留活动区）；`--all` 只清空队列不归档 |
+| `review-queue` / `review-resolve` | 处理同 key 冲突队列（人工裁决入口）：`review-resolve <废置id>` 清行并自动归档废置方（对侧保留活动区）；`--all` 只清空队列不归档。私有 `agent-*` ns 的行仅属主可清（加 `--reader`）——`--all` 会静默保留别人的私有行，显式点名则报错；`review-queue` 展示仍全量 |
 | `decay` | 衰减归档，长期未用且少用才动（定时任务跑） |
 | `revive <id>` | 复活归档记忆（私有 ns 记忆加 `--reader`） |
-| `git-log` | 审计轨迹（每次写入自动 commit） |
+| `git-log` | 审计轨迹（每次写入自动 commit）；消费端降噪：`--grep PATTERN`（可多次，OR）只留消息匹配的提交、`--exclude PATTERN`（可多次）剔除匹配的提交，PATTERN 为正则作用于消息段（剥 hash），如 `git-log --exclude feedback` |
 | `extract <transcript\|dir>` | 会话抽取清单（P0）：确定性扫描，候选写 `extract/last-candidates.json`（一次性快照，下次扫描覆盖）。transcript 按内容自动判别四种形态：WorkBuddy session log、ZCode 会话库（`~/.zcode/cli/db/db.sqlite`，全量历史，直接指库文件）、Claude Code session log、DeepSeek Harness session（zstd 压缩，需系统 zstd CLI）。jsonl/zstd 传目录则批量扫（WorkBuddy 与 Claude 同为 `<项目>/<会话>.jsonl`，dsh 为 `<项目>/<会话>/session*.jsonl.zstd`）。`~/.workbuddy/traces/` 与 ZCode rollout/model-io 快照不接入——都只剩部分轮次，接进来是假阴性（理由见下） |
 
 ### 抽取清单确认（P0：扫描只发现候选，写库仍走协议）
@@ -62,7 +62,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | 宿主看不到 5 个 memory_* 工具 | 手动跑启动命令看报错：多为 uv 不在预期路径，或 `--directory` 指向的仓库位置漂移 |
 | 搜索为空 / 召回不全 | `stats` 看记忆量；怀疑索引损坏 `rebuild-index`（缓存可随时重建，检索降级不报错） |
 | SessionStart 没注入 | hook 任何异常都静默退出；手动跑 `~/.agents/memory/hooks/session_start.py` 查输出是否为合法 `{"additionalContext": ...}` JSON |
-| 写入/读取/反馈 `PermissionError` | ns 越权：日常写读 `_shared`；读私有 `agent-*` ns 要带 `reader`（`agent-<名>` 或 `<名>`） |
+| 写入/读取/反馈 `PermissionError` | ns 越权：日常写读 `_shared`；私有 `agent-*` ns 的读/反馈带 `reader`/`agent`、link 带 `agent`（`agent-<名>` 或 `<名>`） |
 | 报 `contradicts attested agent` | 宿主已注入进程身份（`COMPOUND_MEMORY_AGENT_ID`），自报身份与之矛盾：`source`/`agent` 改填自己的 agent id，`reader` 可直接省略（自动补真值）；仍报错则核对宿主 env 配置 |
 | `write` 报 `key must match` | key 格式不合规（禁大写/下划线/空格/日期前缀）：改用小写字母数字段以短横线连接（`proj-xxx`）；key 是同 key 更新的锚点，日期化会让事实更新退化成不断新增 |
 | 写入返回 `conflict: true` | 内容与既有版本不同，已入冲突队列；裁决后 `review-resolve <废置id>` 清行并自动归档废置方（索引同步、自动 commit，无需 rebuild）；`--all` 只清行不归档（无裁决信息） |

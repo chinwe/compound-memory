@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 from typing import Callable
 
-# 模型与维度的单一定义点：vector_index 建表维度也从这里 import，勿另设常量
+# 模型与维度的单一定义点：vector_engine 建表维度也从这里 import，勿另设常量
 MODEL_REPO_ID = os.environ.get("COMPOUND_MEMORY_EMBEDDING_MODEL", "Xenova/bge-small-zh-v1.5")
 EMBED_DIM = int(os.environ.get("COMPOUND_MEMORY_EMBEDDING_DIM", "512"))
 
