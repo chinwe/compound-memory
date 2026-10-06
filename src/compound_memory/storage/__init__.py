@@ -7,37 +7,31 @@
     index/vectors.db                 可重建的向量检索缓存（vec extra，缺失时自动降级）
     review-queue.md                  fact/insight 冲突队列
 
-包结构（ADR 0003）：facade.py 承载 MemoryStore；机制层五件（paths/files/
-gitlayer/locking/validation）随 #36 逐件外移；动词层七件已随 #37（读路径
-stats/review/distill/search/indexing）+ #38（写路径 writing/lifecycle）
-逐件外移。本 __init__ 全量 re-export 旧 storage.py 的模块级导入面——包外
-（tests/cli/server/extraction）零改动；新代码用规范路径（如
-compound_memory.storage.facade）。
+包结构（ADR 0003 终态，#36/#37/#38/#39）：facade.py 承载 MemoryStore
+（构造装配 + get/link 方法体 + 机制薄委托 + 动词一行转发）；机制层五件
+（paths/files/gitlayer/locking/validation）与动词层七件（stats/review/
+distill/search/indexing/writing/lifecycle）各为单一定义点。
+
+包级公开导入面（server/cli 消费面）收窄为五个名字：MemoryStore /
+default_root / MEMORY_TYPES / DISTILL_DUP_SIM_THRESHOLD /
+PROMOTION_USES_THRESHOLD。其余旧 re-export 名已移除，模块规范路径是
+唯一入口：桶函数→storage.stats，_unlink_file→storage.files，
+GIT_IDENTITY/GIT_LOCK_RETRY_DELAYS/_git_available→storage.gitlayer，
+_Batch→storage.locking，_PATH_COMPONENT_RE/_KEY_RE/check_validity→
+storage.validation，VEC_POOL→storage.search，生命周期阈值→storage.lifecycle。
 """
 
 from __future__ import annotations
 
-# 旧 storage.py 顶层 import 的 stdlib 模块引用（tests 经 storage_mod.os /
-# storage_mod.subprocess 打补丁——os/subprocess 是进程级单例，补丁全局生效，
-# 这里只为包模块保留旧命名空间属性，兼容既有测试的触达路径）
-import os
-import subprocess
-
 from ..model import MEMORY_TYPES
 from .distill import DISTILL_DUP_SIM_THRESHOLD, PROMOTION_USES_THRESHOLD
 from .facade import MemoryStore
-from .lifecycle import ARCHIVE_USES_THRESHOLD, CONF_CROSS_AGENT_BUMP, CONF_USE_BUMP
-from .files import _unlink_file
-from .gitlayer import GIT_IDENTITY, GIT_LOCK_RETRY_DELAYS, _git_available
-from .locking import _Batch
 from .paths import default_root
-from .search import VEC_POOL
-from .stats import (
-    CONFIDENCE_HISTOGRAM_BUCKETS,
-    RECENT_WINDOW_DAYS,
-    USES_HISTOGRAM_BUCKETS,
-    _conf_bucket,
-    _uses_bucket,
-    _within_days,
-)
-from .validation import _PATH_COMPONENT_RE, _KEY_RE, check_validity as _check_validity
+
+__all__ = [
+    "DISTILL_DUP_SIM_THRESHOLD",
+    "MEMORY_TYPES",
+    "MemoryStore",
+    "PROMOTION_USES_THRESHOLD",
+    "default_root",
+]

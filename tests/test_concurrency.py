@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import io
 import logging
+import os
+import subprocess
 import threading
 import time
 from contextlib import redirect_stderr
@@ -18,8 +20,8 @@ from pathlib import Path
 
 import pytest
 
-import compound_memory.storage as storage_mod
-from compound_memory.storage import MemoryStore, _unlink_file
+from compound_memory.storage import MemoryStore
+from compound_memory.storage.files import _unlink_file
 
 from conftest import CLOCK_DATE
 
@@ -37,13 +39,13 @@ class TestConcurrentWriters:
         _make_store(root).write("seed", type="fact", source="agent-a")
 
         # 放大 index.lock 撞车窗口：无锁实现下本测试必然暴露竞态
-        orig_run = storage_mod.subprocess.run
+        orig_run = subprocess.run
 
         def slow_run(*args: object, **kwargs: object):
             time.sleep(0.02)
             return orig_run(*args, **kwargs)  # type: ignore[arg-type]
 
-        monkeypatch.setattr(storage_mod.subprocess, "run", slow_run)
+        monkeypatch.setattr(subprocess, "run", slow_run)
 
         ids: list[str] = []
         errors: list[str] = []
@@ -77,14 +79,14 @@ class TestConcurrentWriters:
 
     def test_lock_unavailable_warns_and_proceeds(self, store: MemoryStore, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch) -> None:
         """锁不可用的异常环境：响亮告警 + 降级无锁执行，不静默、不死锁。"""
-        real_open = storage_mod.os.open
+        real_open = os.open
 
         def deny_lock_file(path: object, *args: object, **kwargs: object) -> int:
             if str(path).endswith(".lock"):
                 raise OSError("lock fs unavailable")
             return real_open(path, *args, **kwargs)  # type: ignore[arg-type]
 
-        monkeypatch.setattr(storage_mod.os, "open", deny_lock_file)
+        monkeypatch.setattr(os, "open", deny_lock_file)
         with caplog.at_level(logging.WARNING, logger="compound_memory.storage"):
             result = store.write("still lands", type="fact", source="agent-a")
         assert store.find(result["id"]) is not None
