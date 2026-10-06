@@ -1,11 +1,8 @@
-"""存储层：Markdown + YAML frontmatter、命名空间、git、复利引擎。
+"""MemoryStore 组合点（facade，ADR 0003 / #36）：机制件装配 + 全部动词方法。
 
-根目录布局：
-    namespaces/<ns>/<type>/<id>.md   活动记忆
-    archive/<ns>/<type>/<id>.md      衰减归档（可恢复）
-    index/tokens.json                可重建的词法检索缓存
-    index/vectors.db                 可重建的向量检索缓存（vec extra，缺失时自动降级）
-    review-queue.md                  fact/insight 冲突队列
+骨架片：storage.py 原样迁入本包，模块代码零改动；后续机制件（paths/files/
+gitlayer/locking/validation）逐片外移后，facade 对应方法退化为薄委托；
+动词方法体的外移归动词票（#37/#38）。包级布局与旧导入面见 __init__.py。
 """
 
 from __future__ import annotations
@@ -28,11 +25,11 @@ from typing import Any, Callable, Iterator, overload
 
 import yaml
 
-from .index import Index, atomic_write_text
-from .model import MEMORY_TYPES, TTL_DAYS, Memory
-from .review_queue import ReviewQueue
-from .scoring import age_days, doc_text, dup_similarity_matrix, is_expired, rank, recency_age, tokenize
-from .vector_index import VectorIndex
+from ..index import Index, atomic_write_text
+from ..model import MEMORY_TYPES, TTL_DAYS, Memory
+from ..review_queue import ReviewQueue
+from ..scoring import age_days, doc_text, dup_similarity_matrix, is_expired, rank, recency_age, tokenize
+from ..vector_index import VectorIndex
 
 # storage 域告警的单点 logger：扫描容错（#20）与向量降级（#19）共用
 logger = logging.getLogger(__name__)

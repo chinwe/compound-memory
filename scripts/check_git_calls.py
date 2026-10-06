@@ -18,7 +18,8 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "compound_memory"
 
 def main() -> int:
     bad: list[str] = []
-    for path in sorted(SRC.glob("*.py")):
+    # rglob：storage.py 已拆为 storage/ 包（#36），_git 调用点随机制件迁入子包
+    for path in sorted(SRC.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if (
