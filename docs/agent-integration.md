@@ -223,6 +223,12 @@ dsh 通过 MCP client 插件 `@deepseek-ai/dsh-mcp-client` 接入，一个插件
 uv run compound-memory stats          # 健康度：uses/confidence 固定桶 + 活性 + 蒸馏产出量
 uv run compound-memory decay          # 衰减归档（launchd/cron 定时跑；长期未用且少用才动）
 uv run compound-memory revive <id>    # 复活归档记忆（CLI 唯一入口）
+uv run compound-memory forget <id> --agent <agent id> [--reason <动机短语>]  # 终态遗忘（ADR-0009）：
+                                      #   文件物理移出（活动/归档区皆可）+ 单条 commit 留痕，内容仅存 git 历史；
+                                      #   不可复活（对被遗忘记忆 feedback/revive 返回 found: false，恢复 = 带外 git 运维）；
+                                      #   私有 agent-* ns 仅属主可遗忘（--agent 与 feedback 同规）；幂等（不存在/已遗忘
+                                      #   返回 found: false）；--reason 是动机短语（单行限 80 字符），不贴记忆正文；
+                                      #   隐私边界：解决「活动库不再携带」，不解决「历史不再包含」
 uv run compound-memory review-queue   # fact/insight 同 key 冲突队列（人工复核，CLI 唯一入口；展示全量）
 uv run compound-memory review-resolve <废置id> [--reader <agent id>]  # 清行并自动归档废置方；
                                       #   私有 agent-* ns 的行仅属主可清（--reader）；--all 只清行不归档，
