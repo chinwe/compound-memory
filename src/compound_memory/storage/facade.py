@@ -289,8 +289,15 @@ class MemoryStore:
         include_neighbors: bool = True,
         reader: str | None = None,
         project: str | None = None,
+        explain: bool = False,
     ) -> list[dict[str, Any]]:
-        return search_mod.search(self, query, ns, top_k, include_neighbors, reader, project)
+        return search_mod.search(self, query, ns, top_k, include_neighbors, reader, project, explain)
+
+    def explain(self, mem_id: str, reader: str | None = None) -> dict[str, Any]:
+        """按 id 证据视图（ADR-0008 展示边界/#44）：证据计数 + 跨宿主验证明细 +
+        派生标记 + 当前 conf。读路径零提交；门禁同 get（私有 ns 仅属主）。
+        入口仅 store + CLI——MCP 恰好 5 tool 红线不动，get 不扩 explain 参数。"""
+        return search_mod.explain(self, mem_id, reader)
 
     # ---------- 衰减 / 归档 / 复活（动词件 lifecycle.py） ----------
 
