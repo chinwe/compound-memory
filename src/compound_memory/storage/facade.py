@@ -19,9 +19,9 @@ from typing import Any, Callable, Iterator, overload
 from ..index import Index
 from ..model import MEMORY_TYPES, TTL_DAYS, Memory
 from ..review_queue import ReviewQueue
-from ..scoring import doc_text, dup_similarity_matrix, is_expired, rank, recency_age, tokenize
+from ..scoring import is_expired, rank, recency_age, tokenize
 from ..vector_index import VectorIndex
-from . import files, gitlayer, locking, paths, review, stats as stats_mod, validation
+from . import distill, files, gitlayer, locking, paths, review, stats as stats_mod, validation
 from .files import _unlink_file
 from .gitlayer import _git_available
 from .locking import _Batch
@@ -36,10 +36,6 @@ VEC_POOL = 16
 ARCHIVE_USES_THRESHOLD = 3
 CONF_USE_BUMP = 0.1
 CONF_CROSS_AGENT_BUMP = 0.15
-# 蒸馏信号阈值（distill-plan 单一定义点；CLI --help 文本由这两个常量生成，不会漂移）：
-# 疑似重复 = normalized_similarity(BM25/n_query_tokens) 达到该值；晋升建议 = episode 高活性门槛
-DISTILL_DUP_SIM_THRESHOLD = 0.5
-PROMOTION_USES_THRESHOLD = 5
 
 
 class MemoryStore:
@@ -513,95 +509,10 @@ class MemoryStore:
         ns: str = "_shared",
         reader: str | None = None,
     ) -> dict[str, Any]:
-        """蒸馏候选扫描：窗口 + 活性门过滤，产出带信号标注的建议清单（只标注不合并）。
-
-        主候选三类信号：merge_with（同 ns 同 type 同 key，强信号）、possible_dup_of
-        （BM25 normalized_similarity ≥ DISTILL_DUP_SIM_THRESHOLD，弱信号）、
-        promotion_candidate（episode 高活性，晋升建议——判断后置，#6）。
-        另有 key_duplicates 专项段：同 ns 同 type 同 key 组员 ≥2 的多版本组，
-        不受窗口/活性门限制（废置旧版 uses=0 进不了主候选，运维实测盲区）。
-        归档区不参与；过期（valid_until 已过）与坏日期记忆按宁缺勿滥跳过。
-
-        reader：候选带正文返回，扫私有 ns 须属主（与 get/search 同规则）。
-        """
-        self._check_ns(ns)
-        reader = self._resolve_identity(reader, "reader")
-        self._check_ns_owner(ns, reader)
-        now = self._clock()
-        cands: list[Memory] = []
-        for mem, _path in self._scan_parsed(self.ns_root / ns):
-            if is_expired(mem, now):
-                continue  # 过期事实不该被蒸馏固化进新产物
-            age = recency_age(mem, now)
-            if age is None or age > window_days:
-                continue
-            if mem.uses < min_uses or mem.confidence < min_confidence:
-                continue
-            cands.append(mem)
-        sims = dup_similarity_matrix([doc_text(m) for m in cands])
-        by_key: dict[tuple[str, str], list[int]] = {}
-        for i, mem in enumerate(cands):
-            if mem.key:
-                by_key.setdefault((mem.type, mem.key), []).append(i)
-        # 同 key 多版本专项（2026-10-05 运维盲区）：清行未归档的废置旧版 uses=0，
-        # 会被主候选的 uses≥1 活性门滤出人审视野——专项段不受窗口/活性门限制，
-        # 只按「同 ns 同 type 同 key 组员 ≥2」圈出全组成员，判断段据此做归档取舍。
-        key_groups: dict[tuple[str, str], list[Memory]] = {}
-        for mem, _path in self._scan_parsed(self.ns_root / ns):
-            if is_expired(mem, now):
-                continue
-            if recency_age(mem, now) is None:
-                continue  # 坏日期跳过，与主扫描同规（宁缺勿滥）
-            if mem.key:
-                key_groups.setdefault((mem.type, mem.key), []).append(mem)
-        key_duplicates = [
-            {
-                "type": mtype,
-                "key": mkey,
-                "members": [
-                    {
-                        "id": m.id,
-                        "created": m.created,
-                        "uses": m.uses,
-                        "confidence": m.confidence,
-                        "content": m.content,
-                    }
-                    for m in sorted(members, key=lambda m: (m.created, m.id))
-                ],
-            }
-            for (mtype, mkey), members in sorted(key_groups.items())
-            if len(members) >= 2
-        ]
-        candidates: list[dict[str, Any]] = []
-        for i, mem in enumerate(cands):
-            merge_with = (
-                [cands[j].id for j in by_key[(mem.type, mem.key)] if j != i] if mem.key else []
-            )
-            candidates.append(
-                {
-                    "id": mem.id,
-                    "type": mem.type,
-                    "key": mem.key,
-                    "uses": mem.uses,
-                    "confidence": mem.confidence,
-                    "created": mem.created,
-                    "last_used": mem.last_used,
-                    "content": mem.content,
-                    "merge_with": merge_with,
-                    "possible_dup_of": [
-                        cands[j].id for j in range(len(cands)) if j != i and sims[i][j] >= DISTILL_DUP_SIM_THRESHOLD
-                    ],
-                    "promotion_candidate": mem.type == "episode" and mem.uses >= PROMOTION_USES_THRESHOLD,
-                }
-            )
-        return {
-            "window_days": window_days,
-            "min_uses": min_uses,
-            "min_confidence": min_confidence,
-            "ns": ns,
-            "candidates": candidates,
-            "key_duplicates": key_duplicates,
-        }
+        """蒸馏动词转发：实现体与阈值常量在动词件 distill.py。"""
+        return distill.distill_plan(
+            self, window_days=window_days, min_uses=min_uses, min_confidence=min_confidence, ns=ns, reader=reader
+        )
 
     def distill_apply(
         self,
@@ -613,45 +524,10 @@ class MemoryStore:
         key: str | None = None,
         confidence: float | None = None,
     ) -> dict[str, Any]:
-        """蒸馏落库（原子）：产物写入（links 溯源到全部源、origin=distillation）+
-        源批量归档，收进一次 commit。源任一不存在 ⇒ 整体不落库（found: False）。
-        产物与现存 fact/insight 的 key 冲突走既有 review 队列机制，不特殊对待。
-        """
-        source = self._resolve_identity(source, "source")
-        source_ids = list(dict.fromkeys(source_ids))  # 去重保序：重复源只归档一次
-        with self.batch() as batch_ctx:
-            # 源读取在写锁内（batch 持锁）：find 在锁外时，间隙内并发 feedback
-            # 的 uses/confidence 会被旧快照在归档写回时覆盖丢失（写动词
-            # 读-改-写全程持锁的自查条款）。检查失败零操作，批尾不产生提交。
-            sources = [self.find(mid) for mid in source_ids]
-            missing = [mid for mid, mem in zip(source_ids, sources) if mem is None]
-            if missing:
-                return {"found": False, "missing": missing}
-            # 蒸馏不跨 ns：私有记忆被当源蒸进 _shared 是正文泄漏通道；
-            # distill_plan 本就按单 ns 扫描，源与产物同 ns 是既定流程
-            foreign_ns = sorted({s.ns for s in sources if s is not None and s.ns != ns})
-            if foreign_ns:
-                raise ValueError(f"distill sources must live in target ns {ns!r}; found in: {foreign_ns}")
-            result = self.write(
-                content,
-                type=type,
-                source=source,
-                ns=ns,
-                key=key,
-                links=source_ids,
-                confidence=confidence,
-                origin="distillation",
-            )
-            archived: list[str] = []
-            for src in sources:
-                assert src is not None
-                if not src.archived:
-                    self._archive(src)
-                archived.append(src.id)
-            batch_ctx.message = f"distill apply {result['id']} <- " + ", ".join(archived)
-        result["found"] = True
-        result["archived_sources"] = archived
-        return result
+        """蒸馏动词转发：实现体在动词件 distill.py（batch/write 经属性查找）。"""
+        return distill.distill_apply(
+            self, content, type=type, source=source, source_ids=source_ids, ns=ns, key=key, confidence=confidence
+        )
 
     # ---------- 索引（可重建缓存；机制在 index.Index 与 vector_index.VectorIndex） ----------
 
