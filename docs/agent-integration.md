@@ -42,7 +42,7 @@ uv run --directory <仓库> compound-memory init
 | `memory_search` | 检索 | 返回 `{"hits": [...]}` 按分数排序；命中自动内嵌最多 3 条一度邻居；`include_neighbors=False` 可关。不传 `ns` 时双通道检索：`_shared` + 调用方自有私有 ns（身份已知时，私有条目自动带出）；显式传 `ns` 只搜该 ns，查 `agent-*` 时必带 `reader`（自己的 agent id），缺省即拒绝。可选 `project`（小写 slug）：**fail-closed**——不传只见全局记忆，传了见 全局 ∪ 该项目 |
 | `memory_get` | 按 id 取回 | 恒含 `found` 键；默认带一度邻居；目标在私有 ns 时必带 `reader`，缺省即拒绝。按 id 恒可读（project 不限制 get 本体）；可选 `project` 只用于邻居带出的适用性过滤（邻居=全局 ∪ 该项目） |
 | `memory_link` | 双向关联两条记忆 | 复利来源②：关联带出；两条记忆必须同 ns，跨 ns 链被拒绝；私有 ns 记忆仅属主可连（`agent` 填自己的 agent id） |
-| `memory_feedback` | 上报"这条记忆被实际采纳了" | uses+1、conf+0.1；**跨 Agent 验证额外 +0.15**；归档记忆被 feedback 自动复活；私有 ns 记忆仅属主可反馈。**采纳后必须调用** |
+| `memory_feedback` | 上报"这条记忆被实际采纳了"（可带 outcome） | 缺省 `outcome=success`：uses+1、conf+0.1；**跨宿主首验额外 +0.15**（每宿主每记忆一次）。可选 outcome：`failure` 误导（conf −0.2，地板 0.05，重复累计）；`contradiction` 争议（conf 冻结、入冲突队列待裁决）；`obsolete` 被取代（立即归档）；`unknown` 只记事件。归档记忆被 feedback 自动复活（obsolete 除外）；私有 ns 记忆仅属主可反馈。**采纳后必须调用**；用错了要如实报 failure——置信度是证据正确性，只升不降会掩护错误记忆 |
 
 ### 统一约定（各宿主必须一致）
 
@@ -234,7 +234,8 @@ uv run compound-memory forget <id> --agent <agent id> [--reason <动机短语>] 
 uv run compound-memory review-queue   # fact/insight/decision 同 key 冲突队列（人工复核，CLI 唯一入口；展示全量）
 uv run compound-memory review-resolve <废置id> [--reader <agent id>]  # 清行并自动归档废置方；
                                       #   私有 agent-* ns 的行仅属主可清（--reader）；--all 只清行不归档，
-                                      #   且对非属主的私有行静默保留
+                                      #   且对非属主的私有行静默保留；contradiction 争议行加 --uphold
+                                      #   表示维持原记忆（解冻并按 failure −0.2 折算），缺省为确错归档
 uv run compound-memory rebuild-index  # 手编已有文件内容后重建检索缓存
 uv run compound-memory extract <transcript|dir>  # 会话抽取清单（P0）：确定性扫描 →
                                       #   extract/last-candidates.json；Agent 逐条确认后 memory_write 落库

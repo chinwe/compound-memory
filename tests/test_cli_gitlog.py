@@ -76,10 +76,12 @@ class TestGrepFilter:
 
     def test_grep_is_regex_not_plain_substring(self, tmp_path, monkeypatch, capsys):
         rc, lines = _run_git_log(
-            monkeypatch, capsys, _seeded_root(tmp_path), "--grep", r"^feedback \S+ by agent-b: uses=\d+ conf="
+            monkeypatch, capsys, _seeded_root(tmp_path),
+            "--grep", r"^feedback \S+ by agent-b: outcome=\S+ uses=\d+ conf=",
         )
         assert rc == 0
         # ^ 锚定消息段（hash 已剥）+ 转义字面量：纯 substring 语义下 "^feedback" 不可能命中
+        # （模式含 outcome= 段：#53 契约变更后 feedback 消息模板的新形态）
         assert len(lines) == 1 and _messages(lines)[0].startswith("feedback ")
 
     def test_multiple_grep_is_or(self, tmp_path, monkeypatch, capsys):

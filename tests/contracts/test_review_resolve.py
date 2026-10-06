@@ -91,6 +91,37 @@ class TestPermissionMatrix:
         assert len(lines) == 1 and old in lines[0] and new in lines[0]
 
 
+class TestContradictionRows:
+    """ADR-0007 独立行型：`- <date> contradiction <mem_id>: by <agent> (<note 前 40 字>)`。
+    行格式单一定义点（ReviewQueue）内扩展；行 roundtrip 与裁决二选一在此钉住。"""
+
+    def _contradiction_row(self, store: MemoryStore, key: str = "ctr") -> str:
+        mem = store.write(f"contract review contradiction {key}", type="fact", source=FOREIGN, key=key)
+        store.feedback(mem["id"], "agent-b", outcome="contradiction")
+        return mem["id"]
+
+    def test_row_roundtrip_display_and_resolve(self, store: MemoryStore):
+        """登记行可展示（行内含 mem_id/agent/正文片段）、可按 id 清行。"""
+        mem_id = self._contradiction_row(store)
+        lines = store.review_queue()
+        assert len(lines) == 1
+        assert mem_id in lines[0] and "agent-b" in lines[0] and "contradiction" in lines[0]
+        out = store.review_resolve([mem_id])
+        assert out["resolved"] == 1
+        assert store.review_queue() == []
+
+    def test_uphold_commit_message_template(self, store: MemoryStore):
+        """裁决「维持」的提交消息带 (upheld: ...) 段（契约变更：ADR-0007 折算留痕）。"""
+        mem_id = self._contradiction_row(store)
+        before = commit_count(store)
+        store.review_resolve([mem_id], uphold=True)
+        assert commit_count(store) == before + 1
+        m = matches("review_resolve", last_message(store))
+        assert m["n"] == "1"
+        assert m["upheld"] == mem_id
+        assert m["ids"] is None  # 未归档任何记忆
+
+
 class TestSideEffects:
     def test_commits_with_archive_suffix_template(self, store: MemoryStore):
         old, _ = _shared_conflict(store)

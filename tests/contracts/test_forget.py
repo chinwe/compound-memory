@@ -154,6 +154,15 @@ class TestReviewQueueInteraction:
         mem = store.write("contract forget no rows", type="episode", source="agent-a")
         assert store.forget(mem["id"], "agent-a")["found"] is True
 
+    def test_forget_clears_contradiction_rows_too(self, store: MemoryStore):
+        """#53 并集钉：contradiction 争议行同样在 forget 清行范围——否则被遗忘
+        记忆的幽灵争议行永久占队列（行清不掉时冻结判定也随记忆一起无意义）。"""
+        mem = store.write("contract forget disputed", type="fact", source="agent-a")
+        store.feedback(mem["id"], "agent-b", outcome="contradiction")
+        assert len(store.review_queue()) == 1
+        assert store.forget(mem["id"], "agent-a")["found"] is True
+        assert store.review_queue() == []
+
 
 class TestForgetFromArchive:
     def test_archived_memory_is_forgettable(self, store: MemoryStore):

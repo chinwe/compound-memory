@@ -84,6 +84,40 @@ class TestPermissionMatrix:
         assert store.get(priv["id"], reader=OWNER)["archived"] is False
 
 
+class TestProductEvidence:
+    """ADR-0008：蒸馏产物证据块显式零起点（惰性缺省只覆盖存量旧记忆，不覆盖
+    新写产物——继承源计数同为双重计数）；产物 feedback 永不折算回源。"""
+
+    def test_product_gets_explicit_zero_block(self, store: MemoryStore):
+        src = _seed_sources(store, 1)[0]
+        out = store.distill_apply(
+            "contract zero product", type="insight", source="agent-a", source_ids=[src["id"]]
+        )
+        got = store.get(out["id"])
+        assert got["evidence"] == {
+            "success_count": 0,
+            "failure_count": 0,
+            "contradiction_count": 0,
+            "last_verified": None,
+            "recent": [],
+        }
+        raw = (store.ns_root / "_shared" / "insight" / f"{out['id']}.md").read_text()
+        assert "evidence:" in raw  # 显式零块落盘，不是缺省推断
+
+    def test_product_feedback_never_folds_back_to_sources(self, store: MemoryStore):
+        s1 = store.write("contract fold src one", type="fact", source="agent-a")
+        s2 = store.write("contract fold src two", type="fact", source="agent-a")
+        out = store.distill_apply(
+            "contract fold product", type="insight", source="agent-a", source_ids=[s1["id"], s2["id"]]
+        )
+        store.feedback(out["id"], "agent-b", outcome="failure")
+        assert store.get(out["id"])["confidence"] == 0.3
+        for sid in (s1["id"], s2["id"]):
+            src = store.find(sid)  # 归档区文件照读
+            assert src is not None
+            assert src.uses == 0 and src.confidence == 0.5 and src.evidence is None
+
+
 class TestSideEffects:
     def test_single_commit_with_template_message(self, store: MemoryStore):
         """P5：产物写入 + 源归档收进恰好一次 commit，消息含产物 id 与源清单。"""

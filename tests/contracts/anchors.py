@@ -24,19 +24,22 @@ PRIVATE_NS = "agent-zcode"
 
 # #31 决议钉定的写路径提交消息模板（七写动词 + batch 两形态 + 三类特殊提交中的两个）。
 # 正则整体锚定（^...$），分组名供断言取字段。
+# 契约变更（#53，ADR-0007/0008 背书）：feedback 模板扩 outcome= 段（证据事件进
+# 提交消息，git 历史即证据全史）；review_resolve 模板扩可选 (upheld: ...) 段
+# （contradiction 裁决「维持」的折算留痕）。
 # 契约变更（#48 / ADR-0009）：终态遗忘动词 forget 加入模板表
 # ——reason 是可选段（动机短语，单行化限 80 字符，不含记忆正文）。
 COMMIT_TEMPLATES: dict[str, str] = {
     # 【契约变更 #46】write 模板的 type alternation 扩入 decision（类型表新增行），
     # 模板格式本身（write {id} ({type}/{ns}) by {source}）未动。
     "write": r"^write (?P<id>\S+) \((?P<type>episode|fact|insight|skill|decision)/(?P<ns>\S+)\) by (?P<source>\S+)$",
-    "feedback": r"^feedback (?P<id>\S+) by (?P<agent>\S+): uses=(?P<uses>\d+) conf=(?P<conf>\d+(?:\.\d+)?)$",
+    "feedback": r"^feedback (?P<id>\S+) by (?P<agent>\S+): outcome=(?P<outcome>\S+) uses=(?P<uses>\d+) conf=(?P<conf>\d+(?:\.\d+)?)$",
     "forget": r"^forget (?P<id>\S+) by (?P<agent>\S+)(?:: reason=(?P<reason>.+))?$",
     "link": r"^link (?P<a>\S+) <-> (?P<b>\S+)$",
     "decay": r"^decay: archive (?P<ids>\S+(?:, \S+)*)$",
     "revive": r"^revive (?P<id>\S+)$",
     "distill_apply": r"^distill apply (?P<id>\S+) <- (?P<sources>\S+(?:, \S+)*)$",
-    "review_resolve": r"^review resolve (?P<n>\d+) entries(?: \(archived: (?P<ids>\S+(?:, \S+)*)\))?$",
+    "review_resolve": r"^review resolve (?P<n>\d+) entries(?: \(archived: (?P<ids>\S+(?:, \S+)*)\))?(?: \(upheld: (?P<upheld>\S+(?:, \S+)*)\))?$",
     "batch": r"^batch write (?P<n>\d+) entries(?: \(partial\))?$",
     "init": r"^init compound-memory store$",
     "orphan": r"^orphan changes recovered$",

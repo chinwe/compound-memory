@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,27 @@ TYPE_SPEC: dict[str, TypeSpec] = {
 MEMORY_TYPES = tuple(TYPE_SPEC)
 TTL_DAYS: dict[str, int | None] = {t: s.ttl_days for t, s in TYPE_SPEC.items()}
 
+# 证据块 recent 明细上限（ADR-0007，perf 守门）：frontmatter parse 是读路径延迟大头，
+# 明细封顶防 yaml 膨胀；老明细语义化进计数不丢失，全史审计走 commit 消息（混合三层②）。
+EVIDENCE_RECENT_CAP = 10
+
+
+def zero_evidence() -> dict[str, Any]:
+    """显式零证据块（ADR-0008）：蒸馏产物是新写记忆，不适用惰性缺省——
+    继承源计数同为双重计数，落库时显式 {0,0,0} 起点。每次调用返回新 dict
+    （避免共享可变缺省）。"""
+    return {"success_count": 0, "failure_count": 0, "contradiction_count": 0, "last_verified": None, "recent": []}
+
+
+def evidence_view(mem: Memory) -> dict[str, Any]:
+    """证据块运行时视图（惰性迁移单点，ADR-0007）：无块旧记忆读为
+    {success_count: uses, failure_count: 0, contradiction_count: 0}——uses 无差别
+    映射 success（诚实反映「只知被用过」），首次 feedback 才落盘写块；无全库改写。
+    有块时原样返回 mem.evidence 本体（调用方改完直接赋回，无第二份拷贝）。"""
+    if mem.evidence is not None:
+        return mem.evidence
+    return {"success_count": mem.uses, "failure_count": 0, "contradiction_count": 0, "last_verified": None, "recent": []}
+
 
 @dataclass
 class Memory:
@@ -54,6 +76,11 @@ class Memory:
     valid_until: str | None = None
     # 写入来源通道（frontmatter 可选字段）：普通写入不落盘，仅蒸馏产物为 "distillation"
     origin: str | None = None
+    # 证据块（ADR-0007/0008，frontmatter 可选字段）：带 outcome 反馈事件的唯一运行时
+    # 数据源，置信度由此折算、可升可降。None = 无块（存量旧记忆，读时经 evidence_view
+    # 惰性迁移；普通写不落盘，仅蒸馏产物显式零块与首次 feedback 落盘写块）。
+    # 绝不进 doc_text（scoring.doc_text = content + key）——feedback 不触发向量重编码。
+    evidence: dict[str, Any] | None = None
     # 适用范围标注（frontmatter 可选字段，ADR 0010）：小写 slug（校验单点 validation），
     # 空 = 跨项目通用（全局）。检索适用性轴，与 ns 的可见性/属主轴正交；
     # 纯元数据过滤，绝不进落盘路径（namespaces/<ns>/<type>/<id>.md 不变）
