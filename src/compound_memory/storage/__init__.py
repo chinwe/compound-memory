@@ -27,13 +27,13 @@ from .facade import (
     CONF_CROSS_AGENT_BUMP,
     CONF_USE_BUMP,
     MEMORY_TYPES,
-    VEC_POOL,
     MemoryStore,
 )
 from .files import _unlink_file
 from .gitlayer import GIT_IDENTITY, GIT_LOCK_RETRY_DELAYS, _git_available
 from .locking import _Batch
 from .paths import default_root
+from .search import VEC_POOL
 from .stats import (
     CONFIDENCE_HISTOGRAM_BUCKETS,
     RECENT_WINDOW_DAYS,
