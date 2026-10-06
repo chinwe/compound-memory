@@ -19,7 +19,15 @@ from typing import Any, Callable, Protocol, overload
 
 from ..index import Index
 from ..liveness import ScanWindow
-from ..model import Memory, evidence_view
+from ..model import (
+    EVIDENCE_CONTRADICTION_COUNT,
+    EVIDENCE_FAILURE_COUNT,
+    EVIDENCE_LAST_VERIFIED,
+    EVIDENCE_RECENT,
+    EVIDENCE_SUCCESS_COUNT,
+    Memory,
+    evidence_view,
+)
 from ..scoring import DocStats, expired_by_date, is_expired, rank, tokenize
 from ..vector_index import VectorIndex
 from .validation import check_project
@@ -160,10 +168,10 @@ def evidence_summary(mem: Memory) -> dict[str, Any]:
     ev = evidence_view(mem)
     return {
         "origin": mem.origin,
-        "success_count": ev.get("success_count", 0),
-        "failure_count": ev.get("failure_count", 0),
-        "contradiction_count": ev.get("contradiction_count", 0),
-        "last_verified": ev.get("last_verified"),
+        "success_count": ev.get(EVIDENCE_SUCCESS_COUNT, 0),
+        "failure_count": ev.get(EVIDENCE_FAILURE_COUNT, 0),
+        "contradiction_count": ev.get(EVIDENCE_CONTRADICTION_COUNT, 0),
+        "last_verified": ev.get(EVIDENCE_LAST_VERIFIED),
     }
 
 
@@ -197,11 +205,11 @@ def explain(store: SearchDeps, mem_id: str, reader: str | None = None) -> dict[s
         "derived": mem.origin == "distillation",
         "validated_by": list(mem.validated_by),
         "evidence": {
-            "success_count": ev.get("success_count", 0),
-            "failure_count": ev.get("failure_count", 0),
-            "contradiction_count": ev.get("contradiction_count", 0),
-            "last_verified": ev.get("last_verified"),
-            "recent": [dict(d) for d in ev.get("recent", [])],
+            "success_count": ev.get(EVIDENCE_SUCCESS_COUNT, 0),
+            "failure_count": ev.get(EVIDENCE_FAILURE_COUNT, 0),
+            "contradiction_count": ev.get(EVIDENCE_CONTRADICTION_COUNT, 0),
+            "last_verified": ev.get(EVIDENCE_LAST_VERIFIED),
+            "recent": [dict(d) for d in ev.get(EVIDENCE_RECENT, [])],
         },
     }
 

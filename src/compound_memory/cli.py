@@ -264,7 +264,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "forget",
         help="terminally remove a memory (ADR-0009): file physically removed, one audit commit; content survives only in git history",
-        description="Terminal controlled deletion (ADR-0009): the memory file is physically removed "
+        description="Terminal forget (ADR-0009): the memory file is physically removed "
         "(active or archive area) and exactly one forget commit keeps the audit trail — content "
         "survives only in git history, recovery is out-of-band git surgery (checkout/revert), there "
         "is no in-system revive. Idempotent: an unknown or already-forgotten id returns "

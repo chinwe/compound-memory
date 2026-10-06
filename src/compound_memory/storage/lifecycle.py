@@ -23,7 +23,16 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol, overload
 
-from ..model import Memory, EVIDENCE_RECENT_CAP, evidence_view
+from ..model import (
+    EVIDENCE_CONTRADICTION_COUNT,
+    EVIDENCE_FAILURE_COUNT,
+    EVIDENCE_LAST_VERIFIED,
+    EVIDENCE_RECENT,
+    EVIDENCE_RECENT_CAP,
+    EVIDENCE_SUCCESS_COUNT,
+    Memory,
+    evidence_view,
+)
 from ..review_queue import ReviewQueue
 from ..scoring import recency_age
 
@@ -101,12 +110,21 @@ class LifecycleDeps(Protocol):
     def _resolve_identity(self, value: str | None, role: str) -> str | None: ...
 
 
+def _bump_failure_count(ev: dict[str, Any]) -> None:
+    """failure_count+1 计数表达式单点：feedback 事件记账（冻结期仅记账、数值
+    原地）与 fold_failure 共用这一份，无第二份拷贝。"""
+    ev[EVIDENCE_FAILURE_COUNT] = ev.get(EVIDENCE_FAILURE_COUNT, 0) + 1
+
+
 def fold_failure(mem: Memory) -> None:
-    """failure 折算单点（feedback 与 review-resolve uphold 共用，无第二份拷贝）：
-    conf −0.2 地板 0.05、failure_count+1（ADR-0007 折算表 + 裁决「维持」折算）。"""
+    """failure 全额折算单点（feedback 未冻结分支与 review-resolve uphold 共用，
+    无第二份拷贝）：conf −0.2 地板 0.05 + failure_count+1（ADR-0007 折算表 +
+    裁决「维持」折算）。conf 罚分表达式全仓仅此一份；计数表达式单点在
+    _bump_failure_count——feedback 冻结期数值原地不折算，仅经它记账，
+    故两侧的折算表达式各自只有一份（冻结门禁把「计数」与「罚分」拆开）。"""
     mem.confidence = round(max(CONF_FLOOR, mem.confidence - CONF_FAILURE_PENALTY), 3)
     ev = evidence_view(mem)
-    ev["failure_count"] = ev.get("failure_count", 0) + 1
+    _bump_failure_count(ev)
     mem.evidence = ev
 
 
@@ -139,8 +157,8 @@ def feedback(store: LifecycleDeps, mem_id: str, agent: str, outcome: str = "succ
             ev = evidence_view(mem)  # 惰性迁移先于事件：视图基于事件前的 uses
             mem.uses += 1
             mem.last_used = store.today()
-            ev.setdefault("recent", []).append({"date": store.today(), "agent": agent, "outcome": outcome})
-            ev["recent"] = ev["recent"][-EVIDENCE_RECENT_CAP:]
+            ev.setdefault(EVIDENCE_RECENT, []).append({"date": store.today(), "agent": agent, "outcome": outcome})
+            ev[EVIDENCE_RECENT] = ev[EVIDENCE_RECENT][-EVIDENCE_RECENT_CAP:]
             mem.evidence = ev
             if not mem.archived:
                 store._archive(mem)  # 含 save（归档区）/ 删活动区 / 索引收口
@@ -153,19 +171,21 @@ def feedback(store: LifecycleDeps, mem_id: str, agent: str, outcome: str = "succ
             ev = evidence_view(mem)  # 惰性迁移先于事件：视图基于事件前的 uses（存量 uses → success_count）
             mem.uses += 1
             mem.last_used = store.today()
-            ev.setdefault("recent", []).append({"date": store.today(), "agent": agent, "outcome": outcome})
-            ev["recent"] = ev["recent"][-EVIDENCE_RECENT_CAP:]
+            ev.setdefault(EVIDENCE_RECENT, []).append({"date": store.today(), "agent": agent, "outcome": outcome})
+            ev[EVIDENCE_RECENT] = ev[EVIDENCE_RECENT][-EVIDENCE_RECENT_CAP:]
             new_validator = False
             if outcome == "success":
-                ev["success_count"] = ev.get("success_count", 0) + 1
-                ev["last_verified"] = store.today()
+                ev[EVIDENCE_SUCCESS_COUNT] = ev.get(EVIDENCE_SUCCESS_COUNT, 0) + 1
+                ev[EVIDENCE_LAST_VERIFIED] = store.today()
                 if agent not in mem.validated_by:
                     new_validator = agent != mem.source
                     mem.validated_by.append(agent)
-            elif outcome == "failure":
-                ev["failure_count"] = ev.get("failure_count", 0) + 1
+            elif outcome == "failure" and frozen:
+                # 冻结期数值原地、事件照记：仅计数（表达式单点 _bump_failure_count）；
+                # 未冻结时计数随 conf 罚分一并由下方 fold_failure 一次完成，勿在此重复累加
+                _bump_failure_count(ev)
             elif outcome == "contradiction":
-                ev["contradiction_count"] = ev.get("contradiction_count", 0) + 1
+                ev[EVIDENCE_CONTRADICTION_COUNT] = ev.get(EVIDENCE_CONTRADICTION_COUNT, 0) + 1
                 store._review_queue.append_contradiction(mem, agent)
             # obsolete/unknown 块内无计数槽位：仅明细 + 提交消息承载（全史走 git）
             mem.evidence = ev
@@ -174,7 +194,7 @@ def feedback(store: LifecycleDeps, mem_id: str, agent: str, outcome: str = "succ
                     bump = CONF_USE_BUMP + (CONF_CROSS_AGENT_BUMP if new_validator else 0)
                     mem.confidence = round(min(1.0, mem.confidence + bump), 3)
                 elif outcome == "failure":
-                    mem.confidence = round(max(CONF_FLOOR, mem.confidence - CONF_FAILURE_PENALTY), 3)
+                    fold_failure(mem)  # 折算单点：conf −0.2 地板 0.05 + failure_count+1
                 # contradiction/unknown：数值不动（前者冻结语义本身，后者仅记账）
             store._save(mem)
             store._sync_indexes(mem, store._active_rel(mem))
@@ -242,6 +262,12 @@ def forget(
     links 不摘除（find→None 容错已覆盖邻居召回与蒸馏候选，死链不输出，
     内部留痕有审计价值）。reason 是动机短语（单行化限 80 字符，经 _clean_reason
     收口），不贴记忆正文（对齐 ADR-0006 消息不含正文的隐私约束）。
+
+    顺序注记（spec #52 轴 c1）：实际锁内顺序（archived 翻转 + _sync_indexes
+    索引收口先于 _remover 物理移出）与 ADR-0009 文字序（删文件 → 清行 →
+    索引移除 → commit）不同——前者是复用 archive 收口缝（_sync_indexes 见
+    archived ⇒ 移出两份索引）的自然结果，终态一致（文件不存在、两份索引无
+    此 id、队列行清空），全程 _write_lock 内、无外部可观测差异。
 
     返回恒含 found 键：命中返回删除前快照（archived 如实反映删除前状态）；
     不存在/已遗忘返回 {"found": False}（幂等）。
