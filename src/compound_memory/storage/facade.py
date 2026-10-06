@@ -1,71 +1,41 @@
-"""存储层：Markdown + YAML frontmatter、命名空间、git、复利引擎。
+"""MemoryStore 组合点（facade，ADR 0003 / #36）：机制件装配 + 全部动词方法。
 
-根目录布局：
-    namespaces/<ns>/<type>/<id>.md   活动记忆
-    archive/<ns>/<type>/<id>.md      衰减归档（可恢复）
-    index/tokens.json                可重建的词法检索缓存
-    index/vectors.db                 可重建的向量检索缓存（vec extra，缺失时自动降级）
-    review-queue.md                  fact/insight 冲突队列
+骨架片：storage.py 原样迁入本包，模块代码零改动；后续机制件（paths/files/
+gitlayer/locking/validation）逐片外移后，facade 对应方法退化为薄委托；
+动词方法体的外移归动词票（#37/#38）。包级布局与旧导入面见 __init__.py。
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import dataclasses
-import fcntl
 import logging
-import os
-import re
-import shutil
 import subprocess
-import sys
-import time
 import uuid
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Iterator, overload
 
-import yaml
-
-from .index import Index, atomic_write_text
-from .model import MEMORY_TYPES, TTL_DAYS, Memory
-from .review_queue import ReviewQueue
-from .scoring import age_days, doc_text, dup_similarity_matrix, is_expired, rank, recency_age, tokenize
-from .vector_index import VectorIndex
+from ..index import Index
+from ..model import MEMORY_TYPES, TTL_DAYS, Memory
+from ..review_queue import ReviewQueue
+from ..scoring import age_days, doc_text, dup_similarity_matrix, is_expired, rank, recency_age, tokenize
+from ..vector_index import VectorIndex
+from . import files, gitlayer, locking, paths, validation
+from .files import _unlink_file
+from .gitlayer import _git_available
+from .locking import _Batch
+from .validation import _PATH_COMPONENT_RE, check_key, check_validity as _check_validity
 
 # storage 域告警的单点 logger：扫描容错（#20）与向量降级（#19）共用
 logger = logging.getLogger(__name__)
 
-# frontmatter 解析 loader：C 扩展（libyaml）快 ~5x 且与 SafeLoader 语义逐位一致
-# （perf-bench：scan_pairs 的 yaml parse 是对账/统计读路径的最大单项），
-# 无 C 扩展的安装回退纯 Python loader——行为不变，只慢
-try:
-    from yaml import CSafeLoader as _SafeLoader
-except ImportError:  # pragma: no cover - 取决于 PyYAML 是否带 C 扩展
-    from yaml import SafeLoader as _SafeLoader  # type: ignore[assignment]
-
 # 向量召回候选池：词面候选 ∪ 向量 KNN 前 VEC_POOL 条（ns/活性过滤后）
 VEC_POOL = 16
-
-# ns / mem_id 的路径组件白名单：两者都被直接拼进存储路径或 rglob 模式，
-# 来自 LLM/宿主输出，格式不设防时 ns='agent-../../x' 可写出存储根、
-# mem_id='*' 可经 rglob 命中库内任意记忆（2026-10-05 审计 P1-1/P2-3）。
-# 合法 id（YYYYMMDD_hex6）与现有全部 ns 取值均落在 [A-Za-z0-9_-] 内。
-_PATH_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-
-# key 是 fact/insight 同 key 更新的稳定锚点，格式约束在落库单点（_write_new，
-# write/batch/distill-apply 共用）：小写字母数字段以短横线连接。原为纯文档约定、
-# write 无校验，2026-10-05 单日多会话沉淀出成批日期前缀 key——日期化 key 天然
-# 一次性（id 已含日期），等于放弃同 key 更新通道。日期前缀的取舍归文档，这里只守字符集与结构。
-_KEY_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 ARCHIVE_USES_THRESHOLD = 3
 CONF_USE_BUMP = 0.1
 CONF_CROSS_AGENT_BUMP = 0.15
-GIT_IDENTITY = ("-c", "user.name=compound-memory", "-c", "user.email=memory@local")
-# index.lock 瞬时冲突的退避序列（_git_retry）：初试 + 每档一次重试
-GIT_LOCK_RETRY_DELAYS = (0.05, 0.2)
 # 蒸馏信号阈值（distill-plan 单一定义点；CLI --help 文本由这两个常量生成，不会漂移）：
 # 疑似重复 = normalized_similarity(BM25/n_query_tokens) 达到该值；晋升建议 = episode 高活性门槛
 DISTILL_DUP_SIM_THRESHOLD = 0.5
@@ -76,17 +46,6 @@ PROMOTION_USES_THRESHOLD = 5
 USES_HISTOGRAM_BUCKETS = ("0", "1-2", "3-5", "6-9", "10+")
 CONFIDENCE_HISTOGRAM_BUCKETS = ("<0.3", "0.3-0.6", "0.6-0.8", "0.8-1.0")
 RECENT_WINDOW_DAYS = 7
-
-
-def _unlink_file(path: Path) -> None:
-    """默认删除 adapter（测试侧经 conftest 注入沙箱安全版本）。"""
-    if path.exists():
-        path.unlink()
-
-
-def _git_available() -> bool:
-    """默认 git 探测 adapter（测试侧经 git_probe 注入，勿 patch 全局 shutil.which）。"""
-    return shutil.which("git") is not None
 
 
 def _uses_bucket(uses: int) -> str:
@@ -120,35 +79,6 @@ def _within_days(date_str: str, days: int, now: dt.date) -> bool:
     return age is not None and 0 <= age <= days
 
 
-def _check_validity(valid_from: str | None, valid_until: str | None) -> None:
-    """有效期字段校验（write 单点）：ISO date 格式 + from<=until，坏输入响亮抛 ValueError。"""
-    for name, value in (("valid_from", valid_from), ("valid_until", valid_until)):
-        if value is None:
-            continue
-        try:
-            dt.date.fromisoformat(value)
-        except (ValueError, TypeError):
-            raise ValueError(f"{name} must be an ISO date (YYYY-MM-DD), got: {value!r}")
-    if valid_from and valid_until and dt.date.fromisoformat(valid_from) > dt.date.fromisoformat(valid_until):
-        raise ValueError(f"valid_from {valid_from!r} is after valid_until {valid_until!r}")
-
-
-def default_root() -> Path:
-    """记忆库根目录解析单一定义点：$COMPOUND_MEMORY_ROOT 优先，否则 ~/.agents/memory。
-
-    CLI 与 MCP server 两个 adapter 都从这里取默认——环境变量名与回退路径不得另写一份。
-    """
-    env = os.environ.get("COMPOUND_MEMORY_ROOT")
-    return Path(env) if env else Path.home() / ".agents" / "memory"
-
-
-class _Batch:
-    """batch() 的句柄：允许批内覆写提交消息（distill_apply 的溯源消息在产物写入后才凑得齐 id）。"""
-
-    def __init__(self, message: str | None = None) -> None:
-        self.message = message
-
-
 class MemoryStore:
     def __init__(
         self,
@@ -161,35 +91,27 @@ class MemoryStore:
         agent_id: str | None = None,
     ) -> None:
         self.root = Path(root)
-        self.ns_root = self.root / "namespaces"
-        self.archive_root = self.root / "archive"
+        self.ns_root = paths.ns_root(self.root)
+        self.archive_root = paths.archive_root(self.root)
         self.index = Index(self.root, scan_pairs=self._scan_pairs)
         self.vector_index = VectorIndex(self.root, scan_pairs=self._scan_pairs, embedder=embedder)
         self._embedder = embedder
         self._review_queue = ReviewQueue(self.root / "review-queue.md", clock=clock)
         self.git_enabled = git and (git_probe or _git_available)()
-        # git 仓库发现的天花板（防逃逸）：root 的 .git 无效（损坏/被清空）时
-        # git 会跳过它继续向上、借父链最近的真仓库执行 add -A/commit
-        # （2026-10-05 实测把父仓库的未提交改动收编走）；ceiling 钉在
-        # root.parent，无效 .git 报 not a repository 而非逃逸。root 的
-        # .git 有效时发现第一跳即命中，行为不变
-        self._git_env = {**os.environ, "GIT_CEILING_DIRECTORIES": os.path.realpath(self.root.parent)}
+        # git 仓库发现的天花板（防逃逸）语义见 gitlayer.git_env
+        self._git_env = gitlayer.git_env(self.root)
         self._clock = clock
         self._remover = remover or _unlink_file
         # 进程侧身份证明：agent_id 非空时（宿主经 COMPOUND_MEMORY_AGENT_ID 注入），
         # 所有调用方自报身份（source/reader/agent）必须与其一致，缺省 reader 自动补真值。
         # 只由 server/cli 入口显式传入，store 自身不读环境变量（测试与库调用保持确定性）。
         self.agent_id = agent_id
-        self._batch_depth = 0  # batch() 嵌套深度（恒 0 或 1：嵌套 batch 是调用方错误）
-        self._batch_ops = 0  # 本批延迟的提交计数（批尾消息与"零操作不提交"判据）
-        self._write_lock_depth = 0  # 写锁重入深度：batch 持锁期间批内动词直通
+        self._locking = locking.WriteLocker(self.root)  # 写锁 + batch 协调状态单点
         self._ensure_layout()
         if self.git_enabled and not (self.root / ".git").exists():
             # init commit 仅限首次创建：__init__ 在每次 CLI/MCP 启动都会执行，
             # 无条件 add -A + commit 会把带外手编的文件吞进误导性的 "init" 提交
-            self._git("init", "-q", check=False)
-            self._git("add", "-A", check=False)
-            self._git("commit", "-qm", "init compound-memory store", check=False)
+            gitlayer.init_commit(self._git)
         elif self.git_enabled:
             self._recover_orphan_changes()
 
@@ -200,7 +122,7 @@ class MemoryStore:
     def _new_id(self) -> str:
         return f"{self._clock().strftime('%Y%m%d')}_{uuid.uuid4().hex[:6]}"
 
-    # ---------- 批式落库通道 ----------
+    # ---------- 批式落库通道（协调体归机制件 locking） ----------
 
     @contextmanager
     def batch(self, message: str | None = None) -> Iterator[_Batch]:
@@ -216,240 +138,59 @@ class MemoryStore:
         - 嵌套 batch 是调用方错误（ValueError）；feedback/link 等动词的 commit
           在批内同样延迟（_commit 单点拦截），各动词无需批式特化版本。
         """
-        if self._batch_depth > 0:
-            raise ValueError("nested batch() is not supported")
-        with self._write_lock():  # 全程持锁：批内写穿与批尾 flush+commit 同在临界区
-            self._batch_depth += 1
-            self._batch_ops = 0
-            handle = _Batch(message)
-            self.index.defer()
-            self.vector_index.defer()
-            try:
-                yield handle
-            except BaseException:
-                self._end_batch(handle.message, partial=True)
-                raise
-            self._end_batch(handle.message, partial=False)
+        with self._locking.batch(message, self.index, self.vector_index, self._commit) as handle:
+            yield handle
 
-    def _end_batch(self, message: str | None, partial: bool) -> None:
-        # 先退出批态再 flush：flush 与收尾 commit 不被延迟拦截
-        self._batch_depth -= 1
-        self.index.flush_pending()
-        self.vector_index.flush_pending()
-        if self._batch_ops:
-            suffix = " (partial)" if partial else ""
-            self._commit((message + suffix) if message else f"batch write {self._batch_ops} entries{suffix}")
-            self._batch_ops = 0
+    # ---------- 跨进程写锁（机制件 locking 的薄委托） ----------
 
-    # ---------- 跨进程写锁 ----------
+    def _write_lock(self) -> AbstractContextManager[None]:
+        return self._locking.write_lock()
 
-    @contextmanager
-    def _write_lock(self) -> Iterator[None]:
-        """写路径动词的跨进程互斥（#21）：覆盖「文件写出 + 缓存更新 + commit」临界区。
+    @property
+    def _write_lock_depth(self) -> int:
+        # 测试缝保留：锁重入深度的可观测出口（git_durability 的 TOCTOU 探针读它）
+        return self._locking.lock_depth
 
-        多宿主并发写同一 root 时，git add -A 会扫进他人刚落盘的变更、commit 撞
-        index.lock 报错（2026-10-02 实测）；flock 串行化写者后两者皆消。flock 关联
-        open file description，同进程重复加锁会自锁——batch 持锁期间批内动词经
-        depth 重入直通。锁不可用的异常环境降级无锁并 warning（宁降级勿死锁）；
-        读路径与检索不持锁（索引缓存自身并发安全，见 Index._save 的唯一临时名）。
-        """
-        if self._write_lock_depth > 0:
-            self._write_lock_depth += 1
-            try:
-                yield
-            finally:
-                self._write_lock_depth -= 1
-            return
-        fd: int | None = None
-        try:
-            fd = os.open(self.root / ".lock", os.O_CREAT | os.O_RDWR, 0o644)
-            fcntl.flock(fd, fcntl.LOCK_EX)
-        except OSError as exc:
-            logger.warning("write lock unavailable: %s; proceeding unlocked", exc)
-            if fd is not None:
-                os.close(fd)
-                fd = None
-        self._write_lock_depth += 1
-        try:
-            yield
-        finally:
-            self._write_lock_depth -= 1
-            if fd is not None:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-                finally:
-                    os.close(fd)
-
-    # ---------- 布局 / git ----------
+    # ---------- 布局 / git（机制件 paths/gitlayer 的薄委托） ----------
 
     def _ensure_layout(self) -> None:
-        shared = self.ns_root / "_shared"
-        for t in MEMORY_TYPES:
-            (shared / t).mkdir(parents=True, exist_ok=True)
-        self.archive_root.mkdir(parents=True, exist_ok=True)
-        # 运行时工件目录清单归这里一处所有（index/ 缓存、distill/ 蒸馏产物、
-        # extract/ 抽取清单、.lock 写锁——均不入审计史）——
-        # scripts/distill-prepare.sh 不再自行补写；已存在的旧库缺行时补齐
-        gitignore = self.root / ".gitignore"
-        existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
-        missing = [line for line in ("index/\n", "distill/\n", "extract/\n", ".lock\n") if line not in existing]
-        if missing and existing and not existing.endswith("\n"):
-            missing[0] = "\n" + missing[0]  # 手编文件缺尾换行时先补，避免拼接坏行
-        if missing:
-            with gitignore.open("a", encoding="utf-8") as fh:
-                fh.writelines(missing)
+        paths.ensure_layout(self.root)
 
     def _git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", "-C", str(self.root), *GIT_IDENTITY, *args],
-            capture_output=True,
-            text=True,
-            check=check,
-            env=self._git_env,
-        )
+        return gitlayer.run(self.root, self._git_env, args, check=check)
 
     def _git_retry(self, *args: str) -> subprocess.CompletedProcess[str]:
-        """index.lock 瞬时冲突的有界重试（check=False 语义不变，只多退避重试）。
-
-        覆盖两类真实竞争：flock 降级窗口内的并发写者、外部 git 进程（手工
-        操作/其他工具）。hook 拒绝等永久性错误不含 index.lock 字样，一次即
-        返回——重试只该买瞬时冲突，不该烧时间在必然重现的失败上。
-        """
-        step = self._git(*args, check=False)
-        for delay in GIT_LOCK_RETRY_DELAYS:
-            if step.returncode == 0 or "index.lock" not in (step.stderr or ""):
-                break
-            time.sleep(delay)
-            step = self._git(*args, check=False)
-        return step
+        return gitlayer.retry(self._git, *args)
 
     def _recover_orphan_changes(self) -> None:
-        """启动对账：上次会话 commit 失败/进程中断留在工作树的孤儿变更，
-        收编进一个明确标注的恢复提交——否则它们会被下一个写动词的
-        "write ..." 消息错位归因（2026-10-02 实测）。带外手编未提交的
-        变更同样会被收编：恢复消息不声称作者，语义上诚实；需要专属提交
-        历史的带外变更应在手编流程内自行 commit。
-        """
-        with self._write_lock():  # status 判定与收编同临界区：锁外判定的 TOCTOU 窗口会漏变更
-            status = self._git("status", "--porcelain", check=False)
-            if status.returncode != 0 or not status.stdout.strip():
-                return  # 坏仓库/干净树零副作用：启动路径宁降级
-            self._commit("orphan changes recovered")
+        gitlayer.recover_orphan_changes(self._git, self._write_lock, self._commit)
 
     def _commit(self, message: str) -> None:
-        if self._batch_depth > 0:
-            # 批内延迟：commit 收拢到 batch() 退出时一次性执行（单点拦截，各动词无需批式特化）
-            self._batch_ops += 1
-            return
-        if not self.git_enabled:
-            return
-        staged = self._git_retry("add", "-A")
-        combined = (staged.stdout or "") + (staged.stderr or "")
-        if staged.returncode != 0:
-            # add 未完成就没有可提交的新内容：commit 只会提交 staged 残留，
-            # 消息与新变更错位归因（比审计空洞更误导）——短路放弃，变更留
-            # 工作树由启动对账收编。check=False 的失败不得静默："git log 即
-            # 审计史"的承诺至少要 stderr 响亮一声。
-            if "nothing to commit" not in combined:
-                print(f"compound-memory: git add failed: {combined.strip()}", file=sys.stderr)
-            return
-        committed = self._git_retry("commit", "-qm", message)
-        combined = (committed.stdout or "") + (committed.stderr or "")
-        # nothing-to-commit 是 git 的正常无操作返回，不算失败
-        if committed.returncode != 0 and "nothing to commit" not in combined:
-            print(f"compound-memory: git commit failed: {combined.strip()}", file=sys.stderr)
+        gitlayer.commit(self._git, message, enabled=self.git_enabled, defer=self._locking.defer_commit)
 
-    # ---------- 文件 IO ----------
+    # ---------- 文件 IO（机制件 files/paths 的薄委托） ----------
 
     def _active_path(self, mem: Memory) -> Path:
-        return self.ns_root / mem.ns / mem.type / f"{mem.id}.md"
+        return paths.active_path(self.root, mem)
 
     def _archive_path(self, mem: Memory) -> Path:
-        return self.archive_root / mem.ns / mem.type / f"{mem.id}.md"
+        return paths.archive_path(self.root, mem)
 
     def _save(self, mem: Memory) -> None:
-        path = self._archive_path(mem) if mem.archived else self._active_path(mem)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        meta: dict[str, Any] = {}
-        for key, value in asdict(mem).items():
-            if key == "content":
-                continue
-            if value is None or value == "" or value == []:
-                continue
-            if key in ("uses",) and value == 0:
-                continue
-            if key == "archived" and not value:
-                continue
-            meta[key] = value
-        body = "---\n" + yaml.safe_dump(meta, allow_unicode=True, sort_keys=False) + "---\n\n" + mem.content.strip() + "\n"
-        # 原子写出收口到共享单点 atomic_write_text（#18/#21）：中断不留半写、
-        # 临时名唯一、失败清理、权限对齐 open() 默认
-        atomic_write_text(path, body)
+        files.save(mem, self.root)
 
     @staticmethod
     def parse(path: Path) -> Memory:
-        text = path.read_text(encoding="utf-8")
-        if not text.startswith("---\n"):
-            raise ValueError(f"bad memory file (missing frontmatter): {path}")
-        _, fm, body = text.split("---\n", 2)
-        meta = yaml.load(fm, Loader=_SafeLoader) or {}
-        # 合法 YAML 但非映射（手编标量/列表）：统一转解析失败（#20 容错面覆盖），
-        # 否则下面 meta["content"] 抛 TypeError / meta.items() 抛 AttributeError 逃过捕获
-        if not isinstance(meta, dict):
-            raise ValueError(f"bad memory file (frontmatter not a mapping): {path}")
-        meta["content"] = body.strip()
-        defaults = {
-            f.name: f.default
-            for f in dataclasses.fields(Memory)
-            if f.default is not dataclasses.MISSING and f.name != "content"
-        }
-        defaults.pop("content", None)
-        # 缺必填字段（手编文件最常见坏法）转译为 ValueError：统一解析失败面，
-        # 扫描容错与调用方无需各自特判 TypeError
-        try:
-            return Memory(**{**defaults, **{k: v for k, v in meta.items() if k in {f.name for f in dataclasses.fields(Memory)}}})
-        except TypeError as exc:
-            raise ValueError(f"bad memory file (missing required field): {path}: {exc}") from exc
+        return files.parse(path)
 
     def _parse_for_scan(self, path: Path) -> Memory | None:
-        """扫描路径的容错解析（#20）：坏文件跳过并告警，不炸整场扫描。
-
-        只捕解析类异常（缺 frontmatter / 坏 YAML / 非映射 / 缺必填字段 /
-        编码与读盘错误），其他异常照常传播。返回 None 表示跳过；
-        文件本身不动，留给人工处置。全好文件零日志，告警即坏信号。
-        """
-        try:
-            return self.parse(path)
-        except (ValueError, OSError, yaml.YAMLError) as exc:
-            logger.warning("skipping unparseable memory file %s: %s", path, exc)
-            return None
+        return files.parse_for_scan(path)
 
     def _scan_parsed(self, base: Path) -> Iterator[tuple[Memory, Path]]:
-        """按目录扫描 *.md 并容错解析（#20 扫描消费方共用单点）。
-
-        逐条告警之外，结束时对跳过数量做一次汇总告警（#20 验收：
-        数量 + 逐条路径 + 原因，两层都有）。"""
-        skipped = 0
-        for path in sorted(base.rglob("*.md")):
-            mem = self._parse_for_scan(path)
-            if mem is None:
-                skipped += 1
-                continue
-            yield mem, path
-        if skipped:
-            logger.warning("scan skipped %d unparseable memory file(s)", skipped)
+        return files.scan_parsed(base)
 
     def find(self, mem_id: str) -> Memory | None:
-        # mem_id 拼 rglob 模式：非法字符（glob 元字符/路径分隔）不得进入——
-        # '*' 曾命中库内任意第一条且绕过属主检查直泄私有正文（审计 P2-3）。
-        # 非法 id 语义等价于「不可能存在」⇒ 返回 None：全部调用方对 None
-        # 已有容错分支，抛错反而会炸掉邻居召回的「宁缺勿炸」降级。
-        if not _PATH_COMPONENT_RE.match(mem_id):
-            return None
-        for base in (self.ns_root, self.archive_root):
-            for path in base.rglob(f"{mem_id}.md"):
-                return self.parse(path)
-        return None
+        return files.find(mem_id, self.root)
 
     # ---------- 公开接口 ----------
     #
@@ -459,40 +200,13 @@ class MemoryStore:
 
     @staticmethod
     def _check_ns(ns: str) -> None:
-        """ns 格式校验（write/search 共用）：非法 ns 是调用方错误，必须抛错——
-        search 侧静默返回空结果会让 agent 误判"无相关记忆"。
-
-        字符集白名单先行于前缀检查：ns 直接拼进存储路径（_active_path），
-        "agent-../../x" 曾可把 .md 写出存储根（2026-10-05 审计 P1-1）——
-        白名单同时封死穿越、glob 元字符与路径分隔，且必须在越权检查之前
-        （恶意 ns 自证身份的 owner 校验没有资格先跑）。
-        """
-        if not _PATH_COMPONENT_RE.match(ns):
-            raise ValueError(f"ns contains characters outside [A-Za-z0-9_-]: {ns!r}")
-        if ns != "_shared" and not ns.startswith("agent-"):
-            raise ValueError("ns must be '_shared' or start with 'agent-'")
+        """门禁薄委托：定义单点在 validation.check_ns（执行时序不动）。"""
+        validation.check_ns(ns)
 
     @staticmethod
     def _check_ns_owner(ns: str, identity: str | None, role: str = "reader") -> None:
-        """读/反馈侧 owner 校验：agent-* 私有 ns 只有属主宿主可读、可反馈。
-
-        与 write 的 `_check_ns + PermissionError` 对称——写侧已保证非属主写不进
-        私有 ns，读侧若不校验则任何宿主显式传 ns=agent-<别人> 即可越权读全量
-        （2026-10-03 实测：search 签名原本无调用方身份参数，跨宿主零阻力）；
-        feedback 侧不校验则外来 agent 可刷 uses/confidence 或复活归档。
-
-        identity 缺省时对 _shared 放行、对 agent-* 拒绝：宁可不读，不猜身份。
-        role 只是让报错指引对得上调用方的参数名（reader / agent）。
-        """
-        if not ns.startswith("agent-"):
-            return
-        owner = ns[len("agent-"):]
-        if identity in (ns, owner):
-            return
-        raise PermissionError(
-            f"namespace {ns!r} is private to {owner!r}; {role} is {identity!r}. "
-            f"Pass {role}={ns!r} or {role}={owner!r} if you are that host."
-        )
+        """门禁薄委托：定义单点在 validation.check_ns_owner（执行时序不动）。"""
+        validation.check_ns_owner(ns, identity, role)
 
     @overload
     def _resolve_identity(self, value: str, role: str) -> str: ...
@@ -501,25 +215,8 @@ class MemoryStore:
     def _resolve_identity(self, value: None, role: str) -> str | None: ...
 
     def _resolve_identity(self, value: str | None, role: str) -> str | None:
-        """身份裁决：进程注入（agent_id）优先于调用方自报。
-
-        - 未启用 attestation（agent_id 为空）⇒ 原样放行，行为同旧版（自报身份）。
-        - 调用方缺省 ⇒ 自动补进程身份（诚实缺省，如 search 私有 ns 忘带 reader）。
-        - 调用方与进程身份等价（agent-x / x 两种形式）⇒ 归一化为 agent_id，
-          保证 validated_by 等记录字段去重一致。
-        - 调用方与进程身份矛盾 ⇒ 响亮报错（伪造/配错宿主都该炸，不该静默改写）。
-        """
-        if self.agent_id is None:
-            return value
-        if value is None:
-            return self.agent_id
-        accepted = {self.agent_id, self.agent_id.removeprefix("agent-")}
-        if value in accepted:
-            return self.agent_id
-        raise PermissionError(
-            f"{role} {value!r} contradicts attested agent {self.agent_id!r} "
-            f"(COMPOUND_MEMORY_AGENT_ID); the process identity wins"
-        )
+        """身份裁决薄委托：定义单点在 validation.resolve_identity（self.agent_id 注入）。"""
+        return validation.resolve_identity(value, role, self.agent_id)
 
     def write(
         self,
@@ -573,10 +270,7 @@ class MemoryStore:
         外部 ns fixture（显式字段落库的测试种子）。"""
         if type not in MEMORY_TYPES:
             raise ValueError(f"type must be one of {MEMORY_TYPES}, got: {type!r}")
-        if key and not _KEY_RE.match(key):
-            raise ValueError(
-                f"key must match {_KEY_RE.pattern} (lowercase alphanumeric segments joined by dashes), got: {key!r}"
-            )
+        check_key(key)
         self._check_ns(ns)
         if ns.startswith("agent-") and source not in (ns, ns[len("agent-"):]):
             raise PermissionError(f"namespace {ns!r} is private to its owner; writer is {source!r}")
@@ -999,9 +693,7 @@ class MemoryStore:
     # ---------- 索引（可重建缓存；机制在 index.Index 与 vector_index.VectorIndex） ----------
 
     def _active_rel(self, mem: Memory) -> str:
-        # 统一 POSIX 分隔符：消费端（_candidates 的 ns 前缀剪枝）按 "/" 匹配，
-        # Windows 上 str(relative_to) 产出 "\" 会让检索候选被整体剪掉
-        return self._active_path(mem).relative_to(self.root).as_posix()
+        return paths.active_rel(self.root, mem)
 
     def _sync_indexes(self, mem: Memory, rel_path: str) -> None:
         """全部写路径的索引收口：词法 + 向量两份缓存一起保活（向量侧 hash 未变时零编码）。"""
@@ -1179,7 +871,4 @@ class MemoryStore:
         }
 
     def git_log(self, limit: int = 5) -> list[str]:
-        if not self.git_enabled:
-            return []
-        proc = self._git("log", "--oneline", f"-{limit}", check=True)
-        return [line for line in proc.stdout.splitlines() if line.strip()]
+        return gitlayer.log_lines(self._git, limit, self.git_enabled)
