@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, overload
 
 from ..index import Index
+from ..liveness import ScanWindow
 from ..model import Memory
 from ..review_queue import ReviewQueue
 from ..vector_index import VectorIndex
@@ -59,6 +60,9 @@ class MemoryStore:
         # 只由 server/cli 入口显式传入，store 自身不读环境变量（测试与库调用保持确定性）。
         self.agent_id = agent_id
         self._locking = locking.WriteLocker(self.root)  # 写锁 + batch 协调状态单点
+        # 读动词内的 scan 共享窗口（#41：词法/向量对账共享一遍 scan；search 开启，
+        # 显式 rebuild 与写路径恒 fresh——见 indexing.scan_pairs）
+        self._scan_window = ScanWindow()
         self._ensure_layout()
         if self.git_enabled and not (self.root / ".git").exists():
             # init commit 仅限首次创建：__init__ 在每次 CLI/MCP 启动都会执行，

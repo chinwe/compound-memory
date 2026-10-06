@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Callable
 
-from compound_memory.liveness import dirs_newer_than
+from compound_memory.liveness import ScanWindow, dirs_newer_than
+from compound_memory.model import Memory
 
 STAMP = 1_000_000_000_000  # 任意基准 stamp；新旧关系由 os.utime 注入，不依赖真实时钟
 
@@ -85,3 +87,49 @@ class TestDirsNewerThan:
         ns_root = tmp_path / "namespaces"
         ns_root.write_text("not a dir", encoding="utf-8")
         assert dirs_newer_than(ns_root, STAMP) is False
+
+
+ScanFn = Callable[[], list[tuple[Memory, str]]]
+
+
+def make_scan(calls: list[int]) -> ScanFn:
+    """计数 scan：每次调用记一笔，返回固定单条 pairs。"""
+
+    def scan() -> list[tuple[Memory, str]]:
+        calls.append(1)
+        return [(Memory(id="m", ns="_shared", type="fact", source="t", created="2026-01-01", content="x"), "r")]
+
+    return scan
+
+
+class TestScanWindow:
+    """读动词内的 scan 共享窗口（#41）：词法/向量对账共享一遍 scan 的协议单点。
+
+    钉三件事：窗口内第二次取不重扫（共享的本体）；open 开新窗口后不复用
+    （跨读动词的磁盘变更不可见）；窗口外首取恒 fresh。计数器即「scan 发生
+    过几次」的可观测面——对账共享的正确性基准是调用次数，不是结果内容。
+    """
+
+    def _window_with_counter(self) -> tuple[ScanWindow, list[int], ScanFn]:
+        calls: list[int] = []
+        win = ScanWindow()
+        scan: ScanFn = make_scan(calls)
+        return win, calls, scan
+
+    def test_second_call_within_window_reuses_scan(self):
+        win, calls, scan = self._window_with_counter()
+        first = win.pairs(scan)
+        assert win.pairs(scan) is first  # 同一对象：两份缓存对账共用一遍 scan
+        assert sum(calls) == 1
+
+    def test_open_resets_window(self):
+        win, calls, scan = self._window_with_counter()
+        win.pairs(scan)
+        win.open()
+        win.pairs(scan)
+        assert sum(calls) == 2  # 新窗口不复用上一窗口的 scan
+
+    def test_returns_same_list_object_not_a_copy(self):
+        """消费方（两份缓存对账）只迭代不修改的前提：窗口交出的是同一份引用。"""
+        win, _, scan = self._window_with_counter()
+        assert win.pairs(scan) is win.pairs(scan)
