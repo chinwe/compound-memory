@@ -65,7 +65,20 @@
   空白 query 返回空列表（合法）；非法 ns 抛 ValueError（静默空结果是错误契约）；
   缺省 top_k=5；ns 缺省为双通道（`_shared` ∪ 调用方自有私有 ns，身份已知时），
   显式 ns 是单 ns 精确语义。hit 形状 9 键 + 默认内嵌至多 3 个邻居。过期
-  （valid_until 已过）与归档记忆不可见。**不产生提交**。
+  （valid_until 已过）与归档记忆不可见。**不产生提交**。opt-in `explain=True`
+  （#44/spec-52，CLI `--explain` 与 MCP `explain` 参数）：每 hit 附加 `explain`
+  排序分量对象（通道 lexical/vector/both、路径 linear/rrf、词面/向量 rank、RRF
+  原始分、先验折算项 terms——sum(terms) 与 score 在 epsilon 内对账）与 `evidence`
+  证据摘要行（计数三元组 + last_verified + origin）；缺省返回形状逐位不变。
+  双路模式下 `similarity` 字段装的是归一化 RRF 融合分（fused/rrf_max），单路为
+  BM25 归一分——字段名不动（默认形状红线），语义由分量对象的 path 消解。
+- **explain**：按 id 证据视图（ADR-0008 展示边界，#44）。证据块计数（惰性迁移
+  视图，读路径不落块）+ last_verified + recent 明细（cap 10）+ `validated_by`
+  跨宿主验证明细 + `origin`/`derived` 派生标记（蒸馏产物 derived=True——证据
+  显式零起点、不回流源）+ conf/uses 当前值。私有 ns 仅属主（`--reader`，与 get
+  同属按 id 读路径）；**不产生提交**；被遗忘/不存在返回 `{"found": False}`。
+  入口仅 store + CLI——MCP 恰好 5 tool 红线不动，单条证据视图不经 memory_get
+  扩参。
 - **get**：按 id 恒读——归档、过期（D3：valid_until 只管检索可见性）均可读。
   links 输出与邻居对跨 ns 遗留链脱敏。**不产生提交**。
 - **feedback**：复利闭环，证据驱动（ADR-0007/0008，#53 契约变更——原单调公式
@@ -123,8 +136,9 @@
 - **MCP 层**：只钉 5 个 tool 名、返回形状（`{"hits": ..., "count": n}` 包装只在
   MCP 层）、`structured_output=False` 单份序列化、异常 → `is_error` 翻译
   （`tests/contracts/test_mcp_surface.py`）；语义不重测；
-- **CLI 层**：只钉 17 个子命令名与关键 flags（含 D1/D2 的 `link --agent`、
-  `review-resolve --reader`、ADR-0009 的 `forget --agent/--reason`）
+- **CLI 层**：只钉 18 个子命令名与关键 flags（含 D1/D2 的 `link --agent`、
+  `review-resolve --reader`、ADR-0009 的 `forget --agent/--reason`、#44 的
+  `explain --reader` 与 `search --explain`——17→18 契约变更）
   （`tests/contracts/test_cli_surface.py`，
   argparse 结构断言）；行为不重测（CLI 是薄 adapter；调用方错误统一翻译为
   stderr JSON + exit 2）；

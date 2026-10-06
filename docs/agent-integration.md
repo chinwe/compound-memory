@@ -39,7 +39,7 @@ uv run --directory <仓库> compound-memory init
 | Tool | 用途 | 关键点 |
 |---|---|---|
 | `memory_write` | 写入记忆 | `type`: episode/fact/insight/skill/decision；`source`: 写入方 agent id；fact/insight/decision 建议带稳定 `key`；可选 `valid_from`/`valid_until`（ISO 日期）标注事实有效期——`valid_until` 已过的事实退出检索结果，但 `memory_get` 仍可读；可选 `project`（小写 slug）标注项目作用域——标注后仅同项目会话检索可见，缺省全局 |
-| `memory_search` | 检索 | 返回 `{"hits": [...]}` 按分数排序；命中自动内嵌最多 3 条一度邻居；`include_neighbors=False` 可关。不传 `ns` 时双通道检索：`_shared` + 调用方自有私有 ns（身份已知时，私有条目自动带出）；显式传 `ns` 只搜该 ns，查 `agent-*` 时必带 `reader`（自己的 agent id），缺省即拒绝。可选 `project`（小写 slug）：**fail-closed**——不传只见全局记忆，传了见 全局 ∪ 该项目 |
+| `memory_search` | 检索 | 返回 `{"hits": [...]}` 按分数排序；命中自动内嵌最多 3 条一度邻居；`include_neighbors=False` 可关。不传 `ns` 时双通道检索：`_shared` + 调用方自有私有 ns（身份已知时，私有条目自动带出）；显式传 `ns` 只搜该 ns，查 `agent-*` 时必带 `reader`（自己的 agent id），缺省即拒绝。可选 `project`（小写 slug）：**fail-closed**——不传只见全局记忆，传了见 全局 ∪ 该项目。可选 `explain: true`（排障面，#44）：每 hit 附加排序分量对象（词面/向量 rank、RRF 分、先验折算项、检索通道）与证据摘要行，缺省返回形状不变 |
 | `memory_get` | 按 id 取回 | 恒含 `found` 键；默认带一度邻居；目标在私有 ns 时必带 `reader`，缺省即拒绝。按 id 恒可读（project 不限制 get 本体）；可选 `project` 只用于邻居带出的适用性过滤（邻居=全局 ∪ 该项目） |
 | `memory_link` | 双向关联两条记忆 | 复利来源②：关联带出；两条记忆必须同 ns，跨 ns 链被拒绝；私有 ns 记忆仅属主可连（`agent` 填自己的 agent id） |
 | `memory_feedback` | 上报"这条记忆被实际采纳了"（可带 outcome） | 缺省 `outcome=success`：uses+1、conf+0.1；**跨宿主首验额外 +0.15**（每宿主每记忆一次）。可选 outcome：`failure` 误导（conf −0.2，地板 0.05，重复累计）；`contradiction` 争议（conf 冻结、入冲突队列待裁决）；`obsolete` 被取代（立即归档）；`unknown` 只记事件。归档记忆被 feedback 自动复活（obsolete 除外）；私有 ns 记忆仅属主可反馈。**采纳后必须调用**；用错了要如实报 failure——置信度是证据正确性，只升不降会掩护错误记忆 |
@@ -223,6 +223,10 @@ dsh 通过 MCP client 插件 `@deepseek-ai/dsh-mcp-client` 接入，一个插件
 
 ```bash
 uv run compound-memory stats          # 健康度：uses/confidence 固定桶 + 活性 + 蒸馏产出量
+uv run compound-memory explain <id> [--reader <agent id>]  # 按 id 证据视图（#44）：证据计数
+                                      #   （success/failure/contradiction、last_verified、recent 明细）、
+                                      #   跨宿主验证明细（validated_by）、派生标记（蒸馏产物零证据起点）、
+                                      #   当前 conf；只读不产生提交；私有 agent-* ns 加 --reader
 uv run compound-memory decay          # 衰减归档（launchd/cron 定时跑；长期未用且少用才动）
 uv run compound-memory revive <id>    # 复活归档记忆（CLI 唯一入口）
 uv run compound-memory forget <id> --agent <agent id> [--reason <动机短语>]  # 终态遗忘（ADR-0009）：
@@ -269,6 +273,7 @@ launchd（macOS）/ systemd user timer（Linux）/ cron 每天 09:00 自动把�
 |---|---|
 | 宿主里看不到 5 个 memory_* 工具 | 先手动跑启动命令看报错：`uv run --directory <仓库> compound-memory-server`；多为 uv 不在预期路径（`command` 要写绝对路径）或 `--directory` 指向的仓库位置漂移（仓库移动后要同步改各宿主配置） |
 | 搜索结果为空 / 召回不全 | `stats` 看记忆量；怀疑索引损坏时 `rebuild-index`（缓存可随时重建，检索永远降级不报错） |
+| 检索排序不符合预期 / 想知道某条为什么排前 | `memory_search` 传 `explain: true`（CLI `--explain`）看每条 hit 的排序分量（词面/向量 rank、RRF 分、先验折算项、检索通道）与证据摘要；单条记忆的置信度构成用 CLI `explain <id>`（证据计数、跨宿主验证明细、派生标记） |
 | server 日志出现 `vector recall degraded to lexical` | 向量召回故障已自动降级纯词面（检索不中断）；多为 vec extra 环境或向量索引异常，重装 `--extra vec` 或 `rebuild-index`；未装 vec extra 的宿主不会出现此日志 |
 | server 日志出现 `write lock unavailable` 或 `skipping unparseable memory file` | 前者：root 上 `.lock` 无法加锁（异常文件系统），已降级无锁写入，避免多宿主并发写；后者：库内有解析失败的坏文件已被扫描跳过并保留原样，按日志路径人工检查/修复该文件 |
 | 手工编辑过记忆文件内容 | 活性检测只覆盖新增/删除，**内容**修改需显式 `rebuild-index` |
