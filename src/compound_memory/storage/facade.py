@@ -21,7 +21,7 @@ from ..model import MEMORY_TYPES, TTL_DAYS, Memory
 from ..review_queue import ReviewQueue
 from ..scoring import doc_text, dup_similarity_matrix, is_expired, rank, recency_age, tokenize
 from ..vector_index import VectorIndex
-from . import files, gitlayer, locking, paths, stats as stats_mod, validation
+from . import files, gitlayer, locking, paths, review, stats as stats_mod, validation
 from .files import _unlink_file
 from .gitlayer import _git_available
 from .locking import _Batch
@@ -717,73 +717,18 @@ class MemoryStore:
     # ---------- 冲突 / 统计 ----------
 
     def _find_by_key(self, ns: str, mtype: str, key: str, exclude_content: str) -> Memory | None:
-        base = self.ns_root / ns / mtype
-        if not base.exists():
-            return None
-        for mem, _path in self._scan_parsed(base):
-            if mem.key == key and mem.content.strip() != exclude_content.strip():
-                return mem
-        return None
+        """key 冲突域查找薄委托：实现体在动词件 review.py（_write_new 在用）。"""
+        return review.find_by_key(self, ns, mtype, key, exclude_content)
 
     def review_queue(self) -> list[str]:
-        """冲突队列展示行——行格式的生成与解析都在 ReviewQueue。"""
-        return self._review_queue.lines()
+        """评审队列动词转发：实现体在动词件 review.py。"""
+        return review.review_queue(self)
 
     def review_resolve(
         self, ids: list[str] | None = None, all: bool = False, reader: str | None = None
     ) -> dict[str, Any]:
-        """登记冲突已解决：委托 ReviewQueue 清行，resolved>0 时自动 commit。
-
-        裁决（新旧取舍）归调用方——按 ids 清行时，传入 id 即裁决的废置方，
-        清行同时把该条归档（对侧保留活动区）；--all 只清行，不携带裁决信息，
-        不自动归档。spec 非目标：不自动裁决冲突——归档跟随调用方指认的废置
-        方，不做方向推断。归档必须跟随清行动作的教训（2026-10-05 运维）：
-        清行不归档时废置旧版（uses=0）滞留活动区，且永不出现在 uses≥1 门槛
-        的蒸馏候选里——同 key 多版本并存由此累积。
-
-        D2（#34，2026-10-06 决议）：清行按属主可见性收口——agent-* 私有 ns
-        的行仅属主可 resolve（可选 reader，与 get/search 同规）；--all 对不可
-        见行静默保留（过滤），显式点名他人私有行 PermissionError 原子拒绝；
-        _shared 行不受影响。review-queue 展示维持全量（张力见 spec：CLI 是
-        本机信任边界，队列行含 content[:40] 片段，MCP 5 tool 不暴露队列）。
-        """
-        reader = self._resolve_identity(reader, "reader")
-
-        def may_clear(ns: str) -> bool:
-            # 行级清行许可（D2）：_shared 恒可清；agent-* 行按属主可见性
-            # （fail-closed，身份未知视为不可清）。属主判定单点在
-            # _check_ns_owner，这里只包装成谓词供 ReviewQueue 逐行调用。
-            if not ns.startswith("agent-"):
-                return True
-            try:
-                self._check_ns_owner(ns, reader)
-            except PermissionError:
-                return False
-            return True
-
-        with self._write_lock():  # 队列文件改写 + 归档 + 登记提交一个临界区
-            out = self._review_queue.resolve(ids=ids, all=all, may_clear=may_clear)
-            if all:
-                out.pop("rows")  # --all 无废置信息，rows 不进返回（CLI 输出同理）
-            archived: list[str] = []
-            if not all and ids:
-                wanted = set(ids)
-                for row in out["rows"]:
-                    for mem_id in (row["old"], row["new"]):
-                        if mem_id not in wanted or mem_id in archived:
-                            continue
-                        mem = self.find(mem_id)
-                        if mem is None or mem.archived:
-                            continue
-                        self._archive(mem)
-                        archived.append(mem_id)
-            if out["resolved"]:
-                message = f"review resolve {out['resolved']} entries"
-                if archived:
-                    message += " (archived: " + ", ".join(archived) + ")"
-                self._commit(message)
-            out["archived"] = archived
-        return out
+        """评审队列动词转发：实现体在动词件 review.py（D2 门禁与临界区语义原样）。"""
+        return review.review_resolve(self, ids=ids, all=all, reader=reader)
 
     def stats(self) -> dict[str, Any]:
         """统计动词转发：实现体与桶函数/桶常量在动词件 stats.py。"""
