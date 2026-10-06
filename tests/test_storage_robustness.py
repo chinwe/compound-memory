@@ -6,12 +6,13 @@ storage 属敏感区，遵循仓库 TDD 约定：用例先于实现（先红后�
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import pytest
 
-import compound_memory.storage as storage_mod
-from compound_memory.storage import MemoryStore, _unlink_file
+from compound_memory.storage import MemoryStore
+from compound_memory.storage.files import _unlink_file
 
 from conftest import CLOCK_DATE
 
@@ -59,7 +60,7 @@ class TestAtomicSave:
         def boom(*args: object, **kwargs: object) -> None:
             raise OSError("simulated interruption before replace")
 
-        monkeypatch.setattr(storage_mod.os, "replace", boom)
+        monkeypatch.setattr(os, "replace", boom)
         with pytest.raises(OSError):
             store.feedback(mem_id, agent="agent-b")
         monkeypatch.undo()
@@ -101,7 +102,7 @@ class TestReviewQueueAtomicResolve:
         def boom(*args: object, **kwargs: object) -> None:
             raise OSError("simulated interruption before replace")
 
-        monkeypatch.setattr(storage_mod.os, "replace", boom)
+        monkeypatch.setattr(os, "replace", boom)
         with pytest.raises(OSError):
             store.review_resolve(all=True)
         monkeypatch.undo()
