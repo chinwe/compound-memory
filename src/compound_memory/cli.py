@@ -71,7 +71,7 @@ def cmd_link(args: argparse.Namespace) -> None:
 
 
 def cmd_feedback(args: argparse.Namespace) -> None:
-    _emit(_open_store(args).feedback(args.id, args.agent))
+    _emit(_open_store(args).feedback(args.id, args.agent, outcome=args.outcome))
 
 
 def cmd_decay(args: argparse.Namespace) -> None:
@@ -100,7 +100,9 @@ def cmd_review_queue(args: argparse.Namespace) -> None:
 
 
 def cmd_review_resolve(args: argparse.Namespace) -> None:
-    _emit(_open_store(args).review_resolve(ids=args.ids, all=args.all, reader=args.reader))
+    _emit(
+        _open_store(args).review_resolve(ids=args.ids, all=args.all, reader=args.reader, uphold=args.uphold)
+    )
 
 
 def cmd_distill_plan(args: argparse.Namespace) -> None:
@@ -204,7 +206,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("a"); p.add_argument("b")
     p.add_argument("--agent", default=None, help="caller identity, required for private agent-* namespaces")
     p.set_defaults(func=cmd_link)
-    p = sub.add_parser("feedback"); p.add_argument("id"); p.add_argument("agent"); p.set_defaults(func=cmd_feedback)
+    p = sub.add_parser("feedback"); p.add_argument("id"); p.add_argument("agent")
+    p.add_argument("--outcome", default="success",
+                   help="feedback outcome: success (default) | failure | contradiction | obsolete | unknown")
+    p.set_defaults(func=cmd_feedback)
 
     p = sub.add_parser("decay"); p.add_argument("--now", default=None, help="ISO date override (testing)")
     p.set_defaults(func=cmd_decay)
@@ -242,11 +247,17 @@ def build_parser() -> argparse.ArgumentParser:
         "(old/new trade-off stays with the calling agent or human). Pass the dropped memory "
         "ids: matching rows are cleared and the passed id (the discarded side) is archived "
         "automatically, the surviving side stays active. --all clears the queue without "
-        "archiving (rows carry no verdict). Unknown ids are rejected atomically; the "
-        "cleanup is auto-committed.",
+        "archiving (rows carry no verdict). For contradiction rows, --uphold flips the "
+        "verdict: the disputed memory is kept, its confidence unfreezes and the dispute "
+        "folds as a failure (-0.2). Without --uphold, contradiction rows resolve as "
+        "confirm-wrong (the passed id is archived). Unknown ids are rejected atomically; "
+        "the cleanup is auto-committed.",
     )
     p.add_argument("ids", nargs="*", metavar="ID")
     p.add_argument("--all", action="store_true", help="clear the whole queue")
+    p.add_argument("--uphold", action="store_true",
+                   help="uphold the disputed memories instead of archiving (contradiction rows only): "
+                        "unfreeze confidence and fold the dispute as failure -0.2")
     p.add_argument("--reader", default=None,
                    help="caller identity, required to resolve rows from private agent-* namespaces")
     p.set_defaults(func=cmd_review_resolve)

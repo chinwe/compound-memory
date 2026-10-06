@@ -79,6 +79,22 @@ class TestReturnShapes:
                 "found": False, "missing": ["nope", "alsono"],
             }
 
+    async def test_memory_feedback_outcome_parameter(self, memroot: Path):
+        """outcome 是参数扩展非新 tool（ADR-0007，恰好 5 tool 红线不动）：
+        failure 折算生效、未知值经 store ValueError 翻译为 is_error。"""
+        async with make_client(memroot) as client:
+            written = call(await client.call_tool("memory_write", {
+                "content": "contract mcp outcome", "type": "fact", "source": "agent-a",
+            }))
+            out = call(await client.call_tool("memory_feedback", {
+                "mem_id": written["id"], "agent": "agent-b", "outcome": "failure",
+            }))
+            assert out["confidence"] == 0.3
+            bad = await client.call_tool("memory_feedback", {
+                "mem_id": written["id"], "agent": "agent-b", "outcome": "bogus",
+            })
+            assert bad.is_error
+
     async def test_single_copy_serialization(self, memroot: Path):
         """structured_output=False：载荷只走 text 一份，无 structuredContent 双份下发。"""
         async with make_client(memroot) as client:

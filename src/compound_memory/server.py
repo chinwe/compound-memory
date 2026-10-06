@@ -101,9 +101,9 @@ def memory_link(id_a: str, id_b: str, agent: str | None = None) -> dict[str, Any
 
 
 @mcp.tool(structured_output=False)
-def memory_feedback(mem_id: str, agent: str) -> dict[str, Any]:
-    """Report that a memory was actually used. Increments uses, raises confidence (+0.1; extra +0.15 when a different agent validates). agent must be your own source agent id. Memories in a private 'agent-<name>' namespace accept feedback only from the owner (agent = 'agent-<name>' or '<name>'). Archiving is reversed on feedback. MUST be called after a memory is adopted — this closes the compounding loop."""
-    return _store_or_configure().feedback(mem_id, agent)
+def memory_feedback(mem_id: str, agent: str, outcome: str = "success") -> dict[str, Any]:
+    """Report feedback on a memory with an outcome (closes the compounding loop — call after actually adopting a memory). outcome: 'success' (default, the memory worked), 'failure' (it misled you — confidence drops 0.2, floor 0.05), 'contradiction' (you dispute it — confidence frozen and a review entry is queued pending adjudication), 'obsolete' (it is superseded — archived immediately), 'unknown' (records the event only). Anything else is rejected. Success raises confidence (+0.1; extra +0.15 when a different agent validates for the first time). agent must be your own source agent id. Memories in a private 'agent-<name>' namespace accept feedback only from the owner (agent = 'agent-<name>' or '<name>'). Archiving is reversed on feedback (except outcome=obsolete, which archives instead)."""
+    return _store_or_configure().feedback(mem_id, agent, outcome)
 
 
 def main() -> None:

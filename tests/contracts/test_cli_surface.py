@@ -61,6 +61,9 @@ class TestKeyFlags:
             # distill-apply 的溯源 flags
             ("distill-apply-sources", ["distill-apply", "c", "insight", "a", "--sources", "id1,id2"]),
             ("distill-apply-confidence", ["distill-apply", "c", "insight", "a", "--sources", "id1", "--confidence", "0.7"]),
+            # feedback 的 outcome 维度（ADR-0007）/ review-resolve 的维持裁决（参数扩展非新命令）
+            ("feedback-outcome", ["feedback", "id", "agent", "--outcome", "failure"]),
+            ("review-resolve-uphold", ["review-resolve", "--uphold"]),
             # 运维类
             ("decay-now", ["decay", "--now", "2026-10-01"]),
             ("review-resolve-all", ["review-resolve", "--all"]),
