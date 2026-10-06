@@ -10,7 +10,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 ## 三个必做动作（复利闭环）
 
 1. **任务开始先检索**：接到非琐碎任务，先 `memory_search` 按任务关键词查相关记忆（用户偏好、项目背景、环境坑）。默认检索即双通道：`_shared` + 本宿主私有 ns（身份已知时自动并入，私有条目无需单独补搜）；显式传 `ns` 则只搜该 ns（精确语义）。
-2. **采纳即反馈**：命中且**实际采纳**后必须调 `memory_feedback`（`agent` 填本宿主 source id）——复利闭环的核心动作，漏掉它记忆库就不增值。归档记忆被 feedback 自动复活。
+2. **采纳即反馈**：命中且**实际采纳**后必须调 `memory_feedback`（`agent` 填本宿主 source id）——复利闭环的核心动作，漏掉它记忆库就不增值。归档记忆被 feedback 自动复活。反馈带 outcome（缺省 `success`）：记忆**用对了**保持缺省；**误导了你**报 `failure`（置信度 −0.2，可降到地板 0.05，重复累计）；**内容有争议**报 `contradiction`（数值冻结、登记冲突队列待裁决）；**已被取代**报 `obsolete`（立即归档）；说不清就报 `unknown`（只记事件不动数值）。置信度是证据正确性、可升可降：success 与跨宿主首验升它，failure 降它。
 3. **任务结束沉淀**：会话确认的稳定事实（用户偏好、项目约定、环境限制、踩坑结论）用 `memory_write` 写入，判据见下表；一次性、会话内临时信息只存在于会话。
 
 新记忆与已有记忆有因果/派生关系时用 `memory_link` 双向连上，检索时自动带出邻居（两条记忆必须同 ns，跨 ns 链被拒绝；私有 `agent-*` ns 的两条记忆须带 `agent`＝本宿主 source id，仅属主可连）。邻居是线索不是结论：采纳以 hit 本身为准。
@@ -37,7 +37,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 |---|---|
 | `stats` | 看健康度：uses/confidence 分布、活性、蒸馏产出 |
 | `rebuild-index` | 手工编辑过记忆文件**内容**后（活性检测只覆盖新增/删除文件） |
-| `review-queue` / `review-resolve` | 处理同 key 冲突队列（人工裁决入口）：`review-resolve <废置id>` 清行并自动归档废置方（对侧保留活动区）；`--all` 只清空队列不归档。私有 `agent-*` ns 的行仅属主可清（加 `--reader`）——`--all` 会静默保留别人的私有行，显式点名则报错；`review-queue` 展示仍全量 |
+| `review-queue` / `review-resolve` | 处理同 key 冲突队列与 contradiction 争议（人工裁决入口）：`review-resolve <废置id>` 清行并自动归档废置方（对侧保留活动区）；contradiction 争议行裁决二选一——维持原记忆有效用 `review-resolve <争议id> --uphold`（解冻并按 failure −0.2 折算），确错则缺省路径归档；`--all` 只清空队列不归档（争议行解冻但不折算）。私有 `agent-*` ns 的行仅属主可清（加 `--reader`）——`--all` 会静默保留别人的私有行，显式点名则报错；`review-queue` 展示仍全量 |
 | `decay` | 衰减归档，长期未用且少用才动（定时任务跑） |
 | `revive <id>` | 复活归档记忆（私有 ns 记忆加 `--reader`） |
 | `git-log` | 审计轨迹（每次写入自动 commit）；消费端降噪：`--grep PATTERN`（可多次，OR）只留消息匹配的提交、`--exclude PATTERN`（可多次）剔除匹配的提交，PATTERN 为正则作用于消息段（剥 hash），如 `git-log --exclude feedback` |
