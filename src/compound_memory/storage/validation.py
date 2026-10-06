@@ -17,7 +17,7 @@ import re
 # 合法 id（YYYYMMDD_hex6）与现有全部 ns 取值均落在 [A-Za-z0-9_-] 内。
 _PATH_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
-# key 是 fact/insight 同 key 更新的稳定锚点，格式约束在落库单点（_write_new，
+# key 是 fact/insight/decision 同 key 更新的稳定锚点，格式约束在落库单点（_write_new，
 # write/batch/distill-apply 共用）：小写字母数字段以短横线连接。原为纯文档约定、
 # write 无校验，2026-10-05 单日多会话沉淀出成批日期前缀 key——日期化 key 天然
 # 一次性（id 已含日期），等于放弃同 key 更新通道。日期前缀的取舍归文档，这里只守字符集与结构。
@@ -44,6 +44,18 @@ def check_key(key: str | None) -> None:
     if key and not _KEY_RE.match(key):
         raise ValueError(
             f"key must match {_KEY_RE.pattern} (lowercase alphanumeric segments joined by dashes), got: {key!r}"
+        )
+
+
+def check_project(project: str | None) -> None:
+    """project slug 校验（ADR 0010）：复用 key 格式正则（小写字母数字段以短横线
+    连接），写侧落库单点与检索侧入口共用本谓词；None = 未标注（全局），放行。
+    空串不等价于「未携带」——落库会成为对所有读方都不可见的幽灵字段，响亮拒绝。"""
+    if project is None:
+        return
+    if not _KEY_RE.match(project):
+        raise ValueError(
+            f"project must match {_KEY_RE.pattern} (lowercase alphanumeric segments joined by dashes), got: {project!r}"
         )
 
 

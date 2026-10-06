@@ -31,6 +31,13 @@ def _open_store(args: argparse.Namespace) -> MemoryStore:
     )
 
 
+def _caller_project(args: argparse.Namespace) -> str | None:
+    """调用方 project 上下文（ADR 0010）：显式 --project 优先，COMPOUND_MEMORY_PROJECT
+    作 CLI 回退便利通道。env 只在 adapter 层读，store 自身不读环境变量——与
+    COMPOUND_MEMORY_AGENT_ID 同型，保测试与库调用的确定性。"""
+    return args.project or os.environ.get("COMPOUND_MEMORY_PROJECT") or None
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     store = _open_store(args)
     _emit({"ok": True, "root": str(store.root)})
@@ -46,6 +53,7 @@ def cmd_write(args: argparse.Namespace) -> None:
             key=args.key,
             valid_from=args.valid_from,
             valid_until=args.valid_until,
+            project=_caller_project(args),
         )
     )
 
@@ -58,12 +66,18 @@ def cmd_search(args: argparse.Namespace) -> None:
             top_k=args.top_k,
             include_neighbors=args.include_neighbors,
             reader=args.reader,
+            project=_caller_project(args),
+            explain=args.explain,
         )
     )
 
 
 def cmd_get(args: argparse.Namespace) -> None:
-    _emit(_open_store(args).get(args.id, reader=args.reader))
+    _emit(_open_store(args).get(args.id, reader=args.reader, project=_caller_project(args)))
+
+
+def cmd_explain(args: argparse.Namespace) -> None:
+    _emit(_open_store(args).explain(args.id, reader=args.reader))
 
 
 def cmd_link(args: argparse.Namespace) -> None:
@@ -71,7 +85,7 @@ def cmd_link(args: argparse.Namespace) -> None:
 
 
 def cmd_feedback(args: argparse.Namespace) -> None:
-    _emit(_open_store(args).feedback(args.id, args.agent))
+    _emit(_open_store(args).feedback(args.id, args.agent, outcome=args.outcome))
 
 
 def cmd_decay(args: argparse.Namespace) -> None:
@@ -87,6 +101,10 @@ def cmd_revive(args: argparse.Namespace) -> None:
     _emit(_open_store(args).revive(args.id, reader=args.reader))
 
 
+def cmd_forget(args: argparse.Namespace) -> None:
+    _emit(_open_store(args).forget(args.id, args.agent, reason=args.reason))
+
+
 def cmd_stats(args: argparse.Namespace) -> None:
     _emit(_open_store(args).stats())
 
@@ -100,7 +118,9 @@ def cmd_review_queue(args: argparse.Namespace) -> None:
 
 
 def cmd_review_resolve(args: argparse.Namespace) -> None:
-    _emit(_open_store(args).review_resolve(ids=args.ids, all=args.all, reader=args.reader))
+    _emit(
+        _open_store(args).review_resolve(ids=args.ids, all=args.all, reader=args.reader, uphold=args.uphold)
+    )
 
 
 def cmd_distill_plan(args: argparse.Namespace) -> None:
@@ -184,6 +204,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--valid-from", default=None, help="ISO date: fact valid from (annotation)")
     p.add_argument("--valid-until", default=None,
                    help="ISO date: fact expires after this day (excluded from search, still readable via get)")
+    p.add_argument("--project", default=None,
+                   help="project scope slug for workspace-specific memories "
+                        "(omitted = global; falls back to $COMPOUND_MEMORY_PROJECT)")
     p.set_defaults(func=cmd_write)
 
     p = sub.add_parser("search")
@@ -194,17 +217,42 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
     p.add_argument("--no-neighbors", dest="include_neighbors", action="store_false",
                    help="omit embedded one-hop neighbors from hits")
+    p.add_argument("--project", default=None,
+                   help="project scope: see global memories plus this project's "
+                        "(omitted = global only, fail-closed; falls back to $COMPOUND_MEMORY_PROJECT)")
+    p.add_argument("--explain", action="store_true",
+                   help="attach per-hit ranking components (ranks, RRF score, prior terms, channel) "
+                        "and an evidence summary line to each hit (debugging carrier)")
     p.set_defaults(func=cmd_search)
 
     p = sub.add_parser("get")
     p.add_argument("id")
     p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
+    p.add_argument("--project", default=None,
+                   help="project scope for neighbor filtering (get itself is always readable; "
+                        "falls back to $COMPOUND_MEMORY_PROJECT)")
     p.set_defaults(func=cmd_get)
+    p = sub.add_parser(
+        "explain",
+        help="confidence/evidence composition of one memory (by-id evidence view)",
+        description="By-id evidence view (ADR-0008 presentation boundary): the memory's evidence block "
+        "counts (success/failure/contradiction, last_verified, recent outcome details), cross-host "
+        "validation list (validated_by), derivation marker (origin=distillation products start from an "
+        "explicit zero evidence block and never fold evidence back into their sources), and the current "
+        "confidence. Read-only: no commit. Private agent-* namespaces are owner-only (--reader, same "
+        "rule as get). Unknown ids return {\"found\": false}.",
+    )
+    p.add_argument("id")
+    p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
+    p.set_defaults(func=cmd_explain)
     p = sub.add_parser("link")
     p.add_argument("a"); p.add_argument("b")
     p.add_argument("--agent", default=None, help="caller identity, required for private agent-* namespaces")
     p.set_defaults(func=cmd_link)
-    p = sub.add_parser("feedback"); p.add_argument("id"); p.add_argument("agent"); p.set_defaults(func=cmd_feedback)
+    p = sub.add_parser("feedback"); p.add_argument("id"); p.add_argument("agent")
+    p.add_argument("--outcome", default="success",
+                   help="feedback outcome: success (default) | failure | contradiction | obsolete | unknown")
+    p.set_defaults(func=cmd_feedback)
 
     p = sub.add_parser("decay"); p.add_argument("--now", default=None, help="ISO date override (testing)")
     p.set_defaults(func=cmd_decay)
@@ -213,6 +261,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("id")
     p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
     p.set_defaults(func=cmd_revive)
+    p = sub.add_parser(
+        "forget",
+        help="terminally remove a memory (ADR-0009): file physically removed, one audit commit; content survives only in git history",
+        description="Terminal forget (ADR-0009): the memory file is physically removed "
+        "(active or archive area) and exactly one forget commit keeps the audit trail — content "
+        "survives only in git history, recovery is out-of-band git surgery (checkout/revert), there "
+        "is no in-system revive. Idempotent: an unknown or already-forgotten id returns "
+        '{"found": false}. Private agent-* namespaces are owner-only (--agent, same rule as '
+        "feedback). forget solves 'the active library no longer carries it', not 'history no longer "
+        "contains it' — history cleanup stays a destructive out-of-band operation. The optional "
+        "--reason is a motive phrase, never memory content (single line, capped at 80 chars).",
+    )
+    p.add_argument("id")
+    p.add_argument("--agent", required=True, help="caller identity (agent role; private ns is owner-only)")
+    p.add_argument("--reason", default=None, help="optional motive phrase (single line, max 80 chars)")
+    p.set_defaults(func=cmd_forget)
     p = sub.add_parser(
         "distill-plan",
         help="scan distillation candidates and print a signal-annotated list",
@@ -242,11 +306,17 @@ def build_parser() -> argparse.ArgumentParser:
         "(old/new trade-off stays with the calling agent or human). Pass the dropped memory "
         "ids: matching rows are cleared and the passed id (the discarded side) is archived "
         "automatically, the surviving side stays active. --all clears the queue without "
-        "archiving (rows carry no verdict). Unknown ids are rejected atomically; the "
-        "cleanup is auto-committed.",
+        "archiving (rows carry no verdict). For contradiction rows, --uphold flips the "
+        "verdict: the disputed memory is kept, its confidence unfreezes and the dispute "
+        "folds as a failure (-0.2). Without --uphold, contradiction rows resolve as "
+        "confirm-wrong (the passed id is archived). Unknown ids are rejected atomically; "
+        "the cleanup is auto-committed.",
     )
     p.add_argument("ids", nargs="*", metavar="ID")
     p.add_argument("--all", action="store_true", help="clear the whole queue")
+    p.add_argument("--uphold", action="store_true",
+                   help="uphold the disputed memories instead of archiving (contradiction rows only): "
+                        "unfreeze confidence and fold the dispute as failure -0.2")
     p.add_argument("--reader", default=None,
                    help="caller identity, required to resolve rows from private agent-* namespaces")
     p.set_defaults(func=cmd_review_resolve)

@@ -16,7 +16,7 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol, overload
 
-from ..model import Memory
+from ..model import Memory, zero_evidence
 from ..scoring import doc_text, dup_similarity_matrix, is_expired, recency_age
 from .locking import _Batch
 
@@ -54,6 +54,8 @@ class DistillDeps(Protocol):
         origin: str | None = None,
         valid_from: str | None = None,
         valid_until: str | None = None,
+        evidence: dict[str, Any] | None = None,
+        project: str | None = None,
     ) -> dict[str, Any]: ...
     def _archive(self, mem: Memory) -> None: ...
 
@@ -177,7 +179,7 @@ def distill_apply(
 ) -> dict[str, Any]:
     """蒸馏落库（原子）：产物写入（links 溯源到全部源、origin=distillation）+
     源批量归档，收进一次 commit。源任一不存在 ⇒ 整体不落库（found: False）。
-    产物与现存 fact/insight 的 key 冲突走既有 review 队列机制，不特殊对待。
+    产物与现存 fact/insight/decision 的 key 冲突走既有 review 队列机制，不特殊对待。
     """
     source = store._resolve_identity(source, "source")
     source_ids = list(dict.fromkeys(source_ids))  # 去重保序：重复源只归档一次
@@ -194,6 +196,15 @@ def distill_apply(
         foreign_ns = sorted({s.ns for s in sources if s is not None and s.ns != ns})
         if foreign_ns:
             raise ValueError(f"distill sources must live in target ns {ns!r}; found in: {foreign_ns}")
+        # 蒸馏产物继承源的 project（ADR 0010，同项目提纯）。可见面包含不变量：
+        # 产物可见面必须 ⊆ 源可见面——任一源已标注项目 ⇒ 产物必须跟着标注
+        # （全局产物会把项目源的内容泄进全局会话）；全部源为全局 ⇒ 产物全局。
+        # 源标注了两个不同项目则无单一适用域，显式拒绝（与跨 ns 拒绝同型），
+        # 让调用方按项目拆分蒸馏。
+        distinct_projects = sorted({s.project for s in sources if s is not None and s.project is not None})
+        if len(distinct_projects) > 1:
+            raise ValueError(f"distill sources must share one project scope; found: {distinct_projects}")
+        product_project = distinct_projects[0] if distinct_projects else None
         result = store.write(
             content,
             type=type,
@@ -203,6 +214,8 @@ def distill_apply(
             links=source_ids,
             confidence=confidence,
             origin="distillation",
+            evidence=zero_evidence(),  # ADR-0008：产物证据显式零起点，不继承源计数（双重计数）
+            project=product_project,  # ADR 0010：产物继承源的（唯一）project 值
         )
         archived: list[str] = []
         for src in sources:

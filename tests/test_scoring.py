@@ -8,12 +8,15 @@ rank 是排序管线的单一定义点：tokenize → BM25 → 归一化 → 新
 from __future__ import annotations
 
 import datetime as dt
+import math
 from collections import Counter
 
 import pytest
 
 from compound_memory.model import Memory
 from compound_memory.scoring import (
+    PRIOR_EPSILON,
+    RRF_K,
     W_CONF,
     W_RECENCY,
     W_SIM,
@@ -178,6 +181,91 @@ class TestRRFFusion:
         """vec_sims=None 的单路退路：无词面命中 ⇒ 空结果（历史行为零回归）。"""
         mem = make_mem(1, "redis persistence")
         assert rank("缓冲区设置", [mem], now=NOW, vec_sims=None) == []
+
+
+class TestRankExplain:
+    """opt-in 排序分量透出（#44，ADR-0008 展示边界）：rank 的 emit 单点在
+    explain=True 时附分量对象——单路给 final_score 四分量折算、双路给 RRF 分 +
+    先验 ε 折算，sum(terms) 与最终 score 在 epsilon 内对账（票面验收）；
+    缺省（explain=False）输出形状逐位不变（默认 hit 键集一条不得增删）。
+    """
+
+    BASE_KEYS = {"id", "score", "similarity", "confidence", "uses", "type", "ns", "source", "content"}
+
+    def test_explain_off_leaves_shape_unchanged(self):
+        mem = make_mem(1, "python gil", confidence=0.7)
+        (hit,) = rank("python", [mem], now=NOW)
+        assert set(hit) == self.BASE_KEYS
+
+    def test_opt_in_adds_only_explain_key(self):
+        mem = make_mem(1, "python gil", confidence=0.7)
+        (hit,) = rank("python", [mem], now=NOW, explain=True)
+        assert set(hit) - self.BASE_KEYS == {"explain"}
+
+    def test_explain_true_changes_nothing_else(self):
+        """explain=True 除新增 explain 键外逐位等于缺省输出——单路与双路都钉。"""
+        cands = [make_mem(1, "redis persistence aof"), make_mem(2, "redis 淘汰策略")]
+        for extra in ({}, {"vec_sims": {cands[0].id: 0.9, cands[1].id: 0.4}}):
+            base = rank("redis", cands, now=NOW, top_k=5, **extra)
+            opt = rank("redis", cands, now=NOW, top_k=5, explain=True, **extra)
+            assert [{k: v for k, v in h.items() if k != "explain"} for h in opt] == base
+
+    def test_linear_path_terms_reconcile(self):
+        """单路（纯词面）：final_score 的四个折算项之和 == score（epsilon 内）。"""
+        mem = make_mem(1, "python gil", type="insight", confidence=0.7, created=_days_ago(10))
+        (hit,) = rank("python", [mem], now=NOW, explain=True)
+        e = hit["explain"]
+        assert e["path"] == "linear" and e["channel"] == "lexical"
+        assert e["lexical_rank"] == 1 and e["vector_rank"] is None and e["rrf_score"] is None
+        assert e["similarity"] == hit["similarity"]
+        rec = 0.5 + 0.5 * math.exp(-10 / 90)  # insight τ=90
+        assert e["recency_score"] == pytest.approx(rec, abs=1e-4)
+        assert e["type_weight"] == TYPE_WEIGHT["insight"]
+        assert sum(e["terms"].values()) == pytest.approx(hit["score"], abs=1e-3)
+        assert e["terms"]["similarity"] == pytest.approx(W_SIM * hit["similarity"], abs=1e-3)
+        assert e["terms"]["confidence"] == pytest.approx(W_CONF * 0.7, abs=1e-3)
+        assert e["terms"]["recency"] == pytest.approx(W_RECENCY * rec, abs=1e-3)
+        assert e["terms"]["type"] == pytest.approx(W_TYPE * TYPE_WEIGHT["insight"], abs=1e-3)
+
+    def test_rrf_path_terms_reconcile(self):
+        """双路 RRF：similarity 槽 = 归一化融合分，先验三分量按 ε 折算——总和 == score。"""
+        strong = make_mem(1, "nginx buffer", type="fact", confidence=0.9)
+        weak = make_mem(2, "nginx proxy", type="episode", confidence=0.2)
+        hits = rank("nginx buffer", [weak, strong], now=NOW, vec_sims={strong.id: 0.9, weak.id: 0.3}, explain=True)
+        by_id = {h["id"]: h for h in hits}
+        e = by_id[strong.id]["explain"]
+        assert e["path"] == "rrf" and e["channel"] == "both"
+        assert e["lexical_rank"] == 1 and e["vector_rank"] == 1
+        assert e["rrf_score"] == pytest.approx(2.0 / (RRF_K + 1), abs=1e-3)
+        assert e["similarity"] == pytest.approx(1.0, abs=1e-4)  # 双路满命中归一
+        prior = 0.5 * 0.9 + 0.3 * 1.0 + 0.2 * TYPE_WEIGHT["fact"]  # created 今天 ⇒ rec_n=1
+        assert sum(e["terms"].values()) == pytest.approx(by_id[strong.id]["score"], abs=1e-3)
+        assert sum(e["terms"].values()) == pytest.approx(1.0 + PRIOR_EPSILON * prior, abs=1e-3)
+        assert e["terms"]["confidence"] == pytest.approx(PRIOR_EPSILON * 0.5 * 0.9, abs=1e-3)
+        assert e["terms"]["type"] == pytest.approx(PRIOR_EPSILON * 0.2 * TYPE_WEIGHT["fact"], abs=1e-3)
+        w = by_id[weak.id]["explain"]
+        assert w["lexical_rank"] == 2 and w["vector_rank"] == 2 and w["channel"] == "both"
+        assert w["rrf_score"] == pytest.approx(2.0 / (RRF_K + 2), abs=1e-3)
+
+    def test_channel_labels_single_channel_presence(self):
+        """通道标注如实：仅词面 / 仅向量 / 双通道——向量独有召回（词面零命中）
+        必须可辨识，否则「这条为什么进结果」解释不了。"""
+        lex_only = make_mem(1, "nginx buffer log")
+        vec_only = make_mem(2, "redis persistence")
+        hits = rank(
+            "nginx buffer",  # vec_only 词面零命中，靠向量召回进入
+            [lex_only, vec_only],
+            now=NOW,
+            vec_sims={vec_only.id: 0.9},
+            explain=True,
+        )
+        by_id = {h["id"]: h for h in hits}
+        assert by_id[lex_only.id]["explain"]["channel"] == "lexical"
+        assert by_id[lex_only.id]["explain"]["lexical_rank"] == 1
+        assert by_id[lex_only.id]["explain"]["vector_rank"] is None
+        assert by_id[vec_only.id]["explain"]["channel"] == "vector"
+        assert by_id[vec_only.id]["explain"]["lexical_rank"] is None
+        assert by_id[vec_only.id]["explain"]["vector_rank"] == 1
 
 
 class TestDistillDupMatrix:

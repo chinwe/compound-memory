@@ -42,12 +42,13 @@
 | 动词 | 模板 |
 | --- | --- |
 | write | `write {id} ({type}/{ns}) by {source}` |
-| feedback | `feedback {id} by {agent}: uses={uses} conf={confidence}`（前瞻：#43 evidence-based confidence 实施时将扩展 outcome 段，届时按「契约变更」流程同步本表与 `COMMIT_TEMPLATES`） |
+| feedback | `feedback {id} by {agent}: outcome={outcome} uses={uses} conf={confidence}`（契约变更 #53：ADR-0007 证据事件进消息，outcome 段先行——success/failure/contradiction/obsolete/unknown，全史证据即 git 历史） |
+| forget | `forget {id} by {agent}`（携带理由时追加 `: reason={reason}`；reason 是动机短语、单行限 80 字符、不含记忆正文——ADR-0009/#48 契约变更） |
 | link | `link {a} <-> {b}` |
 | decay（decay_sweep 归档） | `decay: archive {ids}` |
 | revive | `revive {id}` |
 | distill_apply | `distill apply {id} <- {source_ids}`（逗号+空格分隔，去重保序） |
-| review_resolve | `review resolve {n} entries (archived: {ids})`（无归档时省略括号段） |
+| review_resolve | `review resolve {n} entries (archived: {ids})`（无归档时省略括号段；uphold 裁决为 `(upheld: {ids})`——契约变更 #53，ADR-0007 contradiction「维持」折算留痕，与 archived 段互斥出现） |
 | batch（默认消息） | `batch write {n} entries`（失败收尾加 ` (partial)` 后缀） |
 | 特殊：启动孤儿对账 | `orphan changes recovered` |
 | 特殊：首建 | `init compound-memory store` |
@@ -55,26 +56,57 @@
 ## 按动词的语义意图（store 层，Tier 1 全五要素）
 
 - **write**：落库正门。id 形如 `YYYYMMDD_hex6`；缺省 confidence 0.5、ns `_shared`、
-  ttl 取自类型规格（episode 90 / fact 与 skill 永不 / insight 180）。key 校验
+  ttl 取自类型规格（episode 90 / fact、skill 与 decision 永不 / insight 180）。key 校验
   （小写字母数字段+短横线）与 validity 校验（ISO 日期、from ≤ until）在 write 单点（P6）。
-  冲突判定（P3）：同 ns ∧ 同 type（仅 fact/insight）∧ 同 key ∧ `content.strip()` 不等
-  ⇒ 入 review 队列并在返回值标 `conflict: true` + `conflicts_with`；episode append-only 不判。
+  冲突判定（P3，#46 起类型维表驱动）：同 ns ∧ 同 type（`TypeSpec.key_conflicts` 标记类型：
+  fact/insight/decision）∧ 同 key ∧ `content.strip()` 不等
+  ⇒ 入 review 队列并在返回值标 `conflict: true` + `conflicts_with`；episode/skill append-only 不判。
 - **search**：检索 = 候选（词面 ∪ 向量 KNN，RRF 融合）+ 排序（`scoring.rank` 单点）。
   空白 query 返回空列表（合法）；非法 ns 抛 ValueError（静默空结果是错误契约）；
   缺省 top_k=5；ns 缺省为双通道（`_shared` ∪ 调用方自有私有 ns，身份已知时），
   显式 ns 是单 ns 精确语义。hit 形状 9 键 + 默认内嵌至多 3 个邻居。过期
-  （valid_until 已过）与归档记忆不可见。**不产生提交**。
+  （valid_until 已过）与归档记忆不可见。**不产生提交**。opt-in `explain=True`
+  （#44/spec-52，CLI `--explain` 与 MCP `explain` 参数）：每 hit 附加 `explain`
+  排序分量对象（通道 lexical/vector/both、路径 linear/rrf、词面/向量 rank、RRF
+  原始分、先验折算项 terms——sum(terms) 与 score 在 epsilon 内对账）与 `evidence`
+  证据摘要行（计数三元组 + last_verified + origin）；缺省返回形状逐位不变。
+  双路模式下 `similarity` 字段装的是归一化 RRF 融合分（fused/rrf_max），单路为
+  BM25 归一分——字段名不动（默认形状红线），语义由分量对象的 path 消解。
+- **explain**：按 id 证据视图（ADR-0008 展示边界，#44）。证据块计数（惰性迁移
+  视图，读路径不落块）+ last_verified + recent 明细（cap 10）+ `validated_by`
+  跨宿主验证明细 + `origin`/`derived` 派生标记（蒸馏产物 derived=True——证据
+  显式零起点、不回流源）+ conf/uses 当前值。私有 ns 仅属主（`--reader`，与 get
+  同属按 id 读路径）；**不产生提交**；被遗忘/不存在返回 `{"found": False}`。
+  入口仅 store + CLI——MCP 恰好 5 tool 红线不动，单条证据视图不经 memory_get
+  扩参。
 - **get**：按 id 恒读——归档、过期（D3：valid_until 只管检索可见性）均可读。
   links 输出与邻居对跨 ns 遗留链脱敏。**不产生提交**。
-- **feedback**：复利闭环。公式（P1）：confidence 每次 +0.1，另 +0.15 仅当
-  「新验证者 ∧ ≠ source」；`validated_by` 去重（同 agent 重复反馈不再加验证分）；
-  round 3 位；封顶 1.0。side effects（P2）：uses+1、last_used=today、**归档记忆自动
-  复活**（回活动区 + 索引同步）、单次 commit（每次 feedback 一 commit，#31 裁决）。
+- **feedback**：复利闭环，证据驱动（ADR-0007/0008，#53 契约变更——原单调公式
+  「每次 +0.1、新验证者 +0.15」被取代，success 缺省路径行为不变）。折算表：
+  success +0.1（跨宿主首验 +0.15，`validated_by` 记忆×宿主去重；验证分只属于
+  success）；failure −0.2 重复累计（地板 0.05，保持可检索可复活）；contradiction
+  数值冻结并登记 review 队列独立行型（裁决经 review_resolve：维持 ⇒ 解冻并折算
+  failure −0.2；确错 ⇒ 归档）；obsolete 无条件立即归档（复活走 feedback 自动
+  复活通道）；unknown 仅记事件。未知 outcome 值 ValueError（调用方错误）。
+  证据块（frontmatter `evidence`：success/failure/contradiction 计数 +
+  last_verified + recent 明细 cap 10）是运行时数值的唯一数据源；无块旧记忆
+  惰性迁移（读为 success_count=uses），首次 feedback 落盘写块。side effects
+  （P2）：uses+1、last_used=today、**归档记忆自动复活**（回活动区 + 索引同步；
+  obsolete 除外——原位归档）、单次 commit（每次 feedback 一 commit，#31 裁决）。
 - **link**：双向关联。跨 ns 禁止（ValueError，原子）；自链 ValueError；
   私有 ns 仅属主（D1：可选 `agent` 参数，对称 feedback——link 是最后一个
   无身份写入口，已收口）；缺失 id 返回 found 信封（先于门禁）。
 - **revive**：归档复活的写侧出口。私有 ns 仅属主（与 get 同属按 id 读路径）；
   活动记忆上的 revive 是幂等零操作（不产生提交）。
+- **forget**：终态遗忘（ADR-0009/#48）。文件经 remover 缝物理移出（作用域 =
+  活动区 ∪ 归档区）+ 恰好一条 forget 提交，内容仅存 git 历史；私有 ns 仅属主
+  （role=agent，与 feedback 同规）；幂等——不存在/已遗忘返回 `{"found": False}`
+  零提交，命中返回删除前快照；顺带幂等清该 id 的 review 队列行（无行是常态，
+  区别于 review_resolve 按 ids 的未命中 ValueError，故 ReviewQueue 另设
+  `clear_for` 而不走 `resolve`）；links 悬空容忍不摘链（find→None 容错覆盖
+  邻居召回与蒸馏候选）；无复活通道（feedback/revive 对被遗忘记忆返回
+  found: False）；stats 不设 forgotten 计数（三态模型零新增例外）；入口仅
+  store + CLI（MCP 恰好 5 tool 红线不动）。
 - **distill_plan**：确定性候选扫描（判断归调用方）。归档区与过期记忆不参与；
   活性门（uses/confidence）+ 窗口（新近基准 last_used 优先）；产出主候选
   （merge_with / possible_dup_of / promotion_candidate 三类信号）与
@@ -82,13 +114,17 @@
 - **distill_apply**：蒸馏落库（原子）。失败语义（P5）：missing 源 ⇒
   `{"found": False, "missing": [...]}` 零操作零提交；跨 ns 源 ⇒ ValueError 整体拒绝；
   源去重保序；已归档源跳过搬运但仍计入清单。成功：产物（origin=distillation、
-  links 溯源全部源）+ 源批量归档收进恰好一次 commit（消息含产物 id 与源清单）。
-- **review_resolve**：冲突裁决登记。输入互斥（ids 或 --all）；未命中 id ⇒
+  links 溯源全部源、证据块显式零起点 {0,0,0}——ADR-0008，产物 feedback 永不
+  折算回源）+ 源批量归档收进恰好一次 commit（消息含产物 id 与源清单）。
+- **review_resolve**：冲突/争议裁决登记。输入互斥（ids 或 --all）；未命中 id ⇒
   ValueError 原子拒绝（P4）。传入 id = 裁决废置方：清行同时归档它，对侧保留；
-  `--all` 只清行、不归档、不产出 rows。D2：私有 ns 的行仅属主可 resolve
-  （可选 reader；`--all` 对不可见行静默保留并如实计数 remaining）；**展示维持全量**
-  （张力：CLI 是本机信任边界、MCP 5 tool 不暴露队列、行含 content[:40] 片段——
-  这是有意决策而非遗漏）。
+  `--all` 只清行、不归档、不产出 rows。uphold=True（#53，ADR-0007 contradiction
+  裁决「维持」）：传入 id 是被维持方——清行不归档、该次争议折算 failure −0.2；
+  仅适用 contradiction 行型（点名冲突行 ValueError 原子拒绝）。
+  D2：私有 ns 的行仅属主可 resolve（可选 reader；contradiction 行不携带 ns，
+  按记忆定位走同一门；`--all` 对不可见行静默保留并如实计数 remaining）；
+  **展示维持全量**（张力：CLI 是本机信任边界、MCP 5 tool 不暴露队列、行含
+  content[:40] 片段——这是有意决策而非遗漏）。
 - **batch**：批量落库正门。逐条校验写穿（批内非法条目照样抛错，已写入条目以
   partial 提交后原样上抛——「落地即已提交」）；批尾一次索引 flush + 一次 commit；
   嵌套 batch 是调用方错误；所有写动词（feedback/link/decay/…）的提交在批内
@@ -100,8 +136,10 @@
 - **MCP 层**：只钉 5 个 tool 名、返回形状（`{"hits": ..., "count": n}` 包装只在
   MCP 层）、`structured_output=False` 单份序列化、异常 → `is_error` 翻译
   （`tests/contracts/test_mcp_surface.py`）；语义不重测；
-- **CLI 层**：只钉 16 个子命令名与关键 flags（含 D1/D2 的 `link --agent`、
-  `review-resolve --reader`）不消失（`tests/contracts/test_cli_surface.py`，
+- **CLI 层**：只钉 18 个子命令名与关键 flags（含 D1/D2 的 `link --agent`、
+  `review-resolve --reader`、ADR-0009 的 `forget --agent/--reason`、#44 的
+  `explain --reader` 与 `search --explain`——17→18 契约变更）
+  （`tests/contracts/test_cli_surface.py`，
   argparse 结构断言）；行为不重测（CLI 是薄 adapter；调用方错误统一翻译为
   stderr JSON + exit 2）；
 - **Tier 2 薄钉**（形状 + 错误）：`find` / `decay_sweep` / `review_queue` /

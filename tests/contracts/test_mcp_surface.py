@@ -79,6 +79,38 @@ class TestReturnShapes:
                 "found": False, "missing": ["nope", "alsono"],
             }
 
+    async def test_memory_feedback_outcome_parameter(self, memroot: Path):
+        """outcome 是参数扩展非新 tool（ADR-0007，恰好 5 tool 红线不动）：
+        failure 折算生效、未知值经 store ValueError 翻译为 is_error。"""
+        async with make_client(memroot) as client:
+            written = call(await client.call_tool("memory_write", {
+                "content": "contract mcp outcome", "type": "fact", "source": "agent-a",
+            }))
+            out = call(await client.call_tool("memory_feedback", {
+                "mem_id": written["id"], "agent": "agent-b", "outcome": "failure",
+            }))
+            assert out["confidence"] == 0.3
+            bad = await client.call_tool("memory_feedback", {
+                "mem_id": written["id"], "agent": "agent-b", "outcome": "bogus",
+            })
+            assert bad.is_error
+
+    async def test_memory_search_explain_parameter(self, memroot: Path):
+        """explain 是 opt-in 参数扩展（#44/spec-52，恰好 5 tool 红线不动）：
+        缺省返回形状逐位不变（无附加键）；传 True 每 hit 附加排序分量对象与
+        证据摘要行。单条记忆的证据视图走 CLI explain——get 不扩 explain 参数。"""
+        async with make_client(memroot) as client:
+            call(await client.call_tool("memory_write", {
+                "content": "contract mcp explain marker", "type": "fact", "source": "agent-a",
+            }))
+            plain = call(await client.call_tool("memory_search", {"query": "mcp explain marker"}))
+            assert "explain" not in plain["hits"][0] and "evidence" not in plain["hits"][0]
+            expl = call(await client.call_tool("memory_search", {"query": "mcp explain marker", "explain": True}))
+            (hit,) = expl["hits"]
+            assert set(hit) - set(plain["hits"][0]) == {"explain", "evidence"}
+            assert hit["explain"]["path"] in ("linear", "rrf")
+            assert hit["evidence"]["success_count"] == 0
+
     async def test_single_copy_serialization(self, memroot: Path):
         """structured_output=False：载荷只走 text 一份，无 structuredContent 双份下发。"""
         async with make_client(memroot) as client:

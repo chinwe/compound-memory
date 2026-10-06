@@ -1,8 +1,9 @@
 """CLI 层契约（#25 决议第三优先级）：只钉命令面存在性，行为不重测。
 
-CLI 是薄 adapter：16 个子命令名 + 关键 flags（含 D1/D2 的 link --agent 与
-review-resolve --reader）不消失即契约；结构断言走 argparse 公开解析结果
-（flag 被消费 = 存在，落进 unknown = 不存在）。
+CLI 是薄 adapter：18 个子命令名 + 关键 flags（含 D1/D2 的 link --agent 与
+review-resolve --reader、ADR-0009 的 forget --agent/--reason、#44 的
+explain --reader 与 search --explain）不消失即契约；
+结构断言走 argparse 公开解析结果（flag 被消费 = 存在，落进 unknown = 不存在）。
 """
 
 from __future__ import annotations
@@ -13,9 +14,10 @@ import pytest
 
 from compound_memory.cli import build_parser
 
-# 16 个子命令（#25 决议钉定的命令面）
+# 18 个子命令（#25 决议钉定的命令面；#48/ADR-0009 契约变更：16→17 加 forget；
+# #44/spec-52 Explain 载体裁决的契约变更：17→18 加 explain——按 id 证据视图）
 EXPECTED_COMMANDS = {
-    "init", "write", "search", "get", "link", "feedback", "decay", "revive",
+    "init", "write", "search", "get", "explain", "link", "feedback", "decay", "revive", "forget",
     "distill-plan", "distill-apply", "stats", "rebuild-index", "review-queue",
     "review-resolve", "git-log", "extract",
 }
@@ -33,7 +35,7 @@ def _flag_consumed(parser: argparse.ArgumentParser, argv: list[str]) -> bool:
 
 
 class TestCommandSurface:
-    def test_exactly_sixteen_subcommands(self):
+    def test_exactly_eighteen_subcommands(self):
         assert set(_subcommands(build_parser())) == EXPECTED_COMMANDS
 
 
@@ -44,11 +46,17 @@ class TestKeyFlags:
         ("command", "argv"),
         [
             # 身份透传：link --agent（D1）/ review-resolve --reader（D2）/
+            # forget --agent/--reason（ADR-0009，私有 ns 属主门禁与动机短语）/
             # get / search / revive / distill-plan 的 --reader
             ("link", ["link", "a", "b", "--agent", "zcode"]),
             ("review-resolve", ["review-resolve", "--reader", "zcode"]),
+            ("forget-agent", ["forget", "id", "--agent", "zcode"]),
+            ("forget-reason", ["forget", "id", "--agent", "zcode", "--reason", "superseded"]),
             ("get", ["get", "id", "--reader", "zcode"]),
             ("search", ["search", "q", "--ns", "agent-zcode", "--reader", "zcode"]),
+            # explain 按 id 证据视图（#44 契约变更）：--reader 同 get 的私有 ns 门
+            ("explain-reader", ["explain", "id", "--reader", "zcode"]),
+            ("search-explain", ["search", "q", "--explain"]),
             ("revive", ["revive", "id", "--reader", "zcode"]),
             ("distill-plan", ["distill-plan", "--ns", "agent-zcode", "--reader", "zcode"]),
             # search 的范围/形状 flags
@@ -58,9 +66,16 @@ class TestKeyFlags:
             ("write-ns", ["write", "c", "fact", "a", "--ns", "_shared"]),
             ("write-key", ["write", "c", "fact", "a", "--key", "k"]),
             ("write-validity", ["write", "c", "fact", "a", "--valid-from", "2026-01-01", "--valid-until", "2026-12-31"]),
+            # project 作用域（ADR 0010）：write/search/get 三动词的 --project
+            ("write-project", ["write", "c", "fact", "a", "--project", "agenthub"]),
+            ("search-project", ["search", "q", "--project", "agenthub"]),
+            ("get-project", ["get", "id", "--project", "agenthub"]),
             # distill-apply 的溯源 flags
             ("distill-apply-sources", ["distill-apply", "c", "insight", "a", "--sources", "id1,id2"]),
             ("distill-apply-confidence", ["distill-apply", "c", "insight", "a", "--sources", "id1", "--confidence", "0.7"]),
+            # feedback 的 outcome 维度（ADR-0007）/ review-resolve 的维持裁决（参数扩展非新命令）
+            ("feedback-outcome", ["feedback", "id", "agent", "--outcome", "failure"]),
+            ("review-resolve-uphold", ["review-resolve", "--uphold"]),
             # 运维类
             ("decay-now", ["decay", "--now", "2026-10-01"]),
             ("review-resolve-all", ["review-resolve", "--all"]),
