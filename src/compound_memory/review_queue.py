@@ -127,3 +127,28 @@ class ReviewQueue:
             "remaining": sum(1 for line in keep if line.startswith("- ")),
             "rows": rows,
         }
+
+    def clear_for(self, mem_id: str) -> int:
+        """清除提及 mem_id 的全部行（forget 动词的搭车清行，ADR-0009），返回清除行数。
+
+        幂等：无命中行即原样保留（返回 0、不改文件）——与 resolve 按 ids 的
+        「未命中即 ValueError 原子拒绝」刻意不同，forget 的清行是搭车动作，
+        无行是常态而非调用方错误。行内 old/new 任一命中即整行清除。不设
+        may_clear：冲突行恒与记忆同 ns（find_by_key 在 ns 目录内扫描），
+        forget 已在该 ns 过 role=agent 属主门禁，行级许可已被覆盖。清行
+        改写走 atomic_write_text（中断时旧队列原封保留，与 resolve 同款）。
+        """
+        if not self.path.exists():
+            return 0
+        lines = self.path.read_text(encoding="utf-8").splitlines(keepends=True)
+        keep: list[str] = []
+        removed = 0
+        for line in lines:
+            m = _REVIEW_ROW_RE.match(line)
+            if m is not None and mem_id in (m.group("old"), m.group("new")):
+                removed += 1
+                continue
+            keep.append(line)
+        if removed:
+            atomic_write_text(self.path, "".join(keep))
+        return removed

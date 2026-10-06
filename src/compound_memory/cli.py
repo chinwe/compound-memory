@@ -87,6 +87,10 @@ def cmd_revive(args: argparse.Namespace) -> None:
     _emit(_open_store(args).revive(args.id, reader=args.reader))
 
 
+def cmd_forget(args: argparse.Namespace) -> None:
+    _emit(_open_store(args).forget(args.id, args.agent, reason=args.reason))
+
+
 def cmd_stats(args: argparse.Namespace) -> None:
     _emit(_open_store(args).stats())
 
@@ -213,6 +217,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("id")
     p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
     p.set_defaults(func=cmd_revive)
+    p = sub.add_parser(
+        "forget",
+        help="terminally remove a memory (ADR-0009): file physically removed, one audit commit; content survives only in git history",
+        description="Terminal controlled deletion (ADR-0009): the memory file is physically removed "
+        "(active or archive area) and exactly one forget commit keeps the audit trail — content "
+        "survives only in git history, recovery is out-of-band git surgery (checkout/revert), there "
+        "is no in-system revive. Idempotent: an unknown or already-forgotten id returns "
+        '{"found": false}. Private agent-* namespaces are owner-only (--agent, same rule as '
+        "feedback). forget solves 'the active library no longer carries it', not 'history no longer "
+        "contains it' — history cleanup stays a destructive out-of-band operation. The optional "
+        "--reason is a motive phrase, never memory content (single line, capped at 80 chars).",
+    )
+    p.add_argument("id")
+    p.add_argument("--agent", required=True, help="caller identity (agent role; private ns is owner-only)")
+    p.add_argument("--reason", default=None, help="optional motive phrase (single line, max 80 chars)")
+    p.set_defaults(func=cmd_forget)
     p = sub.add_parser(
         "distill-plan",
         help="scan distillation candidates and print a signal-annotated list",
