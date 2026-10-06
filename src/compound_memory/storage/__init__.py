@@ -44,5 +44,5 @@ from .facade import (
     _unlink_file,
     _uses_bucket,
     _within_days,
-    default_root,
 )
+from .paths import default_root

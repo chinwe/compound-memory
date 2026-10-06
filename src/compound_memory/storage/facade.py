@@ -30,6 +30,7 @@ from ..model import MEMORY_TYPES, TTL_DAYS, Memory
 from ..review_queue import ReviewQueue
 from ..scoring import age_days, doc_text, dup_similarity_matrix, is_expired, rank, recency_age, tokenize
 from ..vector_index import VectorIndex
+from . import paths
 
 # storage 域告警的单点 logger：扫描容错（#20）与向量降级（#19）共用
 logger = logging.getLogger(__name__)
@@ -130,15 +131,6 @@ def _check_validity(valid_from: str | None, valid_until: str | None) -> None:
         raise ValueError(f"valid_from {valid_from!r} is after valid_until {valid_until!r}")
 
 
-def default_root() -> Path:
-    """记忆库根目录解析单一定义点：$COMPOUND_MEMORY_ROOT 优先，否则 ~/.agents/memory。
-
-    CLI 与 MCP server 两个 adapter 都从这里取默认——环境变量名与回退路径不得另写一份。
-    """
-    env = os.environ.get("COMPOUND_MEMORY_ROOT")
-    return Path(env) if env else Path.home() / ".agents" / "memory"
-
-
 class _Batch:
     """batch() 的句柄：允许批内覆写提交消息（distill_apply 的溯源消息在产物写入后才凑得齐 id）。"""
 
@@ -158,8 +150,8 @@ class MemoryStore:
         agent_id: str | None = None,
     ) -> None:
         self.root = Path(root)
-        self.ns_root = self.root / "namespaces"
-        self.archive_root = self.root / "archive"
+        self.ns_root = paths.ns_root(self.root)
+        self.archive_root = paths.archive_root(self.root)
         self.index = Index(self.root, scan_pairs=self._scan_pairs)
         self.vector_index = VectorIndex(self.root, scan_pairs=self._scan_pairs, embedder=embedder)
         self._embedder = embedder
@@ -280,21 +272,7 @@ class MemoryStore:
     # ---------- 布局 / git ----------
 
     def _ensure_layout(self) -> None:
-        shared = self.ns_root / "_shared"
-        for t in MEMORY_TYPES:
-            (shared / t).mkdir(parents=True, exist_ok=True)
-        self.archive_root.mkdir(parents=True, exist_ok=True)
-        # 运行时工件目录清单归这里一处所有（index/ 缓存、distill/ 蒸馏产物、
-        # extract/ 抽取清单、.lock 写锁——均不入审计史）——
-        # scripts/distill-prepare.sh 不再自行补写；已存在的旧库缺行时补齐
-        gitignore = self.root / ".gitignore"
-        existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
-        missing = [line for line in ("index/\n", "distill/\n", "extract/\n", ".lock\n") if line not in existing]
-        if missing and existing and not existing.endswith("\n"):
-            missing[0] = "\n" + missing[0]  # 手编文件缺尾换行时先补，避免拼接坏行
-        if missing:
-            with gitignore.open("a", encoding="utf-8") as fh:
-                fh.writelines(missing)
+        paths.ensure_layout(self.root)
 
     def _git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -359,10 +337,10 @@ class MemoryStore:
     # ---------- 文件 IO ----------
 
     def _active_path(self, mem: Memory) -> Path:
-        return self.ns_root / mem.ns / mem.type / f"{mem.id}.md"
+        return paths.active_path(self.root, mem)
 
     def _archive_path(self, mem: Memory) -> Path:
-        return self.archive_root / mem.ns / mem.type / f"{mem.id}.md"
+        return paths.archive_path(self.root, mem)
 
     def _save(self, mem: Memory) -> None:
         path = self._archive_path(mem) if mem.archived else self._active_path(mem)
@@ -996,9 +974,7 @@ class MemoryStore:
     # ---------- 索引（可重建缓存；机制在 index.Index 与 vector_index.VectorIndex） ----------
 
     def _active_rel(self, mem: Memory) -> str:
-        # 统一 POSIX 分隔符：消费端（_candidates 的 ns 前缀剪枝）按 "/" 匹配，
-        # Windows 上 str(relative_to) 产出 "\" 会让检索候选被整体剪掉
-        return self._active_path(mem).relative_to(self.root).as_posix()
+        return paths.active_rel(self.root, mem)
 
     def _sync_indexes(self, mem: Memory, rel_path: str) -> None:
         """全部写路径的索引收口：词法 + 向量两份缓存一起保活（向量侧 hash 未变时零编码）。"""
