@@ -32,7 +32,6 @@ from .facade import (
     RECENT_WINDOW_DAYS,
     USES_HISTOGRAM_BUCKETS,
     VEC_POOL,
-    _Batch,
     _KEY_RE,
     MemoryStore,
     _check_validity,
@@ -43,4 +42,5 @@ from .facade import (
 )
 from .files import _unlink_file
 from .gitlayer import GIT_IDENTITY, GIT_LOCK_RETRY_DELAYS, _git_available
+from .locking import _Batch
 from .paths import default_root

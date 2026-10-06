@@ -8,13 +8,11 @@ gitlayer/locking/validation）逐片外移后，facade 对应方法退化为薄�
 from __future__ import annotations
 
 import datetime as dt
-import fcntl
 import logging
-import os
 import re
 import subprocess
 import uuid
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Iterator, overload
@@ -24,9 +22,10 @@ from ..model import MEMORY_TYPES, TTL_DAYS, Memory
 from ..review_queue import ReviewQueue
 from ..scoring import age_days, doc_text, dup_similarity_matrix, is_expired, rank, recency_age, tokenize
 from ..vector_index import VectorIndex
-from . import files, gitlayer, paths
+from . import files, gitlayer, locking, paths
 from .files import _PATH_COMPONENT_RE, _unlink_file
 from .gitlayer import _git_available
+from .locking import _Batch
 
 # storage 域告警的单点 logger：扫描容错（#20）与向量降级（#19）共用
 logger = logging.getLogger(__name__)
@@ -99,13 +98,6 @@ def _check_validity(valid_from: str | None, valid_until: str | None) -> None:
         raise ValueError(f"valid_from {valid_from!r} is after valid_until {valid_until!r}")
 
 
-class _Batch:
-    """batch() 的句柄：允许批内覆写提交消息（distill_apply 的溯源消息在产物写入后才凑得齐 id）。"""
-
-    def __init__(self, message: str | None = None) -> None:
-        self.message = message
-
-
 class MemoryStore:
     def __init__(
         self,
@@ -133,9 +125,7 @@ class MemoryStore:
         # 所有调用方自报身份（source/reader/agent）必须与其一致，缺省 reader 自动补真值。
         # 只由 server/cli 入口显式传入，store 自身不读环境变量（测试与库调用保持确定性）。
         self.agent_id = agent_id
-        self._batch_depth = 0  # batch() 嵌套深度（恒 0 或 1：嵌套 batch 是调用方错误）
-        self._batch_ops = 0  # 本批延迟的提交计数（批尾消息与"零操作不提交"判据）
-        self._write_lock_depth = 0  # 写锁重入深度：batch 持锁期间批内动词直通
+        self._locking = locking.WriteLocker(self.root)  # 写锁 + batch 协调状态单点
         self._ensure_layout()
         if self.git_enabled and not (self.root / ".git").exists():
             # init commit 仅限首次创建：__init__ 在每次 CLI/MCP 启动都会执行，
@@ -151,7 +141,7 @@ class MemoryStore:
     def _new_id(self) -> str:
         return f"{self._clock().strftime('%Y%m%d')}_{uuid.uuid4().hex[:6]}"
 
-    # ---------- 批式落库通道 ----------
+    # ---------- 批式落库通道（协调体归机制件 locking） ----------
 
     @contextmanager
     def batch(self, message: str | None = None) -> Iterator[_Batch]:
@@ -167,69 +157,18 @@ class MemoryStore:
         - 嵌套 batch 是调用方错误（ValueError）；feedback/link 等动词的 commit
           在批内同样延迟（_commit 单点拦截），各动词无需批式特化版本。
         """
-        if self._batch_depth > 0:
-            raise ValueError("nested batch() is not supported")
-        with self._write_lock():  # 全程持锁：批内写穿与批尾 flush+commit 同在临界区
-            self._batch_depth += 1
-            self._batch_ops = 0
-            handle = _Batch(message)
-            self.index.defer()
-            self.vector_index.defer()
-            try:
-                yield handle
-            except BaseException:
-                self._end_batch(handle.message, partial=True)
-                raise
-            self._end_batch(handle.message, partial=False)
+        with self._locking.batch(message, self.index, self.vector_index, self._commit) as handle:
+            yield handle
 
-    def _end_batch(self, message: str | None, partial: bool) -> None:
-        # 先退出批态再 flush：flush 与收尾 commit 不被延迟拦截
-        self._batch_depth -= 1
-        self.index.flush_pending()
-        self.vector_index.flush_pending()
-        if self._batch_ops:
-            suffix = " (partial)" if partial else ""
-            self._commit((message + suffix) if message else f"batch write {self._batch_ops} entries{suffix}")
-            self._batch_ops = 0
+    # ---------- 跨进程写锁（机制件 locking 的薄委托） ----------
 
-    # ---------- 跨进程写锁 ----------
+    def _write_lock(self) -> AbstractContextManager[None]:
+        return self._locking.write_lock()
 
-    @contextmanager
-    def _write_lock(self) -> Iterator[None]:
-        """写路径动词的跨进程互斥（#21）：覆盖「文件写出 + 缓存更新 + commit」临界区。
-
-        多宿主并发写同一 root 时，git add -A 会扫进他人刚落盘的变更、commit 撞
-        index.lock 报错（2026-10-02 实测）；flock 串行化写者后两者皆消。flock 关联
-        open file description，同进程重复加锁会自锁——batch 持锁期间批内动词经
-        depth 重入直通。锁不可用的异常环境降级无锁并 warning（宁降级勿死锁）；
-        读路径与检索不持锁（索引缓存自身并发安全，见 Index._save 的唯一临时名）。
-        """
-        if self._write_lock_depth > 0:
-            self._write_lock_depth += 1
-            try:
-                yield
-            finally:
-                self._write_lock_depth -= 1
-            return
-        fd: int | None = None
-        try:
-            fd = os.open(self.root / ".lock", os.O_CREAT | os.O_RDWR, 0o644)
-            fcntl.flock(fd, fcntl.LOCK_EX)
-        except OSError as exc:
-            logger.warning("write lock unavailable: %s; proceeding unlocked", exc)
-            if fd is not None:
-                os.close(fd)
-                fd = None
-        self._write_lock_depth += 1
-        try:
-            yield
-        finally:
-            self._write_lock_depth -= 1
-            if fd is not None:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-                finally:
-                    os.close(fd)
+    @property
+    def _write_lock_depth(self) -> int:
+        # 测试缝保留：锁重入深度的可观测出口（git_durability 的 TOCTOU 探针读它）
+        return self._locking.lock_depth
 
     # ---------- 布局 / git（机制件 paths/gitlayer 的薄委托） ----------
 
@@ -245,16 +184,8 @@ class MemoryStore:
     def _recover_orphan_changes(self) -> None:
         gitlayer.recover_orphan_changes(self._git, self._write_lock, self._commit)
 
-    def _defer_commit(self) -> bool:
-        # 批内延迟：commit 收拢到 batch() 退出时一次性执行（单点拦截，各动词无需批式特化）。
-        # batch 状态暂驻 facade（#36 片 e 随 locking 外移）
-        if self._batch_depth > 0:
-            self._batch_ops += 1
-            return True
-        return False
-
     def _commit(self, message: str) -> None:
-        gitlayer.commit(self._git, message, enabled=self.git_enabled, defer=self._defer_commit)
+        gitlayer.commit(self._git, message, enabled=self.git_enabled, defer=self._locking.defer_commit)
 
     # ---------- 文件 IO（机制件 files/paths 的薄委托） ----------
 
