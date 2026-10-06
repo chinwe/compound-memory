@@ -6,15 +6,17 @@
 变更（增量对账，只应用 diff）；手编已有文件的内容不改目录 mtime，那条路走显式 rebuild。
 检索文本知识来自 scoring.doc_text（单一定义点）。
 
-tokens.json v2 schema（#41 token stats）：
-    {"v": 2,
+tokens.json v3 schema（#41 token stats + ADR 0010 的 project 适用性字段）：
+    {"v": 3,
      "index": {<token>: [<rel_path>, ...]},            # 倒排（候选选取）
      "docs":  {<rel_path>: {"tf": {<token>: n}, "len": n,  # per-doc 频表（BM25 免 parse）
                 "id"/"ns"/"type"/"source"/"confidence"/"uses"/"created"/
-                "last_used"/"valid_until": ...}}}          # 排序先验 + emit 身份
+                "last_used"/"valid_until"/"project": ...}}}  # 排序先验 + emit 身份 + 适用性
 docs 条目固定键集（null 也落盘）：JSON round-trip 后 dict 相等可作对账 diff
 基准；先验入缓存意味着跨进程 feedback（只改 uses/last_used）也走对账更新。
-旧版 schema（v1 纯倒排）视作死缓存 ⇒ 全量重建（缓存可重建语义）。
+project 入条目是检索快路径 fail-closed 的前提：条目缺该键时 _mem_from_entry
+严格取键回退 parse（读真值），缓存条目绝不把项目记忆冒充成全局。
+旧版 schema（v1 纯倒排 / v2 无 project）视作死缓存 ⇒ 全量重建（缓存可重建语义）。
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from .liveness import dirs_newer_than
 from .model import Memory
 from .scoring import tokenize, doc_text
 
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -105,6 +107,9 @@ def _doc_entry(mem: Memory, tokens: list[str]) -> dict[str, Any]:
         "created": _entry_date(mem.created),
         "last_used": _entry_date(mem.last_used),
         "valid_until": _entry_date(mem.valid_until),
+        # ADR 0010：适用性字段进白名单键集——快路径候选视图必须携带 project，
+        # 否则带 project 的记忆在缓存路径被当全局（fail-closed 破洞：多放行）
+        "project": _entry_scalar(mem.project),
     }
 
 

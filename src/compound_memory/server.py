@@ -59,8 +59,9 @@ def memory_write(
     links: list[str] | None = None,
     valid_from: str | None = None,
     valid_until: str | None = None,
+    project: str | None = None,
 ) -> dict[str, Any]:
-    """Write a memory. type: episode|fact|insight|skill; source: writing agent id; ns: '_shared' or 'agent-<name>'. key: stable id for fact/insight (enables conflict review). Write only stable facts (preferences, conventions, environment constraints, pitfalls), not session-temporary details; volatile status notes (in-progress work, remaining todos) either carry valid_until or stay out — a stale status memory is worse than none; prefer reusing an existing key over a new entry. valid_from/valid_until: optional ISO dates (YYYY-MM-DD) marking the fact's validity window — once valid_until has passed, the memory is excluded from search results but still readable via memory_get. Returns the stored memory; `conflict: true` means a different version with the same key exists and a review entry was queued."""
+    """Write a memory. type: episode|fact|insight|skill; source: writing agent id; ns: '_shared' or 'agent-<name>'. key: stable id for fact/insight (enables conflict review). Write only stable facts (preferences, conventions, environment constraints, pitfalls), not session-temporary details; volatile status notes (in-progress work, remaining todos) either carry valid_until or stay out — a stale status memory is worse than none; prefer reusing an existing key over a new entry. valid_from/valid_until: optional ISO dates (YYYY-MM-DD) marking the fact's validity window — once valid_until has passed, the memory is excluded from search results but still readable via memory_get. project: optional lowercase-slug scope tag (lowercase alphanumeric segments joined by dashes) for workspace-specific memories — tagged memories are hidden from searches that do not pass the same project, while untagged (global) memories stay visible everywhere; declare your workspace project per the host usage rules and pass it on every write/search in that workspace. Returns the stored memory; `conflict: true` means a different version with the same key exists and a review entry was queued."""
     return _store_or_configure().write(
         content=content,
         type=type,
@@ -70,6 +71,7 @@ def memory_write(
         links=links,
         valid_from=valid_from,
         valid_until=valid_until,
+        project=project,
     )
 
 
@@ -80,18 +82,19 @@ def memory_search(
     top_k: int = 5,
     include_neighbors: bool = True,
     reader: str | None = None,
+    project: str | None = None,
 ) -> dict[str, Any]:
-    """Search memories. Fuses lexical (BM25) and, when the vec extra + model are installed, vector (BGE) recall via RRF; otherwise falls back to lexical only. Confidence/recency/type act only as a small tie-break. Default scope is _shared PLUS your own private 'agent-<name>' namespace (when your identity is known via attested process id or explicit reader) — private hits surface automatically, no extra query needed. Pass ns explicitly ('_shared' or 'agent-<name>') to search a single namespace. Each hit embeds up to 3 trimmed one-hop neighbors (active only) unless include_neighbors=False. reader: your own source agent id — REQUIRED when ns is 'agent-<name>' (private namespace, readable only by its owner host). Returns {'hits': [...]} sorted by score. Compounding rule: after actually adopting a hit, call memory_feedback (agent = your source id) — skipped feedbacks leave the store static."""
+    """Search memories. Fuses lexical (BM25) and, when the vec extra + model are installed, vector (BGE) recall via RRF; otherwise falls back to lexical only. Confidence/recency/type act only as a small tie-break. Default scope is _shared PLUS your own private 'agent-<name>' namespace (when your identity is known via attested process id or explicit reader) — private hits surface automatically, no extra query needed. Pass ns explicitly ('_shared' or 'agent-<name>') to search a single namespace. project: your workspace project slug — results span global memories plus that project's; omit it and ONLY global (untagged) memories are returned (fail-closed: project memories never leak into general sessions). Each hit embeds up to 3 trimmed one-hop neighbors (active only, project-filtered) unless include_neighbors=False. reader: your own source agent id — REQUIRED when ns is 'agent-<name>' (private namespace, readable only by its owner host). Returns {'hits': [...]} sorted by score. Compounding rule: after actually adopting a hit, call memory_feedback (agent = your source id) — skipped feedbacks leave the store static."""
     hits = _store_or_configure().search(
-        query=query, ns=ns, top_k=top_k, include_neighbors=include_neighbors, reader=reader
+        query=query, ns=ns, top_k=top_k, include_neighbors=include_neighbors, reader=reader, project=project
     )
     return {"hits": hits, "count": len(hits)}
 
 
 @mcp.tool(structured_output=False)
-def memory_get(mem_id: str, include_neighbors: bool = True, reader: str | None = None) -> dict[str, Any]:
-    """Fetch a memory by id; one-hop link neighbors are included by default. reader: your own source agent id — required when the memory lives in a private 'agent-<name>' namespace (readable only by its owner host). After adopting it, call memory_feedback (agent = your source id)."""
-    return _store_or_configure().get(mem_id, include_neighbors=include_neighbors, reader=reader)
+def memory_get(mem_id: str, include_neighbors: bool = True, reader: str | None = None, project: str | None = None) -> dict[str, Any]:
+    """Fetch a memory by id; one-hop link neighbors are included by default. reader: your own source agent id — required when the memory lives in a private 'agent-<name>' namespace (readable only by its owner host). project: your workspace project slug — get-by-id itself is always readable regardless of project, but embedded neighbors are filtered to global ones plus your project's. After adopting it, call memory_feedback (agent = your source id)."""
+    return _store_or_configure().get(mem_id, include_neighbors=include_neighbors, reader=reader, project=project)
 
 
 @mcp.tool(structured_output=False)

@@ -94,6 +94,22 @@ class TestWriteAndSearch:
             out = call(await client.call_tool("memory_search", {"query": "Git rebase"}))
             assert [h["id"] for h in out["hits"]] == [shared["id"]]
 
+    async def test_project_scope_filters_and_write_passthrough(self, memroot):
+        """ADR 0010：MCP 面的 project 参数透传——写入携带 project，检索缺省
+        fail-closed（只见全局），声明项目后见 全局 ∪ 该项目。"""
+        async with make_client(memroot) as client:
+            glob = call(await client.call_tool("memory_write", {
+                "content": "agenthub 部署流程", "type": "fact", "source": "agent-a",
+            }))
+            proj = call(await client.call_tool("memory_write", {
+                "content": "agenthub 部署流程", "type": "fact", "source": "agent-a", "project": "agenthub",
+            }))
+            assert proj["project"] == "agenthub"
+            out = call(await client.call_tool("memory_search", {"query": "agenthub 部署"}))
+            assert [h["id"] for h in out["hits"]] == [glob["id"]]
+            out = call(await client.call_tool("memory_search", {"query": "agenthub 部署", "project": "agenthub"}))
+            assert {h["id"] for h in out["hits"]} == {proj["id"], glob["id"]}
+
     async def test_write_rejects_bad_type_and_ns(self, memroot):
         async with make_client(memroot) as client:
             res = await client.call_tool("memory_write", {"content": "x", "type": "bogus", "source": "a"})

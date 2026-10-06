@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from compound_memory.index import Index
+from compound_memory.index import CACHE_VERSION, Index
 from compound_memory.model import Memory
 from compound_memory.scoring import tokenize
 from compound_memory.storage import MemoryStore
@@ -311,7 +311,7 @@ class TestTokenStatsCache:
         assert idx.doc_entries(["namespaces/_shared/fact/nope.md"]) == {}
 
     def test_legacy_v1_cache_rebuilds_on_access(self, index, tmp_path: Path):
-        """旧版纯倒排 schema（无 v/docs 包装）视作死缓存：下一次访问全量重建为 v2。"""
+        """旧版纯倒排 schema（无 v/docs 包装）视作死缓存：下一次访问全量重建为当前版本。"""
         idx, pairs = index
         mem = make_mem(1, "redis queue depth")
         pairs.append((mem, rel_of(mem)))
@@ -319,8 +319,37 @@ class TestTokenStatsCache:
         cache_file(tmp_path).write_text(json.dumps({"redis": [rel_of(mem)]}), encoding="utf-8")
         assert idx.candidates(tokenize("redis")) == [rel_of(mem)]
         data = json.loads(cache_file(tmp_path).read_text(encoding="utf-8"))
-        assert data["v"] == 2
+        assert data["v"] == CACHE_VERSION
         assert idx.doc_entries([rel_of(mem)])[rel_of(mem)]["id"] == mem.id
+
+    def test_legacy_v2_cache_without_project_rebuilds(self, index, tmp_path: Path):
+        """v2 缓存（#41 键集，条目无 project 字段）在 v3 下视作死缓存：全量重建后
+        条目携带 project——检索快路径的 fail-closed 依赖条目键集完整（ADR 0010）。"""
+        idx, pairs = index
+        mem = make_mem(1, "redis queue depth")
+        pairs.append((mem, rel_of(mem)))
+        idx._dir.mkdir(parents=True, exist_ok=True)
+        v2_entry = {
+            "tf": {"redis": 1},
+            "len": 3,
+            "id": mem.id,
+            "ns": mem.ns,
+            "type": mem.type,
+            "source": mem.source,
+            "confidence": mem.confidence,
+            "uses": 0,
+            "created": mem.created,
+            "last_used": None,
+            "valid_until": None,
+        }
+        cache_file(tmp_path).write_text(
+            json.dumps({"v": 2, "index": {"redis": [rel_of(mem)]}, "docs": {rel_of(mem): v2_entry}}),
+            encoding="utf-8",
+        )
+        assert idx.candidates(tokenize("redis")) == [rel_of(mem)]
+        data = json.loads(cache_file(tmp_path).read_text(encoding="utf-8"))
+        assert data["v"] == CACHE_VERSION
+        assert "project" in idx.doc_entries([rel_of(mem)])[rel_of(mem)]
 
     def test_reconcile_updates_prior_only_change(self, index, tmp_path: Path):
         """对账的 diff 基准是整条 entry（tf + 先验）：tokens 不变、uses/last_used

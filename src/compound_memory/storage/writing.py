@@ -18,7 +18,7 @@ from typing import Any, Protocol, overload
 
 from ..model import MEMORY_TYPES, TTL_DAYS, Memory
 from ..review_queue import ReviewQueue
-from .validation import check_key, check_validity
+from .validation import check_key, check_project, check_validity
 
 
 class WritingDeps(Protocol):
@@ -55,6 +55,7 @@ class WritingDeps(Protocol):
         origin: str | None,
         valid_from: str | None = None,
         valid_until: str | None = None,
+        project: str | None = None,
     ) -> tuple[Memory, Memory | None]: ...
     def _write_result(self, mem: Memory, conflict_with: Memory | None) -> dict[str, Any]: ...
 
@@ -78,6 +79,7 @@ def write(
     origin: str | None = None,
     valid_from: str | None = None,
     valid_until: str | None = None,
+    project: str | None = None,
 ) -> dict[str, Any]:
     """写路径正门：身份裁决 → 有效期校验 → 锁内落库（write_new）+ commit。"""
     source = store._resolve_identity(source, "source")
@@ -95,6 +97,7 @@ def write(
             origin=origin,
             valid_from=valid_from,
             valid_until=valid_until,
+            project=project,
         )
         store._commit(f"write {mem.id} ({type}/{ns}) by {source}")
     return store._write_result(mem, conflict_with)
@@ -113,6 +116,7 @@ def write_new(
     origin: str | None,
     valid_from: str | None = None,
     valid_until: str | None = None,
+    project: str | None = None,
 ) -> tuple[Memory, Memory | None]:
     """write 的落库核心（无 commit）：commit 由调用方动词收口——单条走 write，
     批式经 batch()（_commit 单点拦截）。tests 亦用它播种 write 会正当拒绝的
@@ -120,6 +124,7 @@ def write_new(
     if type not in MEMORY_TYPES:
         raise ValueError(f"type must be one of {MEMORY_TYPES}, got: {type!r}")
     check_key(key)
+    check_project(project)  # ADR 0010：project slug 校验与 key 同点（write/batch/tests 共用）
     store._check_ns(ns)
     if ns.startswith("agent-") and source not in (ns, ns[len("agent-"):]):
         raise PermissionError(f"namespace {ns!r} is private to its owner; writer is {source!r}")
@@ -140,6 +145,7 @@ def write_new(
         origin=origin,
         valid_from=valid_from,
         valid_until=valid_until,
+        project=project,
     )
     store._save(mem)
     if conflict_with is not None:

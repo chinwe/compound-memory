@@ -46,3 +46,7 @@ class Memory:
     valid_until: str | None = None
     # 写入来源通道（frontmatter 可选字段）：普通写入不落盘，仅蒸馏产物为 "distillation"
     origin: str | None = None
+    # 适用范围标注（frontmatter 可选字段，ADR 0010）：小写 slug（校验单点 validation），
+    # 空 = 跨项目通用（全局）。检索适用性轴，与 ns 的可见性/属主轴正交；
+    # 纯元数据过滤，绝不进落盘路径（namespaces/<ns>/<type>/<id>.md 不变）
+    project: str | None = None
