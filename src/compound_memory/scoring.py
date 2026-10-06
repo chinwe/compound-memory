@@ -249,6 +249,9 @@ def rank(
     hits: list[dict[str, Any]] = []
 
     def emit(mem: Memory, sim: float, score: float) -> None:
+        # content 先占位：emit 会发生在每个正分候选上（不止 top_k），正文
+        # 现取（parse）必须推迟到切片后——否则宽查询把省下的候选 parse 又
+        # 在 emit 里全数吃回（perf-bench #41 实测教训）
         hits.append(
             {
                 "id": mem.id,
@@ -259,7 +262,7 @@ def rank(
                 "type": mem.type,
                 "ns": mem.ns,
                 "source": mem.source,
-                "content": content_loader(mem.id) if content_loader is not None else mem.content,
+                "content": "" if content_loader is not None else mem.content,
             }
         )
 
@@ -297,6 +300,10 @@ def rank(
             emit(mem, sim, sim + PRIOR_EPSILON * prior)
     hits.sort(key=lambda h: -h["score"])
     top = hits[:top_k]
+    if content_loader is not None:
+        # 只对返回的 top_k 现取正文（top_k 次 parse，与候选集大小无关）
+        for hit in top:
+            hit["content"] = content_loader(hit["id"])
     if neighbor_lookup is not None:
         for hit in top:
             hit["neighbors"] = [

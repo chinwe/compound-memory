@@ -23,6 +23,7 @@ from compound_memory.scoring import (
     age_days,
     bm25_scores,
     bm25_scores_from_stats,
+    doc_stats_from_tokens,
     doc_text,
     dup_similarity_matrix,
     expired_by_date,
@@ -309,3 +310,21 @@ class TestExpiredByDate:
         mem = make_mem(1, "x", valid_until=valid_until)
         assert expired_by_date(valid_until, TODAY) is expected
         assert is_expired(mem, TODAY) is expected
+
+    def test_content_loader_called_only_for_returned_hits(self):
+        """loader 只许在 top_k 切片后调用：emit 阶段每个正分候选都会经过，
+        宽查询若在 emit 里现 parse 正文，免 parse 的候选缓存会被全数吃回
+        （perf-bench #41 实测：万条 broad 8526 次 emit 级 parse）。"""
+        cands = [make_mem(i, f"redis shared filler {i} redis") for i in range(1, 21)]
+        stats = [doc_stats_from_tokens(tokenize(doc_text(m))) for m in cands]
+        calls: list[str] = []
+        hits = rank(
+            "redis filler",
+            cands,
+            now=NOW,
+            top_k=5,
+            doc_stats=stats,
+            content_loader=lambda mid: calls.append(mid) or f"c:{mid}",
+        )
+        assert len(calls) == 5 == len(hits)
+        assert all(h["content"] == f"c:{h['id']}" for h in hits)
