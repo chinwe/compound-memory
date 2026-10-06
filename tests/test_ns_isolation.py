@@ -119,6 +119,58 @@ class TestLinkNamespaceRule:
             store.link(pub_id, pub_id)
 
 
+class TestLinkOwnershipGate:
+    """D1（#34，2026-10-06 决议）：link 是最后一个无身份写入口——
+    同 ns 私有记忆的 link 仅属主（可选 agent 参数，对称 feedback），按 id 动词
+    在锁内 find 后过门；跨 ns 拒绝语义在前、不变（见 TestLinkNamespaceRule）。
+    _shared 的 link 无需身份（写侧本就不设防，与 write 一致）。"""
+
+    def _two_private(self, store: MemoryStore) -> tuple[str, str]:
+        a = store.write("zcode 私有关联甲", type="fact", source=OWNER, ns=PRIVATE_NS)
+        b = store.write("zcode 私有关联乙", type="fact", source=OWNER, ns=PRIVATE_NS)
+        return a["id"], b["id"]
+
+    def test_private_link_without_identity_denied(self, store: MemoryStore):
+        """fail-closed：私有 ns 缺身份即拒绝（宁可不连，不猜身份），且原子——不落半条链。"""
+        a, b = self._two_private(store)
+        with pytest.raises(PermissionError):
+            store.link(a, b)
+        assert store.find(a) is not None and store.find(a).links == []  # type: ignore[union-attr]
+        assert store.find(b) is not None and store.find(b).links == []  # type: ignore[union-attr]
+
+    def test_private_link_foreign_agent_denied(self, store: MemoryStore):
+        a, b = self._two_private(store)
+        with pytest.raises(PermissionError):
+            store.link(a, b, agent=FOREIGN)
+        assert store.find(a) is not None and store.find(a).links == []  # type: ignore[union-attr]
+
+    def test_private_link_owner_ok_both_identity_forms(self, store: MemoryStore):
+        """属主全称/短名都放行；返回形状不变（found/a/b/links）。"""
+        a, b = self._two_private(store)
+        assert store.link(a, b, agent=OWNER)["found"] is True
+        c = store.write("zcode 私有关联丙", type="fact", source=OWNER, ns=PRIVATE_NS)
+        d = store.write("zcode 私有关联丁", type="fact", source=OWNER, ns=PRIVATE_NS)
+        res = store.link(c["id"], d["id"], agent=OWNER_BARE)
+        assert res == {"found": True, "a": c["id"], "b": d["id"], "links": [d["id"]]}
+        assert d["id"] in store.find(c["id"]).links  # type: ignore[union-attr]
+
+    def test_attested_private_link_autofills_agent(self, attested: MemoryStore):
+        """进程身份已证明时缺省自动补真值；伪造 agent 与进程矛盾响亮拒绝。"""
+        a = attested.write("zcode 私有关联戊", type="fact", source=OWNER, ns=PRIVATE_NS)
+        b = attested.write("zcode 私有关联己", type="fact", source=OWNER, ns=PRIVATE_NS)
+        assert attested.link(a["id"], b["id"])["found"] is True  # 忘带 agent：自动补进程身份
+        c = attested.write("zcode 私有关联庚", type="fact", source=OWNER, ns=PRIVATE_NS)
+        d = attested.write("zcode 私有关联辛", type="fact", source=OWNER, ns=PRIVATE_NS)
+        with pytest.raises(PermissionError, match="attested agent"):
+            attested.link(c["id"], d["id"], agent=FOREIGN)
+
+    def test_missing_ids_still_reported_before_gate(self, store: MemoryStore):
+        """按 id 动词信封约定不变：目标不存在返回 found:False（门禁在其后）。"""
+        a, _ = self._two_private(store)
+        res = store.link(a, "nope", agent=OWNER)
+        assert res == {"found": False, "missing": ["nope"]}
+
+
 class TestFeedbackNamespaceRule:
     def test_foreign_feedback_on_private_denied(self, store: MemoryStore):
         priv_id, _ = _seed(store)
@@ -177,6 +229,89 @@ class TestReviveNamespaceRule:
         with pytest.raises(PermissionError):
             store.revive(old["id"])
         assert store.revive(old["id"], reader=OWNER)["archived"] is False
+
+
+class TestReviewResolvePrivateGate:
+    """D2（#34，2026-10-06 决议）：清行按属主可见性收口——agent-* 私有 ns 的行
+    仅属主可 resolve（可选 reader 参数），_shared 行不受影响、现有运维流程不变；
+    review-queue 展示维持全量（张力：CLI 是本机信任边界，队列行含 content[:40] 片段，
+    MCP 5 tool 不暴露队列——契约文档明示）。
+
+    私有行的属主裁决以行内 ns 为准（冲突同 ns 产生，行格式自带 ns/type/key），
+    不依赖记忆文件是否仍在——行是登记事实，清行许可见 ns 即可判。"""
+
+    def _private_conflict(self, store: MemoryStore, key: str = "priv-conflict") -> tuple[str, str]:
+        """属主私有 ns 内制造一对同 key fact 冲突，返回 (old_id, new_id)。"""
+        old = store.write(f"zcode 私有事实旧版 {key}", type="fact", source=OWNER, ns=PRIVATE_NS, key=key)
+        new = store.write(f"zcode 私有事实新版 {key}", type="fact", source=OWNER, ns=PRIVATE_NS, key=key)
+        return old["id"], new["id"]
+
+    def test_display_stays_full(self, store: MemoryStore):
+        """展示维持全量：无身份调用方 review_queue() 仍列出私有行（清行收口、展示不收）。"""
+        old, new = self._private_conflict(store)
+        lines = store.review_queue()
+        assert len(lines) == 1 and old in lines[0] and new in lines[0]
+
+    def test_resolve_private_row_without_reader_denied_atomically(self, store: MemoryStore):
+        """显式点名私有行：缺身份/外来身份均 PermissionError 原子拒绝，队列原样保留。"""
+        old, _ = self._private_conflict(store)
+        with pytest.raises(PermissionError):
+            store.review_resolve([old])
+        with pytest.raises(PermissionError):
+            store.review_resolve([old], reader=FOREIGN)
+        assert len(store.review_queue()) == 1
+
+    def test_resolve_private_row_by_owner(self, store: MemoryStore):
+        """属主清私有行 + 自动归档废置方：与 _shared 行为同构，--reader 全称/短名皆可。"""
+        old, _ = self._private_conflict(store)
+        out = store.review_resolve([old], reader=OWNER_BARE)
+        assert out["resolved"] == 1 and out["archived"] == [old]
+        assert store.review_queue() == []
+        assert store.get(old, reader=OWNER)["archived"] is True
+
+    def test_all_filters_private_rows_for_caller_without_identity(self, store: MemoryStore):
+        """--all 是清行动作，同样按属主可见性过滤：无身份只清 _shared 行，私有行保留。"""
+        self._private_conflict(store)
+        pub_old = store.write("共享事实旧版", type="fact", source=FOREIGN, key="pub-conflict")["id"]
+        store.write("共享事实新版", type="fact", source=FOREIGN, key="pub-conflict")
+        out = store.review_resolve(all=True)
+        assert out["resolved"] == 1 and out["remaining"] == 1
+        remaining = store.review_queue()
+        assert len(remaining) == 1 and PRIVATE_NS in remaining[0] and pub_old not in remaining[0]
+
+    def test_all_with_owner_reader_clears_own_private_rows(self, store: MemoryStore):
+        """--all 带 --reader 属主：自有私有行照清；--all 不归档的既有语义不变。"""
+        self._private_conflict(store)
+        out = store.review_resolve(all=True, reader=OWNER)
+        assert out == {"resolved": 1, "remaining": 0, "archived": []}
+
+    def test_shared_rows_unaffected_without_reader(self, store: MemoryStore):
+        """回归护栏：无身份时 _shared 行的 resolve（按 id 与 --all）行为与旧版完全一致。"""
+        old = store.write("共享事实旧版", type="fact", source=FOREIGN, key="k1")["id"]
+        store.write("共享事实新版", type="fact", source=FOREIGN, key="k1")
+        assert store.review_resolve([old])["archived"] == [old]
+        store.write("共享事实旧版二", type="fact", source=FOREIGN, key="k2")
+        store.write("共享事实新版二", type="fact", source=FOREIGN, key="k2")
+        assert store.review_resolve(all=True) == {"resolved": 1, "remaining": 0, "archived": []}
+
+    def test_attested_autofills_reader(self, attested: MemoryStore):
+        """进程身份注入：缺省 reader 自动补真值，自有私有行可清，外来私有行保留。
+
+        外来 ns 的冲突对经 _write_new 播种（attested store 上 write 的 source
+        须与进程身份一致，播不进外来 ns——正是既有语义）。"""
+        self._private_conflict(attested, key="att-conflict")
+        attested._write_new(
+            "workbuddy 私有冲突旧版", type="fact", source=FOREIGN, ns="agent-workbuddy",
+            key="fw", links=None, created=None, confidence=None, origin=None,
+        )
+        foreign_new = attested._write_new(
+            "workbuddy 私有冲突新版", type="fact", source=FOREIGN, ns="agent-workbuddy",
+            key="fw", links=None, created=None, confidence=None, origin=None,
+        )[0]
+        out = attested.review_resolve(all=True)
+        assert out["resolved"] == 1 and out["remaining"] == 1
+        remaining = attested.review_queue()
+        assert len(remaining) == 1 and foreign_new.id in remaining[0]
 
 
 class TestDualChannelSearch:
@@ -327,6 +462,37 @@ class TestCliReaderFlag:
         assert cli_main(root + ["get", priv_id, "--reader", OWNER_BARE]) == 0
         out = json.loads(capsys.readouterr().out)
         assert out["found"] is True
+
+
+class TestCliIdentityFlags:
+    """D1/D2 的 CLI 缝：link --agent 与 review-resolve --reader 透传属主身份。
+
+    缺身份 fail-closed（exit 2 + stderr JSON，同 get/search 的 --reader 约定）；
+    _shared 操作不带 flag 行为不变。"""
+
+    def test_cli_link_private_requires_agent(self, store: MemoryStore, capsys: pytest.CaptureFixture[str]):
+        a = store.write("zcode 私有关联甲", type="fact", source=OWNER, ns=PRIVATE_NS)["id"]
+        b = store.write("zcode 私有关联乙", type="fact", source=OWNER, ns=PRIVATE_NS)["id"]
+        root = ["--root", str(store.root)]
+        assert cli_main(root + ["link", a, b]) == 2
+        err = json.loads(capsys.readouterr().err)
+        assert "private" in err["error"]
+        assert cli_main(root + ["link", a, b, "--agent", OWNER_BARE]) == 0
+        assert json.loads(capsys.readouterr().out)["found"] is True
+
+    def test_cli_review_resolve_private_requires_reader(self, store: MemoryStore, capsys: pytest.CaptureFixture[str]):
+        old = store.write(
+            "zcode 私有事实旧版", type="fact", source=OWNER, ns=PRIVATE_NS, key="cli-conflict"
+        )["id"]
+        store.write("zcode 私有事实新版", type="fact", source=OWNER, ns=PRIVATE_NS, key="cli-conflict")
+        root = ["--root", str(store.root)]
+        assert cli_main(root + ["review-resolve", old]) == 2
+        err = json.loads(capsys.readouterr().err)
+        assert "private" in err["error"]
+        assert len(store.review_queue()) == 1  # 原子拒绝，队列原样
+        assert cli_main(root + ["review-resolve", old, "--reader", OWNER]) == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["resolved"] == 1 and out["archived"] == [old]
 
 
 class TestLexicalCandidatesGate:

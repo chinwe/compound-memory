@@ -18,7 +18,7 @@ from typing import Any, Callable
 from .index import atomic_write_text
 from .model import Memory
 
-_REVIEW_ROW_RE = re.compile(r"^- \S+ conflict `[^`]+`: (?P<old>\S+) \(.*?\) vs (?P<new>\S+) \(")
+_REVIEW_ROW_RE = re.compile(r"^- \S+ conflict `(?P<ns>[^/`]+)/[^`]+`: (?P<old>\S+) \(.*?\) vs (?P<new>\S+) \(")
 
 # 行格式是机器可解析契约：自由文本（ns/key/source/content）里的控制字符
 # （换行、制表等）曾可把一行拆成两行，损坏行被 fail-safe 保留后永久占队列
@@ -56,7 +56,12 @@ class ReviewQueue:
             if line.startswith("- ")
         ]
 
-    def resolve(self, ids: list[str] | None = None, all: bool = False) -> dict[str, Any]:
+    def resolve(
+        self,
+        ids: list[str] | None = None,
+        all: bool = False,
+        may_clear: Callable[[str], bool] | None = None,
+    ) -> dict[str, Any]:
         """清除命中行，返回 {"resolved", "remaining", "rows"}；git commit 归调用方（MemoryStore）。
 
         - all=True：清空整个队列（幂等，空队列返回 resolved=0）。
@@ -64,6 +69,12 @@ class ReviewQueue:
           ValueError 原子拒绝（队列原样保留），避免半清状态让调用方误判。
         - rows 是被清行的 (old, new) 明细：调用方凭「传入 id = 裁决废置方」
           归档淘汰侧；这里只解析行结构，不归档、不做方向判断。
+        - may_clear(ns)（D2/#34 属主可见性过滤，None = 不过滤，行为同旧版）：
+          冲突行自带 ns（行格式 `` `ns/type/key` ``），行级许可由调用方裁决——
+          - 按 id 命中的行若不可清 ⇒ PermissionError 原子拒绝（显式点名
+            他人私有行是越权，响亮拒绝而非静默半清）；
+          - --all 只清可清行，其余（含解析不出 ns 的行，fail-safe 宁留勿删）
+            原样保留，remaining 如实计数。
         """
         if all and ids:
             raise ValueError("pass either ids or --all, not both")
@@ -76,7 +87,16 @@ class ReviewQueue:
         rows: list[dict[str, str]] = []
         keep: list[str] = []
         if all:
-            removed = sum(1 for line in lines if line.startswith("- "))
+            if may_clear is None:
+                removed = sum(1 for line in lines if line.startswith("- "))
+            else:
+                removed = 0
+                for line in lines:
+                    m = _REVIEW_ROW_RE.match(line)
+                    if m is not None and may_clear(m.group("ns")):
+                        removed += 1
+                        continue
+                    keep.append(line)
             # all 模式不产出 rows：没有裁决信息，rows 无消费方（归档只跟 ids 走）
         else:
             wanted = set(ids or [])
@@ -85,6 +105,11 @@ class ReviewQueue:
                 m = _REVIEW_ROW_RE.match(line)
                 hit = m is not None and bool(wanted & {m.group("old"), m.group("new")})
                 if hit and m is not None:
+                    if may_clear is not None and not may_clear(m.group("ns")):
+                        raise PermissionError(
+                            f"review-queue row in private namespace {m.group('ns')!r}: "
+                            "only its owner host can resolve it (pass the owner as reader)"
+                        )
                     rows.append({"old": m.group("old"), "new": m.group("new")})
                 if m is not None:
                     covered |= {m.group("old"), m.group("new")}

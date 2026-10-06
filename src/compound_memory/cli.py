@@ -66,7 +66,7 @@ def cmd_get(args: argparse.Namespace) -> None:
 
 
 def cmd_link(args: argparse.Namespace) -> None:
-    _emit(_open_store(args).link(args.a, args.b))
+    _emit(_open_store(args).link(args.a, args.b, agent=args.agent))
 
 
 def cmd_feedback(args: argparse.Namespace) -> None:
@@ -99,7 +99,7 @@ def cmd_review_queue(args: argparse.Namespace) -> None:
 
 
 def cmd_review_resolve(args: argparse.Namespace) -> None:
-    _emit(_open_store(args).review_resolve(ids=args.ids, all=args.all))
+    _emit(_open_store(args).review_resolve(ids=args.ids, all=args.all, reader=args.reader))
 
 
 def cmd_distill_plan(args: argparse.Namespace) -> None:
@@ -167,7 +167,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("id")
     p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
     p.set_defaults(func=cmd_get)
-    p = sub.add_parser("link"); p.add_argument("a"); p.add_argument("b"); p.set_defaults(func=cmd_link)
+    p = sub.add_parser("link")
+    p.add_argument("a"); p.add_argument("b")
+    p.add_argument("--agent", default=None, help="caller identity, required for private agent-* namespaces")
+    p.set_defaults(func=cmd_link)
     p = sub.add_parser("feedback"); p.add_argument("id"); p.add_argument("agent"); p.set_defaults(func=cmd_feedback)
 
     p = sub.add_parser("decay"); p.add_argument("--now", default=None, help="ISO date override (testing)")
@@ -211,6 +214,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("ids", nargs="*", metavar="ID")
     p.add_argument("--all", action="store_true", help="clear the whole queue")
+    p.add_argument("--reader", default=None,
+                   help="caller identity, required to resolve rows from private agent-* namespaces")
     p.set_defaults(func=cmd_review_resolve)
     p = sub.add_parser("git-log"); p.add_argument("--limit", type=int, default=5); p.set_defaults(func=cmd_git_log)
     p = sub.add_parser(
