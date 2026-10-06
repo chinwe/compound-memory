@@ -23,7 +23,7 @@ _Avoid_: scope、bucket
 _Avoid_: 数据不出机（字面绝对化会连 search 动线一起禁掉）
 
 **Confidence（置信度）**：
-0~1 的数值，表示一条记忆被验证的程度；使用与跨 Agent 验证会提高它。
+0~1 的数值，表示一条记忆的证据正确性：由带 outcome 的反馈事件折算——success 与跨 Agent 验证提高它，failure 降低它（地板 0.05），contradiction 冻结待队列裁决；usefulness 不在其中，由 uses 单独承载。
 _Avoid_: score、weight（weight 专指类型权重）
 
 **Validity window（有效期）**：
@@ -31,7 +31,7 @@ _Avoid_: score、weight（weight 专指类型权重）
 _Avoid_: 过期/expire（口语动词，规范说法是「valid_until 已过」）、TTL（那是类型的归档寿命）
 
 **Compounding（复利）**：
-记忆系统随使用增值的机制：使用强化置信度、双向关联在 get/search 时带出邻居、跨 Agent 验证额外加分。
+记忆系统随使用增值的机制：带结果的反馈强化置信度、双向关联在 get/search 时带出邻居、跨 Agent 验证额外加分。
 _Avoid_: 加分、利息
 
 **Distillation（蒸馏）**：
@@ -43,7 +43,7 @@ _Avoid_: 压缩、summarize（那只是判断段的一个动作）
 _Avoid_: 升级、类型迁移（type 原地变更已禁）
 
 **Review queue（冲突队列）**：
-同 key 同类型的 fact/insight 内容冲突时，等待人工复核的队列。
+同 key 同类型的 fact/insight 内容冲突、或显式 contradiction 反馈登记时，等待人工复核的队列。
 _Avoid_: conflict list
 
 ### 生命周期
