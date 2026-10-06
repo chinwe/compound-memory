@@ -63,6 +63,10 @@ _Avoid_: 删除、trash
 **Revive（复活）**：
 把归档记忆移回活动区，恢复可检索性。
 
+**Forget（遗忘）**：
+把记忆从活动库移除的终态治理动作：文件物理移出、一条 forget 提交留痕，内容仅存在于 git 历史；系统内不可逆，恢复是带外 git 运维。与 Archive 相对——归档是可逆的暂不检索，遗忘是永不再被系统携带。
+_Avoid_: 删除（暗示无痕；遗忘有提交留痕）、tombstone（墓碑本体不留活动区，墓碑即那条 forget 提交）
+
 **Recency reference（新近基准）**：
 判断一条记忆"多新"的时间基准：`last_used` 优先，无则 `created`。落点是 `scoring.recency_age(mem, now)`——直接交出基准距 today 的天数，坏/缺日期交 `None`；基准选择只在这一处，ISO 解析降级共用 `scoring.age_days`，消费方只决定 `None` 的业务动作（排序记 0 分、衰减跳过）。不得各算各的。
 _Avoid_: 参考时间、基准日期
