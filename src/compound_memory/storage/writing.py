@@ -16,7 +16,7 @@ from contextlib import AbstractContextManager
 from dataclasses import asdict
 from typing import Any, Protocol, overload
 
-from ..model import MEMORY_TYPES, TTL_DAYS, Memory
+from ..model import MEMORY_TYPES, TTL_DAYS, TYPE_SPEC, Memory
 from ..review_queue import ReviewQueue
 from .validation import check_key, check_validity
 
@@ -124,7 +124,8 @@ def write_new(
     if ns.startswith("agent-") and source not in (ns, ns[len("agent-"):]):
         raise PermissionError(f"namespace {ns!r} is private to its owner; writer is {source!r}")
     conflict_with: Memory | None = None
-    if key and type in ("fact", "insight"):
+    # P3 冲突判定类型维：TYPE_SPEC.key_conflicts 表驱动（#46），单点在 model
+    if key and TYPE_SPEC[type].key_conflicts:
         conflict_with = store._find_by_key(ns, type, key, exclude_content=content)
     mem = Memory(
         id=store._new_id(),

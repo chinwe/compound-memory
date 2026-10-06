@@ -177,7 +177,7 @@ def distill_apply(
 ) -> dict[str, Any]:
     """蒸馏落库（原子）：产物写入（links 溯源到全部源、origin=distillation）+
     源批量归档，收进一次 commit。源任一不存在 ⇒ 整体不落库（found: False）。
-    产物与现存 fact/insight 的 key 冲突走既有 review 队列机制，不特殊对待。
+    产物与现存 fact/insight/decision 的 key 冲突走既有 review 队列机制，不特殊对待。
     """
     source = store._resolve_identity(source, "source")
     source_ids = list(dict.fromkeys(source_ids))  # 去重保序：重复源只归档一次

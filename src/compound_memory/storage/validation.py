@@ -17,7 +17,7 @@ import re
 # 合法 id（YYYYMMDD_hex6）与现有全部 ns 取值均落在 [A-Za-z0-9_-] 内。
 _PATH_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
-# key 是 fact/insight 同 key 更新的稳定锚点，格式约束在落库单点（_write_new，
+# key 是 fact/insight/decision 同 key 更新的稳定锚点，格式约束在落库单点（_write_new，
 # write/batch/distill-apply 共用）：小写字母数字段以短横线连接。原为纯文档约定、
 # write 无校验，2026-10-05 单日多会话沉淀出成批日期前缀 key——日期化 key 天然
 # 一次性（id 已含日期），等于放弃同 key 更新通道。日期前缀的取舍归文档，这里只守字符集与结构。
