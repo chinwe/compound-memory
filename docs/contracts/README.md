@@ -42,7 +42,7 @@
 | 动词 | 模板 |
 | --- | --- |
 | write | `write {id} ({type}/{ns}) by {source}` |
-| feedback | `feedback {id} by {agent}: uses={uses} conf={confidence}` |
+| feedback | `feedback {id} by {agent}: uses={uses} conf={confidence}`（前瞻：#43 evidence-based confidence 实施时将扩展 outcome 段，届时按「契约变更」流程同步本表与 `COMMIT_TEMPLATES`） |
 | link | `link {a} <-> {b}` |
 | decay（decay_sweep 归档） | `decay: archive {ids}` |
 | revive | `revive {id}` |

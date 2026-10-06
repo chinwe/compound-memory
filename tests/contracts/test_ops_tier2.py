@@ -16,7 +16,7 @@ from compound_memory.scoring import tokenize
 from compound_memory.storage import MemoryStore
 
 from conftest import CLOCK_DATE, sandbox_safe_remove
-from anchors import FOREIGN, OWNER, PRIVATE_NS, commit_count, days_ago, last_message, matches
+from anchors import FOREIGN, OWNER, PRIVATE_NS, commit_count, days_ago, last_message, matches, messages
 
 
 class TestFind:
@@ -105,6 +105,26 @@ class TestGitLog:
     def test_git_disabled_returns_empty(self, tmp_path: Path):
         store = MemoryStore(tmp_path / "nogit", git_probe=lambda: False)
         assert store.git_log() == []
+
+
+class TestGitLifecycleMessages:
+    """#31 特殊提交两类的模板补钉：init / orphan（此前只有正则无断言，
+    十类消息中仅这两类未钉——commit 消息措辞漂移不会被契约套件捕获）。
+    characterization：钉当前实现行为，不动既有断言，纯新增。"""
+
+    def test_fresh_store_commits_init_template(self, store: MemoryStore):
+        # init 是首建提交：最新在前的 log 里垫底（fixture 首建即产生，且仅此一条）
+        log = messages(store)
+        assert len(log) == 1
+        matches("init", log[-1])
+
+    def test_startup_recovery_commits_orphan_template(self, store: MemoryStore, tmp_path: Path):
+        # 带外手编留脏树（未提交变更）→ 重开 store 时启动对账收编为明确标注的恢复提交
+        (store.root / "out-of-band.txt").write_text("uncommitted edit", encoding="utf-8")
+        reopened = MemoryStore(
+            tmp_path / "memroot", clock=lambda: CLOCK_DATE, remover=sandbox_safe_remove
+        )
+        matches("orphan", last_message(reopened))
 
 
 class TestLexicalCandidates:

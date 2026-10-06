@@ -6,6 +6,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -133,8 +134,40 @@ def cmd_extract(args: argparse.Namespace) -> None:
     _emit(extract(Path(args.transcript), _open_store(args)))
 
 
+def _filter_log_lines(lines: list[str], grep: list[str], exclude: list[str]) -> list[str]:
+    """git-log 呈现层过滤（#42 / #31 消费端降噪）：--grep 正选、--exclude 反选。
+
+    匹配原语统一 Python re.search（substring/regex，大小写敏感），对齐
+    git log --grep 的消息匹配本质；git 原生 --exclude 是 ref/pathspec 排除、
+    对 commit message 不生效（2.37 实测），故不透传 git 参数——避免 BRE
+    与 Python re 两套正则方言在同一命令里漂移。多 --grep 是 OR（对齐
+    git）；--exclude 任一命中即剔除；匹配对象是剥掉 oneline hash 前缀后的
+    消息段；过滤发生在 --limit 取数之后（审计窗口内过滤）。
+    """
+    try:
+        grep_patterns = [re.compile(p) for p in grep]
+        exclude_patterns = [re.compile(p) for p in exclude]
+    except re.error as exc:
+        # 非法正则属调用方错误：走 CLI 统一翻译（stderr JSON + exit 2）
+        raise ValueError(f"invalid regex pattern: {exc}") from exc
+
+    def message_of(line: str) -> str:
+        return line.split(" ", 1)[1] if " " in line else line
+
+    kept: list[str] = []
+    for line in lines:
+        msg = message_of(line)
+        if grep_patterns and not any(p.search(msg) for p in grep_patterns):
+            continue
+        if any(p.search(msg) for p in exclude_patterns):
+            continue
+        kept.append(line)
+    return kept
+
+
 def cmd_git_log(args: argparse.Namespace) -> None:
-    _emit(_open_store(args).git_log(limit=args.limit))
+    lines = _open_store(args).git_log(limit=args.limit)
+    _emit(_filter_log_lines(lines, args.grep or [], args.exclude or []))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -217,7 +250,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reader", default=None,
                    help="caller identity, required to resolve rows from private agent-* namespaces")
     p.set_defaults(func=cmd_review_resolve)
-    p = sub.add_parser("git-log"); p.add_argument("--limit", type=int, default=5); p.set_defaults(func=cmd_git_log)
+    p = sub.add_parser("git-log")
+    p.add_argument("--limit", type=int, default=5, help="number of commits to fetch before filtering")
+    p.add_argument(
+        "--grep", action="append", default=None, metavar="PATTERN",
+        help="keep only commits whose message matches PATTERN (regex, repeatable, any-match OR)",
+    )
+    p.add_argument(
+        "--exclude", action="append", default=None, metavar="PATTERN",
+        help="drop commits whose message matches PATTERN (regex, repeatable; applied after --grep)",
+    )
+    p.set_defaults(func=cmd_git_log)
     p = sub.add_parser(
         "extract",
         help="scan a session transcript for memory candidates (deterministic pass, no LLM)",
