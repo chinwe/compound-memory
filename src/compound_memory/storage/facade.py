@@ -1,11 +1,13 @@
-"""MemoryStore 组合点（facade，ADR 0003 / #36+#37）：机制件装配 + 动词目录。
+"""MemoryStore 组合点（facade，ADR 0003 / #36+#37+#38）：机制件装配 + 动词目录。
 
-机制五件（paths/files/gitlayer/locking/validation，#36）与读路径动词五件
-（stats/review/distill/search/indexing，#37）已外移，facade 现承载：构造
+机制五件（paths/files/gitlayer/locking/validation，#36）、读路径动词五件
+（stats/review/distill/search/indexing，#37）与写路径动词 writing
+（write/_write_new/_write_result，#38 第一件）已外移，facade 现承载：构造
 装配与锁/commit/git/文件 IO/门禁的薄委托（门禁执行时序不动）、get/link
-方法体（ADR 裁决 2：留层保「动词目录」可读性）、写路径动词方法体
-（write/_write_new/feedback/decay_sweep/revive/_archive/_move_to_active，
-外移归 #38）、读路径动词的一行转发。包级布局与旧导入面见 __init__.py。
+方法体（ADR 裁决 2：留层保「动词目录」可读性）、生命周期动词方法体
+（feedback/decay_sweep/revive/_archive/_move_to_active + ARCHIVE_*/
+CONF_* 常量，外移归 #38 第二件）、写/读路径动词的一行转发。包级布局与
+旧导入面见 __init__.py。
 """
 
 from __future__ import annotations
@@ -19,15 +21,15 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, overload
 
 from ..index import Index
-from ..model import MEMORY_TYPES, TTL_DAYS, Memory
+from ..model import Memory
 from ..review_queue import ReviewQueue
 from ..scoring import recency_age
 from ..vector_index import VectorIndex
-from . import distill, files, gitlayer, indexing, locking, paths, review, search as search_mod, stats as stats_mod, validation
+from . import distill, files, gitlayer, indexing, locking, paths, review, search as search_mod, stats as stats_mod, validation, writing
 from .files import _unlink_file
 from .gitlayer import _git_available
 from .locking import _Batch
-from .validation import _PATH_COMPONENT_RE, check_key, check_validity as _check_validity
+from .validation import _PATH_COMPONENT_RE
 
 ARCHIVE_USES_THRESHOLD = 3
 CONF_USE_BUMP = 0.1
@@ -187,24 +189,21 @@ class MemoryStore:
         valid_from: str | None = None,
         valid_until: str | None = None,
     ) -> dict[str, Any]:
-        source = self._resolve_identity(source, "source")
-        _check_validity(valid_from, valid_until)
-        with self._write_lock():
-            mem, conflict_with = self._write_new(
-                content,
-                type=type,
-                source=source,
-                ns=ns,
-                key=key,
-                links=links,
-                created=created,
-                confidence=confidence,
-                origin=origin,
-                valid_from=valid_from,
-                valid_until=valid_until,
-            )
-            self._commit(f"write {mem.id} ({type}/{ns}) by {source}")
-        return self._write_result(mem, conflict_with)
+        """写动词转发：实现体在动词件 writing.py（公开签名不变，DistillDeps 镜像无需动）。"""
+        return writing.write(
+            self,
+            content,
+            type=type,
+            source=source,
+            ns=ns,
+            key=key,
+            links=links,
+            created=created,
+            confidence=confidence,
+            origin=origin,
+            valid_from=valid_from,
+            valid_until=valid_until,
+        )
 
     def _write_new(
         self,
@@ -220,46 +219,26 @@ class MemoryStore:
         valid_from: str | None = None,
         valid_until: str | None = None,
     ) -> tuple[Memory, Memory | None]:
-        """write 的落库核心（无 commit）：commit 由调用方动词收口——单条走 write，
-        批式经 batch()（_commit 单点拦截）。tests 亦用它播种 write 会正当拒绝的
-        外部 ns fixture（显式字段落库的测试种子）。"""
-        if type not in MEMORY_TYPES:
-            raise ValueError(f"type must be one of {MEMORY_TYPES}, got: {type!r}")
-        check_key(key)
-        self._check_ns(ns)
-        if ns.startswith("agent-") and source not in (ns, ns[len("agent-"):]):
-            raise PermissionError(f"namespace {ns!r} is private to its owner; writer is {source!r}")
-        conflict_with: Memory | None = None
-        if key and type in ("fact", "insight"):
-            conflict_with = self._find_by_key(ns, type, key, exclude_content=content)
-        mem = Memory(
-            id=self._new_id(),
-            ns=ns,
+        """落库核心薄委托：实现体在动词件 writing.py（write/batch/distill_apply/tests 四方共用）。"""
+        return writing.write_new(
+            self,
+            content,
             type=type,
             source=source,
-            created=created or self.today(),
-            content=content,
-            confidence=0.5 if confidence is None else confidence,
-            links=list(links or []),
-            ttl=TTL_DAYS[type],
+            ns=ns,
             key=key,
+            links=links,
+            created=created,
+            confidence=confidence,
             origin=origin,
             valid_from=valid_from,
             valid_until=valid_until,
         )
-        self._save(mem)
-        if conflict_with is not None:
-            self._review_queue.append(conflict_with, mem)
-        self._sync_indexes(mem, self._active_rel(mem))
-        return mem, conflict_with
 
     @staticmethod
     def _write_result(mem: Memory, conflict_with: Memory | None) -> dict[str, Any]:
-        result = asdict(mem)
-        result["conflict"] = conflict_with is not None
-        if conflict_with is not None:
-            result["conflicts_with"] = conflict_with.id
-        return result
+        """写结果组装薄委托：实现体在动词件 writing.py。"""
+        return writing.write_result(mem, conflict_with)
 
     def get(self, mem_id: str, include_neighbors: bool = True, reader: str | None = None) -> dict[str, Any]:
         reader = self._resolve_identity(reader, "reader")

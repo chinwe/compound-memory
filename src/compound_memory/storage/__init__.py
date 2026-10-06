@@ -21,12 +21,12 @@ from __future__ import annotations
 import os
 import subprocess
 
+from ..model import MEMORY_TYPES
 from .distill import DISTILL_DUP_SIM_THRESHOLD, PROMOTION_USES_THRESHOLD
 from .facade import (
     ARCHIVE_USES_THRESHOLD,
     CONF_CROSS_AGENT_BUMP,
     CONF_USE_BUMP,
-    MEMORY_TYPES,
     MemoryStore,
 )
 from .files import _unlink_file
