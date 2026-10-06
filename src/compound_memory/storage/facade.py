@@ -1,8 +1,11 @@
-"""MemoryStore 组合点（facade，ADR 0003 / #36）：机制件装配 + 全部动词方法。
+"""MemoryStore 组合点（facade，ADR 0003 / #36+#37）：机制件装配 + 动词目录。
 
-骨架片：storage.py 原样迁入本包，模块代码零改动；后续机制件（paths/files/
-gitlayer/locking/validation）逐片外移后，facade 对应方法退化为薄委托；
-动词方法体的外移归动词票（#37/#38）。包级布局与旧导入面见 __init__.py。
+机制五件（paths/files/gitlayer/locking/validation，#36）与读路径动词五件
+（stats/review/distill/search/indexing，#37）已外移，facade 现承载：构造
+装配与锁/commit/git/文件 IO/门禁的薄委托（门禁执行时序不动）、get/link
+方法体（ADR 裁决 2：留层保「动词目录」可读性）、写路径动词方法体
+（write/_write_new/feedback/decay_sweep/revive/_archive/_move_to_active，
+外移归 #38）、读路径动词的一行转发。包级布局与旧导入面见 __init__.py。
 """
 
 from __future__ import annotations
