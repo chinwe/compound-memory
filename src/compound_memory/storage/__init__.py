@@ -27,8 +27,6 @@ from .facade import (
     CONF_USE_BUMP,
     CONFIDENCE_HISTOGRAM_BUCKETS,
     DISTILL_DUP_SIM_THRESHOLD,
-    GIT_IDENTITY,
-    GIT_LOCK_RETRY_DELAYS,
     MEMORY_TYPES,
     PROMOTION_USES_THRESHOLD,
     RECENT_WINDOW_DAYS,
@@ -39,10 +37,10 @@ from .facade import (
     MemoryStore,
     _check_validity,
     _conf_bucket,
-    _git_available,
     _uses_bucket,
     _within_days,
     _PATH_COMPONENT_RE,
 )
 from .files import _unlink_file
+from .gitlayer import GIT_IDENTITY, GIT_LOCK_RETRY_DELAYS, _git_available
 from .paths import default_root

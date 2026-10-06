@@ -12,10 +12,7 @@ import fcntl
 import logging
 import os
 import re
-import shutil
 import subprocess
-import sys
-import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -27,8 +24,9 @@ from ..model import MEMORY_TYPES, TTL_DAYS, Memory
 from ..review_queue import ReviewQueue
 from ..scoring import age_days, doc_text, dup_similarity_matrix, is_expired, rank, recency_age, tokenize
 from ..vector_index import VectorIndex
-from . import files, paths
+from . import files, gitlayer, paths
 from .files import _PATH_COMPONENT_RE, _unlink_file
+from .gitlayer import _git_available
 
 # storage 域告警的单点 logger：扫描容错（#20）与向量降级（#19）共用
 logger = logging.getLogger(__name__)
@@ -45,9 +43,6 @@ _KEY_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 ARCHIVE_USES_THRESHOLD = 3
 CONF_USE_BUMP = 0.1
 CONF_CROSS_AGENT_BUMP = 0.15
-GIT_IDENTITY = ("-c", "user.name=compound-memory", "-c", "user.email=memory@local")
-# index.lock 瞬时冲突的退避序列（_git_retry）：初试 + 每档一次重试
-GIT_LOCK_RETRY_DELAYS = (0.05, 0.2)
 # 蒸馏信号阈值（distill-plan 单一定义点；CLI --help 文本由这两个常量生成，不会漂移）：
 # 疑似重复 = normalized_similarity(BM25/n_query_tokens) 达到该值；晋升建议 = episode 高活性门槛
 DISTILL_DUP_SIM_THRESHOLD = 0.5
@@ -58,11 +53,6 @@ PROMOTION_USES_THRESHOLD = 5
 USES_HISTOGRAM_BUCKETS = ("0", "1-2", "3-5", "6-9", "10+")
 CONFIDENCE_HISTOGRAM_BUCKETS = ("<0.3", "0.3-0.6", "0.6-0.8", "0.8-1.0")
 RECENT_WINDOW_DAYS = 7
-
-
-def _git_available() -> bool:
-    """默认 git 探测 adapter（测试侧经 git_probe 注入，勿 patch 全局 shutil.which）。"""
-    return shutil.which("git") is not None
 
 
 def _uses_bucket(uses: int) -> str:
@@ -135,12 +125,8 @@ class MemoryStore:
         self._embedder = embedder
         self._review_queue = ReviewQueue(self.root / "review-queue.md", clock=clock)
         self.git_enabled = git and (git_probe or _git_available)()
-        # git 仓库发现的天花板（防逃逸）：root 的 .git 无效（损坏/被清空）时
-        # git 会跳过它继续向上、借父链最近的真仓库执行 add -A/commit
-        # （2026-10-05 实测把父仓库的未提交改动收编走）；ceiling 钉在
-        # root.parent，无效 .git 报 not a repository 而非逃逸。root 的
-        # .git 有效时发现第一跳即命中，行为不变
-        self._git_env = {**os.environ, "GIT_CEILING_DIRECTORIES": os.path.realpath(self.root.parent)}
+        # git 仓库发现的天花板（防逃逸）语义见 gitlayer.git_env
+        self._git_env = gitlayer.git_env(self.root)
         self._clock = clock
         self._remover = remover or _unlink_file
         # 进程侧身份证明：agent_id 非空时（宿主经 COMPOUND_MEMORY_AGENT_ID 注入），
@@ -154,9 +140,7 @@ class MemoryStore:
         if self.git_enabled and not (self.root / ".git").exists():
             # init commit 仅限首次创建：__init__ 在每次 CLI/MCP 启动都会执行，
             # 无条件 add -A + commit 会把带外手编的文件吞进误导性的 "init" 提交
-            self._git("init", "-q", check=False)
-            self._git("add", "-A", check=False)
-            self._git("commit", "-qm", "init compound-memory store", check=False)
+            gitlayer.init_commit(self._git)
         elif self.git_enabled:
             self._recover_orphan_changes()
 
@@ -247,70 +231,30 @@ class MemoryStore:
                 finally:
                     os.close(fd)
 
-    # ---------- 布局 / git ----------
+    # ---------- 布局 / git（机制件 paths/gitlayer 的薄委托） ----------
 
     def _ensure_layout(self) -> None:
         paths.ensure_layout(self.root)
 
     def _git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", "-C", str(self.root), *GIT_IDENTITY, *args],
-            capture_output=True,
-            text=True,
-            check=check,
-            env=self._git_env,
-        )
+        return gitlayer.run(self.root, self._git_env, args, check=check)
 
     def _git_retry(self, *args: str) -> subprocess.CompletedProcess[str]:
-        """index.lock 瞬时冲突的有界重试（check=False 语义不变，只多退避重试）。
-
-        覆盖两类真实竞争：flock 降级窗口内的并发写者、外部 git 进程（手工
-        操作/其他工具）。hook 拒绝等永久性错误不含 index.lock 字样，一次即
-        返回——重试只该买瞬时冲突，不该烧时间在必然重现的失败上。
-        """
-        step = self._git(*args, check=False)
-        for delay in GIT_LOCK_RETRY_DELAYS:
-            if step.returncode == 0 or "index.lock" not in (step.stderr or ""):
-                break
-            time.sleep(delay)
-            step = self._git(*args, check=False)
-        return step
+        return gitlayer.retry(self._git, *args)
 
     def _recover_orphan_changes(self) -> None:
-        """启动对账：上次会话 commit 失败/进程中断留在工作树的孤儿变更，
-        收编进一个明确标注的恢复提交——否则它们会被下一个写动词的
-        "write ..." 消息错位归因（2026-10-02 实测）。带外手编未提交的
-        变更同样会被收编：恢复消息不声称作者，语义上诚实；需要专属提交
-        历史的带外变更应在手编流程内自行 commit。
-        """
-        with self._write_lock():  # status 判定与收编同临界区：锁外判定的 TOCTOU 窗口会漏变更
-            status = self._git("status", "--porcelain", check=False)
-            if status.returncode != 0 or not status.stdout.strip():
-                return  # 坏仓库/干净树零副作用：启动路径宁降级
-            self._commit("orphan changes recovered")
+        gitlayer.recover_orphan_changes(self._git, self._write_lock, self._commit)
+
+    def _defer_commit(self) -> bool:
+        # 批内延迟：commit 收拢到 batch() 退出时一次性执行（单点拦截，各动词无需批式特化）。
+        # batch 状态暂驻 facade（#36 片 e 随 locking 外移）
+        if self._batch_depth > 0:
+            self._batch_ops += 1
+            return True
+        return False
 
     def _commit(self, message: str) -> None:
-        if self._batch_depth > 0:
-            # 批内延迟：commit 收拢到 batch() 退出时一次性执行（单点拦截，各动词无需批式特化）
-            self._batch_ops += 1
-            return
-        if not self.git_enabled:
-            return
-        staged = self._git_retry("add", "-A")
-        combined = (staged.stdout or "") + (staged.stderr or "")
-        if staged.returncode != 0:
-            # add 未完成就没有可提交的新内容：commit 只会提交 staged 残留，
-            # 消息与新变更错位归因（比审计空洞更误导）——短路放弃，变更留
-            # 工作树由启动对账收编。check=False 的失败不得静默："git log 即
-            # 审计史"的承诺至少要 stderr 响亮一声。
-            if "nothing to commit" not in combined:
-                print(f"compound-memory: git add failed: {combined.strip()}", file=sys.stderr)
-            return
-        committed = self._git_retry("commit", "-qm", message)
-        combined = (committed.stdout or "") + (committed.stderr or "")
-        # nothing-to-commit 是 git 的正常无操作返回，不算失败
-        if committed.returncode != 0 and "nothing to commit" not in combined:
-            print(f"compound-memory: git commit failed: {combined.strip()}", file=sys.stderr)
+        gitlayer.commit(self._git, message, enabled=self.git_enabled, defer=self._defer_commit)
 
     # ---------- 文件 IO（机制件 files/paths 的薄委托） ----------
 
@@ -1062,7 +1006,4 @@ class MemoryStore:
         }
 
     def git_log(self, limit: int = 5) -> list[str]:
-        if not self.git_enabled:
-            return []
-        proc = self._git("log", "--oneline", f"-{limit}", check=True)
-        return [line for line in proc.stdout.splitlines() if line.strip()]
+        return gitlayer.log_lines(self._git, limit, self.git_enabled)
