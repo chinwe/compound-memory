@@ -8,6 +8,7 @@ rank 是排序管线的单一定义点：tokenize → BM25 → 归一化 → 新
 from __future__ import annotations
 
 import datetime as dt
+from collections import Counter
 
 import pytest
 
@@ -18,11 +19,18 @@ from compound_memory.scoring import (
     W_SIM,
     W_TYPE,
     TYPE_WEIGHT,
+    DocStats,
     age_days,
+    bm25_scores,
+    bm25_scores_from_stats,
+    doc_stats_from_tokens,
+    doc_text,
     dup_similarity_matrix,
+    expired_by_date,
     is_expired,
     rank,
     recency_age,
+    tokenize,
 )
 
 
@@ -228,3 +236,95 @@ class TestExpired:
         """坏数据不冒充过期（与 _within_days 同哲学）：宁可带进检索，不因坏日期静默吞记忆。"""
         assert is_expired(make_mem(1, "x"), TODAY) is False
         assert is_expired(make_mem(2, "x", valid_until="not-a-date"), TODAY) is False
+
+
+class TestTokenStatsSource:
+    """候选 token 统计源（#41）：BM25 的 token 输入从「即时 tokenize」抽象为
+    「可注入的 DocStats」，缓存路径（Index per-doc 频表）与词面路径必须
+    数学逐位一致——这是「检索结果逐位不变」红线的单元级表达。"""
+
+    DOCS = [
+        "redis 缓存 淘汰策略 persistence aof rdb",
+        "nginx 反向代理 buffer upstream 限流",
+        "docker 镜像 prune 网络 bridge compose 部署",
+        "redis 持久化 persistence 淘汰策略 淘汰策略 缓存",
+    ]
+
+    def _stats_of(self, text: str) -> DocStats:
+        toks = tokenize(text)
+        return DocStats(tf=dict(Counter(toks)), dl=len(toks))
+
+    def test_bm25_stats_path_matches_token_list_bit_for_bit(self):
+        """频表路径与列表路径同分：tf/dl/df/avgdl 的每个输入都来自同一份
+        tokenize 结果，只是组织形式不同（缓存免 parse 的前提）。"""
+        q = tokenize("redis 淘汰策略")
+        docs_tokens = [tokenize(d) for d in self.DOCS]
+        stats = [self._stats_of(d) for d in self.DOCS]
+        assert bm25_scores(q, docs_tokens) == bm25_scores_from_stats(q, stats)
+
+    def test_rank_doc_stats_matches_tokenize_path(self):
+        """rank 带不带 doc_stats 输出逐位一致（纯词面与 RRF 双路都钉）——
+        缓存路径改变的是 token 来源，不是排序管线。"""
+        cands = [make_mem(i, d) for i, d in enumerate(self.DOCS, 1)]
+        stats = [self._stats_of(doc_text(m)) for m in cands]
+        q = "redis 淘汰策略"
+        assert rank(q, cands, now=NOW, top_k=4, doc_stats=stats) == rank(q, cands, now=NOW, top_k=4)
+        vec_sims = {cands[0].id: 0.9, cands[3].id: 0.4}
+        assert rank(q, cands, now=NOW, top_k=4, vec_sims=vec_sims, doc_stats=stats) == rank(
+            q, cands, now=NOW, top_k=4, vec_sims=vec_sims
+        )
+
+    def test_rank_doc_stats_partial_none_falls_back_to_tokenize(self):
+        """对齐列表中的 None 位（缓存无条目的候选）回退 tokenize 该文档——
+        混合来源（词法缓存 ∪ 向量独有召回）的正确性。"""
+        cands = [make_mem(1, self.DOCS[0]), make_mem(2, self.DOCS[1])]
+        mixed = [self._stats_of(self.DOCS[0]), None]
+        assert rank("redis 缓存", cands, now=NOW, doc_stats=mixed) == rank("redis 缓存", cands, now=NOW)
+
+    def test_content_loader_supplies_emit_content(self):
+        """content_loader（缓存候选的正文现 parse 缝）：命中条目的 content
+        来自 loader，未命中路径保持 mem.content。"""
+        cands = [make_mem(1, "lazy content marker")]
+        stats = [self._stats_of("lazy content marker")]
+        hits = rank(
+            "lazy content",
+            cands,
+            now=NOW,
+            doc_stats=stats,
+            content_loader=lambda mid: f"loaded:{mid}",
+        )
+        assert hits[0]["content"] == f"loaded:{cands[0].id}"
+        # 缺省不传 loader：正文仍取候选自身（词面路径现状）
+        assert rank("lazy content", cands, now=NOW, doc_stats=stats)[0]["content"] == "lazy content marker"
+
+
+class TestExpiredByDate:
+    """valid_until 原语（#41）：字符串直判与 is_expired 的 Memory 判定同源——
+    词法缓存的 per-doc 条目（无 Memory 形态）复用过期语义，勿各算各的。"""
+
+    @pytest.mark.parametrize(
+        "valid_until,expected",
+        [(None, False), ("", False), ("2026-10-01", False), ("2026-09-30", True), ("2027-01-01", False), ("bad", False)],
+    )
+    def test_matches_is_expired_semantics(self, valid_until, expected):
+        mem = make_mem(1, "x", valid_until=valid_until)
+        assert expired_by_date(valid_until, TODAY) is expected
+        assert is_expired(mem, TODAY) is expected
+
+    def test_content_loader_called_only_for_returned_hits(self):
+        """loader 只许在 top_k 切片后调用：emit 阶段每个正分候选都会经过，
+        宽查询若在 emit 里现 parse 正文，免 parse 的候选缓存会被全数吃回
+        （perf-bench #41 实测：万条 broad 8526 次 emit 级 parse）。"""
+        cands = [make_mem(i, f"redis shared filler {i} redis") for i in range(1, 21)]
+        stats = [doc_stats_from_tokens(tokenize(doc_text(m))) for m in cands]
+        calls: list[str] = []
+        hits = rank(
+            "redis filler",
+            cands,
+            now=NOW,
+            top_k=5,
+            doc_stats=stats,
+            content_loader=lambda mid: calls.append(mid) or f"c:{mid}",
+        )
+        assert len(calls) == 5 == len(hits)
+        assert all(h["content"] == f"c:{h['id']}" for h in hits)

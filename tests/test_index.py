@@ -58,7 +58,7 @@ class TestSync:
         mem = make_mem(1, "vercel timeout rules")
         idx.sync(mem, rel_of(mem))
         data = json.loads(cache_file(tmp_path).read_text(encoding="utf-8"))
-        assert rel_of(mem) in data["vercel"]
+        assert rel_of(mem) in data["index"]["vercel"]
 
     def test_archived_memory_is_un_indexed(self, index, tmp_path: Path):
         """不变量的家：archived ⇒ 移出索引。调用方不再自己选 upsert 还是 remove。"""
@@ -68,7 +68,7 @@ class TestSync:
         mem.archived = True
         idx.sync(mem, rel_of(mem))
         data = json.loads(cache_file(tmp_path).read_text(encoding="utf-8"))
-        assert all(rel_of(mem) not in paths for paths in data.values())
+        assert all(rel_of(mem) not in paths for paths in data["index"].values())
 
     def test_sync_is_idempotent(self, index, tmp_path: Path):
         """同一 rel_path 重复 sync（write 后 feedback 的真实序列）不产生重复词条。"""
@@ -77,7 +77,7 @@ class TestSync:
         idx.sync(mem, rel_of(mem))
         idx.sync(mem, rel_of(mem))
         data = json.loads(cache_file(tmp_path).read_text(encoding="utf-8"))
-        assert data["vercel"].count(rel_of(mem)) == 1
+        assert data["index"]["vercel"].count(rel_of(mem)) == 1
 
 
 class TestCandidatesAndRebuild:
@@ -228,7 +228,7 @@ class TestIncrementalReconcile:
 
     def _cache_map(self, store: MemoryStore) -> dict[str, set[str]]:
         raw = json.loads((store.root / "index" / "tokens.json").read_text(encoding="utf-8"))
-        return {tok: set(rels) for tok, rels in raw.items()}
+        return {tok: set(rels) for tok, rels in raw["index"].items()}
 
     def test_reconcile_matches_full_rebuild(self, store: MemoryStore):
         """带外加删后对账的缓存与全量重建集合等价——增量的正确性基准。"""
@@ -282,3 +282,126 @@ class TestFrontmatterLoaderParity:
             pytest.skip("PyYAML built without libyaml (C loader absent)")
         for fm in self.SAMPLES:
             assert yaml.load(fm, Loader=yaml.CSafeLoader) == yaml.load(fm, Loader=yaml.SafeLoader)
+
+
+class TestTokenStatsCache:
+    """tokens.json v2 的 per-doc token 统计（#41）：检索候选路径免 parse 的数据源。
+
+    钉四件事：doc_entries 的形状（tf 频表/len/先验）；旧版 v1 缓存视作死
+    缓存走重建（兼容语义）；对账 diff 覆盖「先验-only 变更」（跨进程
+    feedback 只动 uses/last_used，也必须被对账捕获）；条目与倒排一起
+    被 purge（删除不残留）。
+    """
+
+    def test_doc_entries_shape(self, index):
+        idx, _ = index
+        mem = make_mem(1, "redis queue depth redis")
+        idx.sync(mem, rel_of(mem))
+        (entry,) = idx.doc_entries([rel_of(mem)]).values()
+        assert entry["tf"] == {"redis": 2, "queue": 1, "depth": 1}
+        assert entry["len"] == 4
+        assert entry["id"] == mem.id
+        assert entry["ns"] == "_shared" and entry["type"] == "episode"
+        assert entry["confidence"] == 0.5 and entry["uses"] == 0
+        assert entry["last_used"] is None and entry["valid_until"] is None
+
+    def test_doc_entries_missing_rel_absent(self, index):
+        """不在索引里的 rel（向量路独有召回）不出现——调用方回退 parse。"""
+        idx, _ = index
+        assert idx.doc_entries(["namespaces/_shared/fact/nope.md"]) == {}
+
+    def test_legacy_v1_cache_rebuilds_on_access(self, index, tmp_path: Path):
+        """旧版纯倒排 schema（无 v/docs 包装）视作死缓存：下一次访问全量重建为 v2。"""
+        idx, pairs = index
+        mem = make_mem(1, "redis queue depth")
+        pairs.append((mem, rel_of(mem)))
+        idx._dir.mkdir(parents=True, exist_ok=True)
+        cache_file(tmp_path).write_text(json.dumps({"redis": [rel_of(mem)]}), encoding="utf-8")
+        assert idx.candidates(tokenize("redis")) == [rel_of(mem)]
+        data = json.loads(cache_file(tmp_path).read_text(encoding="utf-8"))
+        assert data["v"] == 2
+        assert idx.doc_entries([rel_of(mem)])[rel_of(mem)]["id"] == mem.id
+
+    def test_reconcile_updates_prior_only_change(self, index, tmp_path: Path):
+        """对账的 diff 基准是整条 entry（tf + 先验）：tokens 不变、uses/last_used
+        变了（跨进程 feedback 的形态）也要落进缓存——先验入了缓存（#41），
+        漏更会让检索 emit 旧 uses。"""
+        idx, pairs = index
+        mem = make_mem(1, "redis queue depth")
+        idx.sync(mem, rel_of(mem))
+        assert idx.doc_entries([rel_of(mem)])[rel_of(mem)]["uses"] == 0
+        mem.uses, mem.last_used = 3, "2026-09-01"
+        pairs.clear()
+        pairs.append((mem, rel_of(mem)))
+        # 触发对账：压缓存 mtime 到过去 + bump ns 目录 mtime（带外变更形态）
+        past = time.time() - 60
+        os.utime(cache_file(tmp_path), (past, past))
+        ns_dir = tmp_path / "namespaces" / "_shared" / "episode"
+        ns_dir.mkdir(parents=True, exist_ok=True)
+        newer = int(time.time() * 1e9) + 60_000_000_000
+        os.utime(ns_dir, ns=(newer, newer))
+        entry = idx.doc_entries([rel_of(mem)])[rel_of(mem)]
+        assert (entry["uses"], entry["last_used"]) == (3, "2026-09-01")
+
+    def test_purge_drops_docs_entry_too(self, index, tmp_path: Path):
+        """归档/删除清除倒排的同时清 docs 条目——残留会让已删记忆继续当候选。"""
+        idx, _ = index
+        mem = make_mem(1, "redis queue depth")
+        idx.sync(mem, rel_of(mem))
+        mem.archived = True
+        idx.sync(mem, rel_of(mem))
+        data = json.loads(cache_file(tmp_path).read_text(encoding="utf-8"))
+        assert rel_of(mem) not in data["docs"]
+        assert idx.doc_entries([rel_of(mem)]) == {}
+
+    def test_rebuild_skips_archived_pairs(self, index):
+        """活动区里 archived 标记的序对不进缓存：读路径经缓存条目无从复查
+        archived，跳过与查询侧过滤等价（归档不可见语义保持）。"""
+        idx, _ = index
+        live = make_mem(1, "redis queue depth")
+        dead = make_mem(2, "docker network bridge", archived=True)
+        idx.rebuild([(live, rel_of(live)), (dead, rel_of(dead))])
+        assert idx.candidates(tokenize("docker")) == []
+        assert idx.doc_entries([rel_of(dead)]) == {}
+
+
+class TestTokenStatsSearchParity:
+    """检索快慢路径奇偶性（#41 token stats）：缓存条目路径与强制 parse 回退
+    路径的 search 输出必须逐位一致——「检索结果逐位不变」红线的 store 级
+    characterization（契约 test_search 钉五要素，这里钉缓存切换本身）。
+
+    强制回退的手法：Index.doc_entries 打补丁返回空——scored_candidates 对
+    全部候选走 parse 分支（即 #41 之前的旧路径）。
+    """
+
+    def _seed(self, store: MemoryStore) -> None:
+        store.write(content="redis cache eviction policy", type="fact", source="agent-a", confidence=0.8)
+        store.write(content="redis persistence aof rdb 取舍", type="insight", source="agent-a", confidence=0.4)
+        store.write(content="docker network bridge mode", type="episode", source="agent-a")
+        # 手编文件：未加引号 ISO 日期（YAML 解析成 date 对象）——缓存条目的
+        # 日期安全化必须与 parse 路径的坏日期语义逐位对齐
+        hand = store.ns_root / "_shared" / "fact" / "20260101_handdate.md"
+        hand.write_text(
+            "---\nid: 20260101_handdate\nns: _shared\ntype: fact\n"
+            "source: agent-x\ncreated: 2026-09-01\nlast_used: 2026-09-20\n---\n\nredis 部署 配置 要点\n",
+            encoding="utf-8",
+        )
+
+    def test_search_cache_path_matches_parse_fallback(self, store: MemoryStore, monkeypatch):
+        self._seed(store)
+        for query in ("redis 部署", "redis", "配置", "docker network"):
+            fast = store.search(query, top_k=10)
+            monkeypatch.setattr(Index, "doc_entries", lambda self, rels: {})
+            try:
+                slow = store.search(query, top_k=10)
+            finally:
+                monkeypatch.undo()
+            assert fast == slow, f"cache/parse divergence for query: {query!r}"
+
+    def test_search_after_rebuild_matches_incremental(self, store: MemoryStore):
+        """缓存自愈三形态（写路径 sync / 对账 / 显式 rebuild）产出等价检索：
+        rebuild 重建的 docs 条目与增量路径写的逐位一致。"""
+        self._seed(store)
+        incremental = store.search("redis 部署", top_k=10)
+        store.rebuild_index()
+        assert store.search("redis 部署", top_k=10) == incremental
