@@ -1,12 +1,14 @@
-"""MemoryStore 组合点（facade，ADR 0003 / #36+#37+#38）：机制件装配 + 动词目录。
+"""MemoryStore 组合点（facade，ADR 0003 终态）：机制件装配 + 动词目录。
 
 机制五件（paths/files/gitlayer/locking/validation，#36）与动词七件
-（读路径 stats/review/distill/search/indexing，#37；写路径 writing/lifecycle，
-#38）已全部外移，facade 现承载：构造装配与锁/commit/git/文件 IO/门禁的
-薄委托（门禁执行时序不动）、get/link 方法体（ADR 裁决 2：留层保「动词
-目录」可读性）、机制件与写核心的薄委托（_write_new/_write_result/
-_archive/_move_to_active 等 tests 与动词 Deps 的触达面）、其余动词的一行
-转发。包级布局与旧导入面见 __init__.py。
+（读路径 stats/review/distill/search/indexing #37、写路径 writing/
+lifecycle #38）已全部外移，facade 只承载四块：构造装配（布局/索引/
+写锁/git/嵌入/身份注入）、get 与 link 两个薄动词的方法体（ADR 0003
+裁决 2：留层保「动词目录」可读性）、机制件与写核心的薄委托
+（_write_new/_write_result/_archive/_move_to_active 等 tests 播种与
+review/distill 动词 Deps 的触达面，勿当冗余删）、其余动词的一行转发。
+门禁执行时序不动（参数型动词在方法入口、按 id 动词在锁内 find 后，
+定义单点在 validation.py）。包级公开导入面见 __init__.py。
 """
 
 from __future__ import annotations
@@ -27,7 +29,6 @@ from . import distill, files, gitlayer, indexing, lifecycle, locking, paths, rev
 from .files import _unlink_file
 from .gitlayer import _git_available
 from .locking import _Batch
-from .validation import _PATH_COMPONENT_RE
 
 
 class MemoryStore:
@@ -151,12 +152,10 @@ class MemoryStore:
 
     @staticmethod
     def _check_ns(ns: str) -> None:
-        """门禁薄委托：定义单点在 validation.check_ns（执行时序不动）。"""
         validation.check_ns(ns)
 
     @staticmethod
     def _check_ns_owner(ns: str, identity: str | None, role: str = "reader") -> None:
-        """门禁薄委托：定义单点在 validation.check_ns_owner（执行时序不动）。"""
         validation.check_ns_owner(ns, identity, role)
 
     @overload
@@ -166,7 +165,6 @@ class MemoryStore:
     def _resolve_identity(self, value: None, role: str) -> str | None: ...
 
     def _resolve_identity(self, value: str | None, role: str) -> str | None:
-        """身份裁决薄委托：定义单点在 validation.resolve_identity（self.agent_id 注入）。"""
         return validation.resolve_identity(value, role, self.agent_id)
 
     def write(
@@ -183,20 +181,9 @@ class MemoryStore:
         valid_from: str | None = None,
         valid_until: str | None = None,
     ) -> dict[str, Any]:
-        """写动词转发：实现体在动词件 writing.py（公开签名不变，DistillDeps 镜像无需动）。"""
+        """写动词（公开签名不变，WritingDeps 镜像它）。"""
         return writing.write(
-            self,
-            content,
-            type=type,
-            source=source,
-            ns=ns,
-            key=key,
-            links=links,
-            created=created,
-            confidence=confidence,
-            origin=origin,
-            valid_from=valid_from,
-            valid_until=valid_until,
+            self, content, type, source, ns, key, links, created, confidence, origin, valid_from, valid_until
         )
 
     def _write_new(
@@ -213,25 +200,13 @@ class MemoryStore:
         valid_from: str | None = None,
         valid_until: str | None = None,
     ) -> tuple[Memory, Memory | None]:
-        """落库核心薄委托：实现体在动词件 writing.py（write/batch/distill_apply/tests 四方共用）。"""
+        """落库核心（write/batch/distill_apply/tests 四方共用）。"""
         return writing.write_new(
-            self,
-            content,
-            type=type,
-            source=source,
-            ns=ns,
-            key=key,
-            links=links,
-            created=created,
-            confidence=confidence,
-            origin=origin,
-            valid_from=valid_from,
-            valid_until=valid_until,
+            self, content, type, source, ns, key, links, created, confidence, origin, valid_from, valid_until
         )
 
     @staticmethod
     def _write_result(mem: Memory, conflict_with: Memory | None) -> dict[str, Any]:
-        """写结果组装薄委托：实现体在动词件 writing.py。"""
         return writing.write_result(mem, conflict_with)
 
     def get(self, mem_id: str, include_neighbors: bool = True, reader: str | None = None) -> dict[str, Any]:
@@ -255,7 +230,6 @@ class MemoryStore:
         return result
 
     def feedback(self, mem_id: str, agent: str) -> dict[str, Any]:
-        """生命周期动词转发：实现体与阈值常量在动词件 lifecycle.py（锁链原样）。"""
         return lifecycle.feedback(self, mem_id, agent)
 
     def link(self, id_a: str, id_b: str, agent: str | None = None) -> dict[str, Any]:
@@ -295,27 +269,22 @@ class MemoryStore:
         include_neighbors: bool = True,
         reader: str | None = None,
     ) -> list[dict[str, Any]]:
-        """检索动词转发：实现体在动词件 search.py（门禁时序/结果形状原样）。"""
-        return search_mod.search(
-            self, query, ns=ns, top_k=top_k, include_neighbors=include_neighbors, reader=reader
-        )
+        return search_mod.search(self, query, ns, top_k, include_neighbors, reader)
 
     # ---------- 衰减 / 归档 / 复活（动词件 lifecycle.py） ----------
 
     def decay_sweep(self) -> list[str]:
-        """生命周期动词转发：实现体在动词件 lifecycle.py（单临界区原样）。"""
         return lifecycle.decay_sweep(self)
 
     def revive(self, mem_id: str, reader: str | None = None) -> dict[str, Any]:
-        """生命周期动词转发：实现体在动词件 lifecycle.py（锁链与门禁时序原样）。"""
         return lifecycle.revive(self, mem_id, reader=reader)
 
     def _archive(self, mem: Memory) -> None:
-        """归档薄委托：实现体在动词件 lifecycle.py（review/distill 的 Deps 与 tests 触达面）。"""
+        """归档薄委托：review/distill 的 Deps 与 tests 播种触达面。"""
         return lifecycle.archive(self, mem)
 
     def _move_to_active(self, mem: Memory) -> None:
-        """复活搬移薄委托：实现体在动词件 lifecycle.py（feedback/revive 经属性查找回跳）。"""
+        """复活搬移薄委托：feedback/revive 经属性查找回跳。"""
         return lifecycle.move_to_active(self, mem)
 
     # ---------- 蒸馏（确定性段；判断/摘要交调用方 Agent，CONTEXT.md: Distillation） ----------
@@ -328,10 +297,7 @@ class MemoryStore:
         ns: str = "_shared",
         reader: str | None = None,
     ) -> dict[str, Any]:
-        """蒸馏动词转发：实现体与阈值常量在动词件 distill.py。"""
-        return distill.distill_plan(
-            self, window_days=window_days, min_uses=min_uses, min_confidence=min_confidence, ns=ns, reader=reader
-        )
+        return distill.distill_plan(self, window_days, min_uses, min_confidence, ns, reader)
 
     def distill_apply(
         self,
@@ -343,10 +309,8 @@ class MemoryStore:
         key: str | None = None,
         confidence: float | None = None,
     ) -> dict[str, Any]:
-        """蒸馏动词转发：实现体在动词件 distill.py（batch/write 经属性查找）。"""
-        return distill.distill_apply(
-            self, content, type=type, source=source, source_ids=source_ids, ns=ns, key=key, confidence=confidence
-        )
+        """蒸馏落库（batch/write 经属性查找）。"""
+        return distill.distill_apply(self, content, type, source, source_ids, ns, key, confidence)
 
     # ---------- 索引（可重建缓存；机制在 index.Index 与 vector_index.VectorIndex） ----------
 
@@ -354,41 +318,37 @@ class MemoryStore:
         return paths.active_rel(self.root, mem)
 
     def _sync_indexes(self, mem: Memory, rel_path: str) -> None:
-        """索引收口薄委托：实现体在动词件 indexing.py（写路径全部经此收口）。"""
+        """索引收口薄委托：全部写路径经此收口（不变量的物理单点在 indexing.py）。"""
         indexing.sync_indexes(self, mem, rel_path)
 
     def _scan_pairs(self) -> list[tuple[Memory, str]]:
-        """索引扫描薄委托：实现体在动词件 indexing.py（构造注入回调 + tests 触达面）。"""
+        """索引扫描薄委托：构造注入回调 + tests 触达面。"""
         return indexing.scan_pairs(self)
 
     def rebuild_index(self) -> dict[str, Any]:
-        """索引动词转发：实现体在动词件 indexing.py。"""
         return indexing.rebuild_index(self)
 
     def lexical_candidates(
         self, q_tokens: list[str], nss: set[str], reader: str | None = None
     ) -> list[Memory]:
-        """检索动词转发：实现体在动词件 search.py（公开词面候选正门）。"""
+        """公开词面候选正门（extraction 复述标注走它）。"""
         return search_mod.lexical_candidates(self, q_tokens, nss, reader=reader)
 
     # ---------- 冲突 / 统计 ----------
 
     def _find_by_key(self, ns: str, mtype: str, key: str, exclude_content: str) -> Memory | None:
-        """key 冲突域查找薄委托：实现体在动词件 review.py（_write_new 在用）。"""
+        """key 冲突域查找薄委托：_write_new 在用。"""
         return review.find_by_key(self, ns, mtype, key, exclude_content)
 
     def review_queue(self) -> list[str]:
-        """评审队列动词转发：实现体在动词件 review.py。"""
         return review.review_queue(self)
 
     def review_resolve(
         self, ids: list[str] | None = None, all: bool = False, reader: str | None = None
     ) -> dict[str, Any]:
-        """评审队列动词转发：实现体在动词件 review.py（D2 门禁与临界区语义原样）。"""
         return review.review_resolve(self, ids=ids, all=all, reader=reader)
 
     def stats(self) -> dict[str, Any]:
-        """统计动词转发：实现体与桶函数/桶常量在动词件 stats.py。"""
         return stats_mod.stats(self)
 
     def git_log(self, limit: int = 5) -> list[str]:
