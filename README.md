@@ -276,3 +276,7 @@ Test seams: the MCP tool boundary via in-process `mcp.Client(server)` (no subpro
 ## Release
 
 PyPI versions are immutable and the tag must match `pyproject.toml`'s `version` (the release workflow verifies this and fails loudly). Releases go through GitHub Actions + PyPI Trusted Publisher (OIDC, no token): push a tag like `v0.1.0` and `release.yml` builds and publishes automatically.
+
+---
+
+MCP Registry name: `mcp-name: io.github.chinwe/compound-memory`
