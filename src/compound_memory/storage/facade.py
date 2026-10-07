@@ -222,8 +222,9 @@ class MemoryStore:
         self, mem_id: str, include_neighbors: bool = True, reader: str | None = None, project: str | None = None
     ) -> dict[str, Any]:
         """按 id 读恒可读（显式寻址不受限：valid_until 与 project 都不影响 get 本体）；
-        project 只用于邻居带出的适用性过滤（读方声明了项目才带出该项目邻居，
-        与 ns 脱敏先例同型——否则旁路泄漏）。"""
+        邻居带出走单点 search_mod.active_neighbors（ADR-0010 过滤面边界）：过期邻居
+        不展开正文（id 仍在 links），归档邻居保留（溯源面：蒸馏产物带出归档源，
+        test_distill 钉）；project 适用性按读方滤除（与 ns 脱敏先例同型——否则旁路泄漏）。"""
         reader = self._resolve_identity(reader, "reader")
         validation.check_project(project)  # 拼错的 slug 响亮报错，不静默当全局
         mem = self.find(mem_id)
@@ -240,10 +241,14 @@ class MemoryStore:
                 same_ns_links.append(l)
         result["links"] = same_ns_links
         if include_neighbors and mem.links:
+            # 邻居活性 + 适用性过滤单点委托：include_archived=True 是 get 的显式
+            # 寻址/溯源面语义（归档邻居带出，蒸馏溯源 test_distill 钉）——
+            # 勿在此手抄第二份合取式
             neighbors = [
                 asdict(n)
-                for n in (self.find(l) for l in same_ns_links)
-                if n is not None and search_mod.in_project_scope(n.project, project)
+                for n in search_mod.active_neighbors(
+                    self, mem.id, {mem.ns}, self._clock(), project, include_archived=True
+                )
             ]
             result["neighbors"] = neighbors
         return result

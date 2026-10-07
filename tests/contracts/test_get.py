@@ -99,3 +99,29 @@ class TestReadPathGuarantees:
         before = commit_count(store)
         store.get(mem["id"])
         assert commit_count(store) == before
+
+
+class TestNeighborLiveness:
+    """邻居带出活性走单点 search_mod.active_neighbors（ADR-0010 过滤面边界），
+    两个面策略显式分维（参数即 seam）：过期邻居一律不展开正文（CONTEXT.md：
+    valid_until 次日起退出邻居召回，两侧同规）；归档邻居在 get 显式寻址/溯源面
+    保留（蒸馏产物带出归档源，test_distill.py::test_apply_is_atomic_write_links_
+    archive_single_commit 钉），在 search 检索面排除（检索只呈现活动知识）。
+    get 本体恒可读不受影响（显式寻址语义保留）。"""
+
+    def test_archived_neighbor_expanded_for_provenance(self, store: MemoryStore):
+        anchor = store.write("contract get neighbor liveness anchor", type="fact", source="agent-a")
+        side = store.write("contract get neighbor liveness side", type="episode", source="agent-a", created=days_ago(120))
+        store.link(anchor["id"], side["id"])
+        store.decay_sweep()
+        got = store.get(anchor["id"])
+        assert side["id"] in got["links"]
+        assert side["id"] in {n["id"] for n in got["neighbors"]}  # 溯源面：归档邻居带出
+
+    def test_expired_neighbor_not_expanded(self, store: MemoryStore):
+        anchor = store.write("contract get neighbor expiry anchor", type="fact", source="agent-a")
+        side = store.write("contract get neighbor expiry side", type="fact", source="agent-a", valid_until=days_ago(1))
+        store.link(anchor["id"], side["id"])
+        got = store.get(anchor["id"])
+        assert side["id"] in got["links"]
+        assert all(n["id"] != side["id"] for n in got["neighbors"])

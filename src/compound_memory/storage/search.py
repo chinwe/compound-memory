@@ -258,15 +258,22 @@ def vector_recall(
 
 
 def active_neighbors(
-    store: SearchDeps, mem_id: str, nss: set[str], now: dt.date, project: str | None = None
+    store: SearchDeps, mem_id: str, nss: set[str], now: dt.date, project: str | None = None,
+    include_archived: bool = False,
 ) -> list[Memory]:
-    """邻居召回的数据源：hit 的一度 links，归档/过期邻居不召回（截断/上限/去环归 rank）。
+    """邻居召回的数据源（唯一单点，get 与 search 两个面共用，勿在手抄第二份合取式）：
+    hit 的一度 links，过期邻居一律不召回（CONTEXT.md：valid_until 次日起退出邻居召回）。
+
+    归档邻居按「面」分策略（两个面真实不同策略，参数即 seam）：检索面（search）
+    缺省排除——检索只呈现活动知识；显式寻址面（get）include_archived=True 保留
+    ——归档是「暂不检索但仍可信」的知识，蒸馏产物溯源（test_distill 钉）依赖它。
 
     ns 集合过滤是访问控制的一部分，不可省：_shared 记忆若链到 agent-* 私有记忆，
     邻居会把私有正文带进调用方不可见的检索结果（2026-10-03 实测泄漏）；
-    集合由 search 按"调用方可见的 ns"圈定（双通道 = _shared ∪ 自有私有 ns）。
-    project 适用性同此（ADR 0010）：邻居带出按读方 project 滤除（与 get 的
-    邻居过滤同规，否则项目记忆经邻居旁路泄漏进全局会话）。
+    集合由调用方按"读者可见的 ns"圈定（search 双通道 = _shared ∪ 自有私有 ns，
+    get = 命中记忆自身 ns）。
+    project 适用性同此（ADR 0010）：邻居带出按读方 project 滤除，否则项目记忆
+    经邻居旁路泄漏进全局会话。
     """
     mem = store.find(mem_id)
     if mem is None:
@@ -276,7 +283,7 @@ def active_neighbors(
         neighbor = store.find(link_id)
         if (
             neighbor is not None
-            and not neighbor.archived
+            and (include_archived or not neighbor.archived)
             and not is_expired(neighbor, now)
             and neighbor.ns in nss
             and in_project_scope(neighbor.project, project)
