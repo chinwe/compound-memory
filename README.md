@@ -1,121 +1,278 @@
 # compound-memory
 
-本地多 Agent 共享记忆系统——支持复利（越用越值钱）。Spec 见 `docs/specs/0001-compound-memory-spec.md`。
+[![CI](https://github.com/chinwe/compound-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/chinwe/compound-memory/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/compound-memory)](https://pypi.org/project/compound-memory/)
+[![Python](https://img.shields.io/pypi/pyversions/compound-memory)](https://pypi.org/project/compound-memory/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-## 架构
+English | [简体中文](README.zh-CN.md)
 
+Local-first shared memory for multiple AI agents — plain Markdown files that **compound in value as they are used**. Memory lives on your disk as frontmatter-annotated Markdown, gets stronger with every confirmed use, decays into a revivable archive when neglected, and auto-commits to a local git history on every write.
+
+## Why
+
+Every agent session starts from zero: preferences get re-asked, project conventions get re-discovered, the same pitfall gets hit twice. compound-memory gives all your agents one shared store:
+
+- **Local-first** — nothing leaves your machine; memories are human-readable Markdown files, not rows in an opaque database.
+- **MCP-native** — exactly 5 tools (`memory_write` / `memory_search` / `memory_get` / `memory_link` / `memory_feedback`) as the single read-write boundary; works with any MCP host (Claude Code, ZCode, WorkBuddy, …), plus a full CLI for operations.
+- **Compounding** — confirmed usage raises confidence, related memories are recalled as neighbors, validation from a *different* host counts as independent evidence, and distillation merges many raw memories into fewer, denser ones.
+- **Multi-agent by design** — a `_shared` namespace everyone reads, plus `agent-*` private namespaces each host owns; cross-host validation is tracked per host.
+- **Optional semantic recall** — vector search via sqlite-vec + BGE embeddings, with automatic graceful fallback to pure lexical search when unavailable.
+
+## Quick Start
+
+### For AI agents
+
+Paste this one-liner into your coding agent (Claude Code, Cursor, ZCode, …) and let it do the rest:
+
+```text
+Set up compound-memory (https://github.com/chinwe/compound-memory) — a local-first multi-agent shared memory (MCP server + CLI) — on this machine: install it (`uv tool install compound-memory`, or clone the repo and `uv sync --extra dev`), initialize the store (`compound-memory init`, defaults to ~/.agents/memory), register its stdio MCP server in this host's MCP config — command `compound-memory-server` (PyPI install) or `uvx --from compound-memory compound-memory-server`, env `COMPOUND_MEMORY_ROOT=~/.agents/memory` and `COMPOUND_MEMORY_AGENT_ID=agent-<your-host-id>` — then verify by calling `memory_search` and expecting a `{"hits": [...]}` response; if the host needs a restart to load MCP servers, tell me. Host-specific configs and the usage protocol: docs/agent-integration.md in the repo.
 ```
-Agent (MCP 客户端 / CLI)
-  └─ memory_write | memory_search | memory_get | memory_link | memory_feedback
-       └─ MemoryStore (~/.agents/memory)
-            ├─ namespaces/_shared/{episode,fact,insight,skill}/*.md   共享区
-            ├─ namespaces/agent-*/...                                  私有区
-            ├─ archive/...                                             衰减归档（可复活）
-            ├─ index/tokens.json                                       可重建的检索缓存
-            ├─ review-queue.md                                         fact/insight 冲突队列
-            └─ .git/                                                   每次写入自动 commit
+
+### For humans
+
+#### 1. Install
+
+Python ≥ 3.11. Either route works:
+
+```bash
+# Route A: clone the repo (uv-managed; same path the MCP config uses)
+git clone https://github.com/chinwe/compound-memory.git
+cd compound-memory && uv sync --extra dev
+
+# Route B: install from PyPI (no clone needed)
+uv tool install compound-memory   # or: pip install compound-memory
 ```
 
-## 复利机制
+#### 2. Initialize your store
 
-| 利息来源 | 实现 |
-|---|---|
-| ① 使用强化 | `memory_feedback`: uses+1, conf+0.1 |
-| ② 关联增值 | `memory_link` 双向关联；`memory_get` 带出一度邻居；`search` 命中自动内嵌精简邻居（上限 3、只召回活动记忆，`--no-neighbors` 可关） |
-| ③ 蒸馏提纯 | `distill-plan`（CLI，确定性候选+双信号去重标注）→ Agent 判断 → `distill-apply` 原子落库（产物 links 溯源，源归档可复活） |
-| ④ 跨 Agent 验证 | 与 source 不同的 agent 反馈时 conf 额外 +0.15 |
+Defaults to `~/.agents/memory`; override with the `COMPOUND_MEMORY_ROOT` env var.
 
-评分公式（权重以 `src/compound_memory/scoring.py` 的 `W_*` 常量为准）：`0.70·相似度 + 0.15·置信度 + 0.10·新近度(0.5+0.5·e^(−Δt/τ)) + 0.05·类型权重`；双路（向量路启用）时改为 RRF 融合主序 + ε=0.04 先验 tie-break（见 spec「索引即缓存」）。
+```bash
+uv run compound-memory init
+```
 
-## MCP 接入
+#### 3. Wire it into your MCP host (recommended)
 
-各宿主（WorkBuddy / ZCode / Claude Code / DeepSeek Harness）的完整接入配置与统一使用规范见 `docs/agent-integration.md`。5 个 tool 的 description 自带闭环铁律（命中采纳后必须回写 `memory_feedback`、只写稳定事实、复用既有 key），宿主不注入使用规范也能保持复利闭环——注入规范（agent-integration §6）仍推荐，用于收紧写入质量。
+This lets your everyday agents read/write the shared store automatically:
 
 ```json
 {
   "mcpServers": {
     "compound-memory": {
       "type": "stdio",
-      "command": "~/.local/bin/uv",
-      "args": ["run", "--directory", "<本目录>", "compound-memory-server"],
-      "env": { "COMPOUND_MEMORY_ROOT": "~/.agents/memory" }
+      "command": "uv",
+      "args": ["run", "--directory", "<repo>", "compound-memory-server"],
+      "env": {
+        "COMPOUND_MEMORY_ROOT": "~/.agents/memory",
+        "COMPOUND_MEMORY_AGENT_ID": "agent-<your-host-id>"
+      }
     }
   }
 }
 ```
 
-各宿主配置若不展开 `~` 占位写法，替换为本机绝对路径即可。向量召回路为可选（`uv sync --extra vec`）：未装 extra 或 HF 缓存缺模型时自动降级纯词面。embedding 模型与维度可经 `COMPOUND_MEMORY_EMBEDDING_MODEL`（默认 `Xenova/bge-small-zh-v1.5`）与 `COMPOUND_MEMORY_EMBEDDING_DIM`（默认 512）覆盖——换模型属运维动作，改后需显式 `rebuild-index`。
+Installed from PyPI? Swap `command`/`args` for `uvx` + `["--from", "compound-memory", "compound-memory-server"]` — no repo clone needed. Setting `COMPOUND_MEMORY_AGENT_ID` is strongly recommended: the store then resolves caller identity from the process env, so a model misreporting its identity (or forging someone else's `source`) is rejected loudly.
+
+**Verify**: ask your agent to call `memory_search` (any keyword) — a `{"hits": [...]}` response means you're connected. Or run `uv run compound-memory stats` from the CLI.
+
+#### 4. Next step
+
+Inject the usage protocol from [`skills/compound-memory/SKILL.md`](skills/compound-memory/SKILL.md) into your host (the search → feedback → distill loop), per `docs/agent-integration.md` §6.
+
+## Demo
+
+![compound-memory CLI demo: init → write → search → feedback → stats](assets/demo.gif)
+
+One full loop: write → search → feedback (with cross-host first-validation bonus) → store health. Real output from v0.4.0, long payloads trimmed:
+
+```bash
+uv run compound-memory init
+```
+
+```json
+{ "ok": true, "root": "~/.agents/memory" }
+```
+
+Two different hosts each write one stable fact (new memories start at `confidence` 0.5, `uses` 0):
+
+```bash
+uv run compound-memory write \
+  "Deploy serverless functions on this platform times out at 10s — keep handlers under that budget" \
+  fact agent-claude --key vercel-timeout
+```
+
+```json
+{
+  "id": "20261007_86adf1",
+  "ns": "_shared",
+  "type": "fact",
+  "source": "agent-claude",
+  "content": "Deploy serverless functions on this platform times out at 10s — keep handlers under that budget",
+  "confidence": 0.5,
+  "uses": 0,
+  "key": "vercel-timeout",
+  "validated_by": []
+  ...
+}
+```
+
+```bash
+uv run compound-memory write \
+  "User prefers concise replies with tables and code examples" \
+  fact agent-zcode --key user-style
+```
+
+Search ranks by score (`--explain` attaches per-hit ranking components for debugging):
+
+```bash
+uv run compound-memory search "serverless timeout"
+```
+
+```json
+[
+  {
+    "id": "20261007_86adf1", "score": 1.0292, "similarity": 1.0,
+    "type": "fact", "source": "agent-claude",
+    "content": "Deploy serverless functions on this platform times out at 10s — keep handlers under that budget",
+    "neighbors": []
+  },
+  {
+    "id": "20261007_6a0c0c", "score": 0.5211, "similarity": 0.4919,
+    "type": "fact", "source": "agent-zcode",
+    "content": "User prefers concise replies with tables and code examples",
+    "neighbors": []
+  }
+]
+```
+
+A different host used this memory and reported it back — `uses` +1, `conf` +0.1; and since the reporter `agent-workbuddy` ≠ source `agent-claude`, the first cross-host validation adds another +0.15:
+
+```bash
+uv run compound-memory feedback 20261007_86adf1 agent-workbuddy
+```
+
+```json
+{
+  "id": "20261007_86adf1",
+  "confidence": 0.75,
+  "uses": 1,
+  "last_used": "2026-10-07",
+  "validated_by": ["agent-workbuddy"],
+  "evidence": {
+    "success_count": 1, "failure_count": 0, "contradiction_count": 0,
+    "last_verified": "2026-10-07",
+    "recent": [{ "date": "2026-10-07", "agent": "agent-workbuddy", "outcome": "success" }]
+  }
+  ...
+}
+```
+
+Store health at a glance (fixed-bucket histograms, liveness, distillation yield):
+
+```bash
+uv run compound-memory stats
+```
+
+```json
+{
+  "total": 2, "archived": 0, "active": 2,
+  "avg_confidence": 0.625,
+  "by_type": { "fact": 2 },
+  "by_ns": { "_shared": 2 },
+  "review_queue_entries": 0,
+  "uses_histogram": { "0": 1, "1-2": 1, "3-5": 0, "6-9": 0, "10+": 0 },
+  "confidence_histogram": { "<0.3": 0, "0.3-0.6": 1, "0.6-0.8": 1, "0.8-1.0": 0 },
+  "recent_feedback_7d": 1, "cross_validated": 0,
+  "distilled_total": 0, "distilled_recent_7d": 0
+}
+```
+
+Three things to notice:
+
+- New memories start at `confidence` 0.5 and move on **evidence** — feedback carries an outcome: `success` raises it, `failure` lowers it (floor 0.05), `contradiction` freezes it into the review queue, `obsolete` archives immediately.
+- First validation from a different host earns an independent bonus (once per host per memory), with `validated_by` / `evidence` trails — confidence is evidence of correctness, not popularity.
+- Hits embed one-hop neighbors automatically (empty here — no links yet; `memory_link` creates bidirectional links that get recalled for free).
+
+## How compounding works
+
+| Interest source | Mechanism |
+|---|---|
+| ① Usage reinforcement | `memory_feedback`: uses+1, conf+0.1 |
+| ② Link value | `memory_link` creates bidirectional links; `memory_get` pulls one-hop neighbors; `search` hits embed up to 3 compact neighbors (active memories only, `--no-neighbors` to disable) |
+| ③ Distillation | `distill-plan` (CLI, deterministic candidates + dual-signal dedup annotations) → agent judgment → `distill-apply` atomic commit (product links back to sources; sources archived but revivable) |
+| ④ Cross-agent validation | Feedback from an agent other than the source adds conf +0.15 |
+
+Scoring (weights are the `W_*` constants in `src/compound_memory/scoring.py`): `0.70·similarity + 0.15·confidence + 0.10·recency(0.5+0.5·e^(−Δt/τ)) + 0.05·type weight`. With the vector channel enabled, ranking switches to RRF fusion with an ε=0.04 prior tie-break (see the spec, "index as cache").
+
+## The 5 MCP tools
+
+| Tool | Purpose | Key points |
+|---|---|---|
+| `memory_write` | Write a memory | `type`: episode/fact/insight/skill/decision; `source`: your agent id; give fact/insight/decision a stable `key`; optional `valid_from`/`valid_until` (ISO dates) and `project` scope |
+| `memory_search` | Retrieve | Returns `{"hits": [...]}` ranked by score; embeds up to 3 one-hop neighbors; dual-channel by default (`_shared` + caller's own private ns); optional `project` (fail-closed) and `explain` |
+| `memory_get` | Fetch by id | Always contains a `found` key; pulls one-hop neighbors; private-ns targets require `reader` |
+| `memory_link` | Link two memories | Bidirectional; both sides must be in the same ns; private-ns links require owner identity |
+| `memory_feedback` | Report "this memory was actually used" | Default `outcome=success`: uses+1, conf+0.1; first cross-host validation +0.15; also `failure` / `contradiction` / `obsolete` / `unknown`. **Mandatory after adopting a hit** — that's the loop that makes the store compound |
+
+Tool descriptions embed the protocol rules themselves, so agents keep the loop intact even without host-side rules injected. Full parameter reference: `docs/agent-integration.md`.
 
 ## CLI
 
 ```bash
-uv sync --extra dev              # 首次克隆后初始化 .venv（之后 uv run 自动使用）
+uv sync --extra dev              # first clone: build .venv (later `uv run` reuses it)
 
-uv run compound-memory init               # 初始化空库
-uv run compound-memory write "Vercel Serverless 10s 超时" episode agent-workbuddy
-uv run compound-memory search "Vercel 超时"     # 命中内嵌一度邻居（上限3，--no-neighbors 关闭）
+uv run compound-memory init               # initialize an empty store
+uv run compound-memory write "Vercel Serverless has a 10s timeout" episode agent-workbuddy
+uv run compound-memory search "Vercel timeout"   # hits embed one-hop neighbors (limit 3, --no-neighbors to disable)
 uv run compound-memory feedback <id> agent-claude
-uv run compound-memory decay          # cron 定时跑
-uv run compound-memory revive <id>    # 复活归档记忆（CLI 唯一入口）
-uv run compound-memory distill-plan   # 蒸馏候选清单：merge_with（同 key 强信号）+ possible_dup_of（BM25 弱信号）+ promotion_candidate（高活性 episode）
-uv run compound-memory distill-apply "合并后的经验" insight agent-workbuddy --sources <id1>,<id2>  # 原子落库：产物(links 溯源, origin=distillation) + 源归档，一次 commit
-uv run compound-memory stats            # 健康度：uses/confidence 固定桶 + 活性 + 蒸馏产出量
-uv run compound-memory rebuild-index  # 索引可随时重建
-uv run compound-memory review-queue   # 冲突队列（CLI 唯一入口）
-uv run compound-memory git-log        # 审计轨迹
+uv run compound-memory decay          # run from cron
+uv run compound-memory revive <id>    # revive an archived memory
+uv run compound-memory distill-plan   # distillation candidates: merge_with (same-key strong) + possible_dup_of (BM25 weak) + promotion_candidate (high-activity episodes)
+uv run compound-memory distill-apply "the merged insight" insight agent-workbuddy --sources <id1>,<id2>  # atomic: product (links, origin=distillation) + source archival, one commit
+uv run compound-memory stats            # health: uses/confidence buckets + liveness + distillation yield
+uv run compound-memory rebuild-index  # rebuild the search cache anytime
+uv run compound-memory review-queue   # conflict queue (CLI-only entry)
+uv run compound-memory git-log        # audit trail
 ```
 
-## 定时蒸馏准备（launchd / cron / systemd）
+More operations: `explain <id>` (confidence composition + evidence detail for one memory), `forget <id> --agent <id>` (terminal removal, ADR-0009), `review-resolve` (adjudicate conflicts), `extract <transcript|dir>` (deterministic session-transcript mining).
 
-ADR 0001：确定性准备定时跑，判断（摘要/合并）由 Agent 会话内按需完成。每天 09:00 把候选清单写到 `<root>/distill/last-plan.json`。调度器三选一：**launchd**（macOS 系统标准，睡眠错过的计划唤醒后补跑）、**systemd user timer**（`Persistent=true` 同样补跑）、**cron**（最通用但不补跑错过的计划）。三者都调用同一个平台无关的 `scripts/distill-prepare.sh`。
+## Architecture
 
-**launchd（macOS）**：
+```
+Agent (MCP client / CLI)
+  └─ memory_write | memory_search | memory_get | memory_link | memory_feedback
+       └─ MemoryStore (~/.agents/memory)
+            ├─ namespaces/_shared/{episode,fact,insight,skill}/*.md   shared area
+            ├─ namespaces/agent-*/...                                  private areas
+            ├─ archive/...                                             decayed archive (revivable)
+            ├─ index/tokens.json                                       rebuildable search cache
+            ├─ review-queue.md                                         fact/insight conflict queue
+            └─ .git/                                                   auto-commit on every write
+```
+
+## Scheduled distillation prep (launchd / cron / systemd)
+
+Per ADR 0001, the deterministic prep runs on a schedule while judgment (summarizing / merging) stays with the calling agent. Every day at 09:00 the candidate list lands in `<root>/distill/last-plan.json`. Pick one scheduler — **launchd** (macOS standard, catches up after sleep), **systemd user timer** (`Persistent=true`, same catch-up), or **cron** (most portable, no catch-up) — all three drive the same platform-neutral `scripts/distill-prepare.sh`. Ready-made templates with copy-paste instructions: `scripts/com.compound-memory.distill-prepare.plist.tmpl` (launchd), `scripts/compound-memory-distill-prepare.{service,timer}.example` (systemd), and the Chinese README for cron. The script runs `set -eu`: any failure exits non-zero (visible via `launchctl list` / `systemctl --user list-timers` / cron mail, log at `distill/prepare.log`). `distill/` is a runtime artifact directory (auto-gitignored) — no commit noise; only `distill-apply` after agent judgment lands one atomic commit.
+
+## Documentation
+
+- [`docs/specs/0001-compound-memory-spec.md`](docs/specs/0001-compound-memory-spec.md) — design spec
+- [`docs/agent-integration.md`](docs/agent-integration.md) — per-host MCP configs + the unified usage protocol (Chinese)
+- [`docs/adr/`](docs/adr/) — architecture decision records
+- [`CONTEXT.md`](CONTEXT.md) — glossary (Chinese)
+- [`skills/compound-memory/SKILL.md`](skills/compound-memory/SKILL.md) — usage rules for hosts (Chinese)
+
+## Development
 
 ```bash
-REPO=$(pwd); UV="$HOME/.local/bin/uv"   # 项目环境由 uv 管理，脚本内经 UV_BIN 覆盖 launchd PATH
-sed -e "s|__REPO__|$REPO|g" -e "s|__UV__|$UV|g" -e "s|__ROOT__|$HOME/.agents/memory|g" \
-  scripts/com.compound-memory.distill-prepare.plist.tmpl \
-  > ~/Library/LaunchAgents/com.compound-memory.distill-prepare.plist
-launchctl load ~/Library/LaunchAgents/com.compound-memory.distill-prepare.plist
-launchctl list | grep compound-memory   # 验证已加载；日志在 <root>/distill/prepare.log
-```
-
-**systemd user（Linux）**：
-
-```bash
-REPO=$(pwd); UV="$HOME/.local/bin/uv"
-mkdir -p ~/.config/systemd/user
-for f in service timer; do
-  sed -e "s|__REPO__|$REPO|g" -e "s|__UV__|$UV|g" -e "s|__ROOT__|$HOME/.agents/memory|g" \
-    scripts/compound-memory-distill-prepare.$f.example \
-    > ~/.config/systemd/user/compound-memory-distill-prepare.$f
-done
-systemctl --user daemon-reload
-systemctl --user enable --now compound-memory-distill-prepare.timer
-systemctl --user list-timers | grep compound-memory   # 验证已加载
-```
-
-**cron（其他环境）**：`crontab -e` 加入（sed 填充占位符后）：
-
-```
-0 9 * * * UV_BIN=$HOME/.local/bin/uv COMPOUND_MEMORY_ROOT=$HOME/.agents/memory /bin/sh <仓库>/scripts/distill-prepare.sh >> $HOME/.agents/memory/distill/prepare.log 2>&1
-```
-
-失败要响亮：脚本 `set -eu`，任何一步失败以非 0 退出（`launchctl list` / `systemctl --user list-units` / cron 邮件可见，日志落 distill/prepare.log）。`distill/` 是运行时产物目录（自动加入库 .gitignore），不产生 commit 噪声——只有 Agent 判断后跑 `distill-apply` 才落一次原子 commit。
-
-## 开发
-
-```bash
-uv run pytest tests/ -q     # 全量测试（MCP tool 边界 + 蒸馏 + 生命周期/索引/CLI + 输入防御）
+uv run pytest tests/ -q     # full suite (MCP tool boundary + distillation + lifecycle/index/CLI + input defense)
 uv run mypy src/compound_memory/
 ```
 
-测试缝：MCP tool 边界（`mcp.Client(server)` 内存直连，无子进程）+ 核心模块单测（scoring / index / store 运维面）。CI 在 Python 3.11/3.12/3.13 矩阵上跑测试、类型检查与纯 wheel 安装冒烟。
+Test seams: the MCP tool boundary via in-process `mcp.Client(server)` (no subprocess) plus unit tests for core modules (scoring / index / store ops). CI runs tests, type checks, and a pure-wheel install smoke across Python 3.11/3.12/3.13.
 
-## 发布
+## Release
 
-PyPI 版本不可重传，tag 必须与 `pyproject.toml` 的 `version` 一致（release workflow 有校验，不一致响亮失败）。发布走 GitHub Actions + PyPI Trusted Publisher（OIDC，免 token）：
-
-1. **一次性配置**（PyPI → 项目 → Publishing）：owner `chinwe`、repo `compound-memory`、workflow `release.yml`、environment `pypi`。首次发布时项目尚不存在，在 pypi.org 用"pending publisher"预注册即可。
-2. **发布**：`git tag v0.1.0 && git push origin v0.1.0` → `release.yml` 自动 build + `uv publish`。
-3. 发布后 `uvx --from compound-memory compound-memory-server` 即为通用安装形态（`uvx` 的参数是包名，script 名不同须用 `--from`；MCP 配置里的 `command` 换成 uvx 后不再依赖仓库克隆路径）。
+PyPI versions are immutable and the tag must match `pyproject.toml`'s `version` (the release workflow verifies this and fails loudly). Releases go through GitHub Actions + PyPI Trusted Publisher (OIDC, no token): push a tag like `v0.1.0` and `release.yml` builds and publishes automatically.
