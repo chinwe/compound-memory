@@ -67,7 +67,7 @@ PyPI 安装形态把 `command`/`args` 换成 `uvx` + `["--from", "compound-memor
 
 ## Demo
 
-![compound-memory CLI 演示：init → write → search → feedback → stats](assets/demo.gif)
+![compound-memory CLI 演示：init → write → search → feedback → stats](https://raw.githubusercontent.com/chinwe/compound-memory/main/assets/demo.gif)
 
 一次完整闭环：写入 → 检索 → 反馈强化（含跨 Agent 首验加分）→ 健康度。以下输出实录自 v0.4.0（长输出有截断）：
 

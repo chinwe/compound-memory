@@ -82,7 +82,7 @@ Inject the usage protocol from [`skills/compound-memory/SKILL.md`](skills/compou
 
 ## Demo
 
-![compound-memory CLI demo: init → write → search → feedback → stats](assets/demo.gif)
+![compound-memory CLI demo: init → write → search → feedback → stats](https://raw.githubusercontent.com/chinwe/compound-memory/main/assets/demo.gif)
 
 One full loop: write → search → feedback (with cross-host first-validation bonus) → store health. Real output from v0.4.0, long payloads trimmed:
 
