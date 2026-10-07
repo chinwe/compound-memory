@@ -32,3 +32,21 @@ jobs:
 
       - name: Publish to PyPI
         run: uv publish
+
+      - name: Sync server.json with release version
+        # Registry 条目的版本必须与本次发布的 PyPI 版本一致；只改发布载荷，不回写仓库
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          python3 -c "import json,sys; v=sys.argv[1]; d=json.load(open('server.json')); d['version']=v; [p.update(version=v) for p in d.get('packages',[])]; json.dump(d, open('server.json','w'), indent=2, ensure_ascii=False)" "$VERSION"
+
+      - name: Install mcp-publisher
+        run: |
+          curl -sSfL "https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz" | tar xz
+          chmod +x mcp-publisher
+
+      - name: Publish to MCP Registry
+        # OIDC 登录复用上面 id-token: write 权限，无需额外 secret；
+        # 若此步失败，PyPI 已成功，可本地 login + publish 手动补救
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
