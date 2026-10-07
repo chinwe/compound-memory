@@ -128,6 +128,34 @@ def fold_failure(mem: Memory) -> None:
     mem.evidence = ev
 
 
+def _record_event(store: LifecycleDeps, mem: Memory, agent: str, outcome: str) -> dict[str, Any]:
+    """feedback 事件记账单点（ADR-0007 明细层）：惰性迁移 + uses/last_used 推进 +
+    recent 明细（cap 截断）一次完成——obsolete 与常规两分支共用，无第二份拷贝。
+    返回视图供调用方按 outcome 继续原地补计数；mem.evidence 已就位。"""
+    ev = evidence_view(mem)  # 惰性迁移先于事件：视图基于事件前的 uses（存量 uses → success_count）
+    mem.uses += 1
+    today = store.today()
+    mem.last_used = today
+    ev.setdefault(EVIDENCE_RECENT, []).append({"date": today, "agent": agent, "outcome": outcome})
+    ev[EVIDENCE_RECENT] = ev[EVIDENCE_RECENT][-EVIDENCE_RECENT_CAP:]
+    mem.evidence = ev
+    return ev
+
+
+def fold_success(mem: Memory, bump: float) -> None:
+    """success 折算单点（ADR-0007 折算表 success 行，与 fold_failure 对偶）：
+    conf +bump 封顶 1.0。bump 由调用方合成（USE_BUMP + 跨宿主首验加成）——
+    验证事实（success_count/last_verified/validated_by）只属于 success，留在
+    feedback 事件段；conf 表达式全仓仅此一份。"""
+    mem.confidence = round(min(1.0, mem.confidence + bump), 3)
+
+
+def _feedback_commit_msg(mem: Memory, agent: str, outcome: str) -> str:
+    """ADR-0006 审计模板单点：feedback 提交消息——obsolete 与常规两分支共用
+    这一份 f-string，勿再造第二份（uses/conf 取提交时终值，调用方在变更后构造）。"""
+    return f"feedback {mem.id} by {agent}: outcome={outcome} uses={mem.uses} conf={mem.confidence}"
+
+
 def feedback(store: LifecycleDeps, mem_id: str, agent: str, outcome: str = "success") -> dict[str, Any]:
     """证据驱动置信度写侧（ADR-0007/0008）：outcome 折算表——success +0.1
     （跨宿主首验 +0.15，validated_by 记忆×宿主去重）、failure −0.2 重复累计
@@ -154,25 +182,16 @@ def feedback(store: LifecycleDeps, mem_id: str, agent: str, outcome: str = "succ
         if outcome == "obsolete":
             # 无条件立即归档（ADR-0007：不引入「obsolete 但未归档」中间态）；
             # 已归档记忆不复活再归档空转，原位记账
-            ev = evidence_view(mem)  # 惰性迁移先于事件：视图基于事件前的 uses
-            mem.uses += 1
-            mem.last_used = store.today()
-            ev.setdefault(EVIDENCE_RECENT, []).append({"date": store.today(), "agent": agent, "outcome": outcome})
-            ev[EVIDENCE_RECENT] = ev[EVIDENCE_RECENT][-EVIDENCE_RECENT_CAP:]
-            mem.evidence = ev
+            _record_event(store, mem, agent, outcome)
             if not mem.archived:
                 store._archive(mem)  # 含 save（归档区）/ 删活动区 / 索引收口
             else:
                 store._save(mem)  # 原位更新 frontmatter 记账，索引无变化
-            store._commit(f"feedback {mem.id} by {agent}: outcome={outcome} uses={mem.uses} conf={mem.confidence}")
+            store._commit(_feedback_commit_msg(mem, agent, outcome))
         else:
             if mem.archived:
                 store._move_to_active(mem)
-            ev = evidence_view(mem)  # 惰性迁移先于事件：视图基于事件前的 uses（存量 uses → success_count）
-            mem.uses += 1
-            mem.last_used = store.today()
-            ev.setdefault(EVIDENCE_RECENT, []).append({"date": store.today(), "agent": agent, "outcome": outcome})
-            ev[EVIDENCE_RECENT] = ev[EVIDENCE_RECENT][-EVIDENCE_RECENT_CAP:]
+            ev = _record_event(store, mem, agent, outcome)
             new_validator = False
             if outcome == "success":
                 ev[EVIDENCE_SUCCESS_COUNT] = ev.get(EVIDENCE_SUCCESS_COUNT, 0) + 1
@@ -188,17 +207,15 @@ def feedback(store: LifecycleDeps, mem_id: str, agent: str, outcome: str = "succ
                 ev[EVIDENCE_CONTRADICTION_COUNT] = ev.get(EVIDENCE_CONTRADICTION_COUNT, 0) + 1
                 store._review_queue.append_contradiction(mem, agent)
             # obsolete/unknown 块内无计数槽位：仅明细 + 提交消息承载（全史走 git）
-            mem.evidence = ev
             if not frozen:
                 if outcome == "success":
-                    bump = CONF_USE_BUMP + (CONF_CROSS_AGENT_BUMP if new_validator else 0)
-                    mem.confidence = round(min(1.0, mem.confidence + bump), 3)
+                    fold_success(mem, CONF_USE_BUMP + (CONF_CROSS_AGENT_BUMP if new_validator else 0))
                 elif outcome == "failure":
                     fold_failure(mem)  # 折算单点：conf −0.2 地板 0.05 + failure_count+1
                 # contradiction/unknown：数值不动（前者冻结语义本身，后者仅记账）
             store._save(mem)
             store._sync_indexes(mem, store._active_rel(mem))
-            store._commit(f"feedback {mem.id} by {agent}: outcome={outcome} uses={mem.uses} conf={mem.confidence}")
+            store._commit(_feedback_commit_msg(mem, agent, outcome))
     result = asdict(mem)
     result["found"] = True
     return result
