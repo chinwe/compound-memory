@@ -1,0 +1,36 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.chinwe/compound-memory",
+  "description": "Local-first shared memory for multiple AI agents that compounds with use; Markdown + git, MCP + CLI.",
+  "version": "0.4.3",
+  "repository": {
+    "source": "github",
+    "url": "https://github.com/chinwe/compound-memory"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "compound-memory",
+      "version": "0.4.3",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "COMPOUND_MEMORY_ROOT",
+          "description": "Store root directory (defaults to ~/.agents/memory)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "COMPOUND_MEMORY_AGENT_ID",
+          "description": "Agent id for this host (e.g. agent-claude); enables process-identity enforcement",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}
