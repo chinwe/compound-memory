@@ -17,11 +17,20 @@ jobs:
         run: bash scripts/check-privacy.sh
 
   test:
-    runs-on: ubuntu-latest
     strategy:
+      # bring-up 期不相互取消：Windows 首上（#55），单点失败也要看全其余组合的结果
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         # requires-python 声称 >=3.11:矩阵让它成为被验证的承诺而非推断
         python-version: ["3.11", "3.12", "3.13"]
+        exclude:
+          # Windows 首上先钉 3.13 单版本验证（#55），全矩阵待套件在 Windows 稳定后再放开
+          - os: windows-latest
+            python-version: "3.11"
+          - os: windows-latest
+            python-version: "3.12"
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -37,16 +46,19 @@ jobs:
 
       - name: Type check
         # mypy 的 python_version 固定 3.13(见 pyproject),跑一次即可
-        if: matrix.python-version == '3.13'
+        if: matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest'
         run: uv run mypy src/compound_memory/
 
       - name: Git call shape check
         # _git 调用点必须显式传 check=(scripts/check_git_calls.py,同 pre-commit 本地层)
-        if: matrix.python-version == '3.13'
+        if: matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest'
         run: uv run python scripts/check_git_calls.py
 
       - name: Wheel smoke test
         # 发布标准的固化:纯 wheel(无 dev/vec extra)必须可安装、CLI 与 server 可跑
+        # 仅 POSIX:venv 可执行文件路径(bin/ vs Scripts\)与 shell 语法是平台差异;
+        # Windows 的纯 wheel 可安装性此矩阵未覆盖(#55 后续可单独补)
+        if: matrix.os == 'ubuntu-latest'
         run: |
           uv build
           uv venv .smoke-venv

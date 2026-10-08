@@ -41,7 +41,8 @@ def atomic_write_text(path: Path, text: str) -> None:
     - 临时名唯一（mkstemp）：并发写者不会踩掉彼此的 replace 源（固定 .tmp 名
       实测 ENOENT）；读路径的惰性重建不经写锁，缓存写出必须自身并发安全；
     - 权限经 fchmod 对齐 open() 默认（0666 & ~umask）——mkstemp 固定 0600 会
-      让新落盘文件整体变严，与 write_text 时代行为不一致；
+      让新落盘文件整体变严，与 write_text 时代行为不一致；无 fchmod 的平台
+      （Windows）跳过对齐——没有 POSIX 权限模型，跳过即正确（#55）；
     - 失败清理临时文件（非 .md 后缀不进扫描视野；单文件 unlink 不受沙箱
       批量删除守卫影响）。
     """
@@ -51,7 +52,8 @@ def atomic_write_text(path: Path, text: str) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             mask = os.umask(0)  # 探测 umask 需 set 两步；写者已串行化，实际 umask 进程内不变
             os.umask(mask)
-            os.fchmod(fh.fileno(), 0o666 & ~mask)
+            if hasattr(os, "fchmod"):
+                os.fchmod(fh.fileno(), 0o666 & ~mask)
             fh.write(text)
         os.replace(tmp_name, path)
     except BaseException:

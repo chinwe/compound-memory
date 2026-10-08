@@ -1,20 +1,56 @@
-"""写锁与批式落库协调（机制件，#36 片 e）：flock 跨进程互斥、重入、批式收尾。
+"""写锁与批式落库协调（机制件，#36 片 e）：跨进程互斥、重入、批式收尾。
 
-单一定义点：写锁语义（flock/重入/降级告警）与 batch 协调（嵌套拒绝、
+单一定义点：写锁语义（跨进程互斥/重入/降级告警）与 batch 协调（嵌套拒绝、
 批内 commit 延迟计数、批尾 flush+commit 收尾）都在本模块；状态归
 WriteLocker 对象，facade 持有并委托。
+
+平台语义（#55）：POSIX 走 flock，Windows 走 msvcrt 字节范围锁（1 字节 @
+偏移 0）。等待语义有平台差异：flock 阻塞直至获得锁；LK_LOCK 被占时每秒
+重试、约 10 秒仍失败抛 OSError——与锁机制不可用同路，落入既有「降级无锁 +
+warning」路径（宁降级勿死锁，哲学两平台一致，仅等待上界为平台差异）。
 """
 
 from __future__ import annotations
 
-import fcntl
 import logging
 import os
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterator, Protocol
 
 logger = logging.getLogger(__name__)
+
+
+def _lock_exclusive(fd: int) -> None:
+    """fd 上的跨进程独占锁：POSIX 走 flock，Windows 走 msvcrt 字节范围锁（#55）。
+
+    msvcrt.locking 锁「当前位置起的 n 字节」，故先 seek 到 0；锁定范围与解锁
+    必须同 fd 同偏移同长度配对（见 _unlock_fd）。
+    """
+    if sys.platform == "win32":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        # LK_LOCK：被占时每秒重试，约 10 秒仍失败抛 OSError → 调用方降级无锁
+        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+
+def _unlock_fd(fd: int) -> None:
+    """与 _lock_exclusive 配对的解锁（同 fd、同偏移、同长度）。"""
+    if sys.platform == "win32":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 class _Batch:
@@ -33,7 +69,7 @@ class _DeferTarget(Protocol):
 
 
 class WriteLocker:
-    """写锁 + batch 协调状态单点（挂在 root 的 .lock 上 flock 互斥）。
+    """写锁 + batch 协调状态单点（挂在 root 的 .lock 上跨进程互斥，机制见模块 docstring 平台语义）。
 
     深度状态：lock_depth 写锁重入（batch 持锁期间批内动词直通）、
     batch_depth 嵌套深度（恒 0 或 1：嵌套 batch 是调用方错误）、
@@ -66,7 +102,7 @@ class WriteLocker:
         fd: int | None = None
         try:
             fd = os.open(self._root / ".lock", os.O_CREAT | os.O_RDWR, 0o644)
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            _lock_exclusive(fd)
         except OSError as exc:
             logger.warning("write lock unavailable: %s; proceeding unlocked", exc)
             if fd is not None:
@@ -79,7 +115,7 @@ class WriteLocker:
             self.lock_depth -= 1
             if fd is not None:
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
+                    _unlock_fd(fd)
                 finally:
                     os.close(fd)
 

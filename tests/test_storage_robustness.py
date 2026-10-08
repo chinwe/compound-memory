@@ -86,6 +86,17 @@ class TestAtomicSave:
         expected = 0o666 & ~mask
         assert path.stat().st_mode & 0o777 == expected
 
+    def test_write_works_without_fchmod(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Windows 无 os.fchmod（#55）：无此能力的平台原子写必须照常完成，
+        跳过权限对齐即正确——Windows 没有 POSIX 权限模型，无对齐目标。"""
+        # raising=False：Windows 上 os.fchmod 本就不存在（本测试模拟的正是该环境）
+        monkeypatch.delattr(os, "fchmod", raising=False)
+        store = _make_store(tmp_path)
+        mem_id = store.write("no fchmod platform", type="fact", source="agent-a")["id"]
+        mem = store.find(mem_id)
+        assert mem is not None
+        assert mem.content == "no fchmod platform"
+
 
 class TestReviewQueueAtomicResolve:
     """清行落盘与记忆文件同规格（spec：文件写出一律 atomic_write_text）：
