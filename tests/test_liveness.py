@@ -16,6 +16,9 @@ from compound_memory.liveness import ScanWindow, dirs_newer_than
 from compound_memory.model import Memory
 
 STAMP = 1_000_000_000_000  # 任意基准 stamp；新旧关系由 os.utime 注入，不依赖真实时钟
+# 新旧差用 1µs：Windows FILETIME 以 100ns 为粒度，10ns 的差会被截断回同
+# 一 tick（STAMP+10 截断后恰等于 STAMP，「严格晚于」判定失效）——差值取
+# 100ns 整数倍即可跨平台稳定（#55 Windows CI 实证）。
 
 
 def _touch(path: Path, mtime_ns: int) -> None:
@@ -31,11 +34,11 @@ def _make_tree(ns_root: Path, layout: dict[str, list[str]]) -> None:
 
 def _all_older(ns_root: Path, layout: dict[str, list[str]]) -> None:
     """整棵树（含 ns_root）都拨到 stamp 之前。"""
-    _touch(ns_root, STAMP - 10)
+    _touch(ns_root, STAMP - 1_000)
     for ns, types in layout.items():
-        _touch(ns_root / ns, STAMP - 10)
+        _touch(ns_root / ns, STAMP - 1_000)
         for t in types:
-            _touch(ns_root / ns / t, STAMP - 10)
+            _touch(ns_root / ns / t, STAMP - 1_000)
 
 
 class TestDirsNewerThan:
@@ -47,7 +50,7 @@ class TestDirsNewerThan:
         layout = {"ns_a": ["episode"], "ns_b": ["fact"]}
         _make_tree(ns_root, layout)
         _all_older(ns_root, layout)
-        _touch(ns_root / "ns_a" / "episode", STAMP + 10)
+        _touch(ns_root / "ns_a" / "episode", STAMP + 1_000)
         assert dirs_newer_than(ns_root, STAMP) is True
 
     def test_type_dir_newer_in_second_namespace_returns_true(self, tmp_path: Path):
@@ -56,7 +59,7 @@ class TestDirsNewerThan:
         layout = {"ns_a": ["episode"], "ns_b": ["fact"]}
         _make_tree(ns_root, layout)
         _all_older(ns_root, layout)
-        _touch(ns_root / "ns_b" / "fact", STAMP + 10)
+        _touch(ns_root / "ns_b" / "fact", STAMP + 1_000)
         assert dirs_newer_than(ns_root, STAMP) is True
 
     def test_ns_dir_itself_newer_returns_true(self, tmp_path: Path):
@@ -64,7 +67,7 @@ class TestDirsNewerThan:
         ns_root = tmp_path / "namespaces"
         _make_tree(ns_root, {"ns_a": ["episode"]})
         _all_older(ns_root, {"ns_a": ["episode"]})
-        _touch(ns_root / "ns_a", STAMP + 10)
+        _touch(ns_root / "ns_a", STAMP + 1_000)
         assert dirs_newer_than(ns_root, STAMP) is True
 
     def test_nothing_newer_returns_false(self, tmp_path: Path):

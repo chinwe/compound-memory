@@ -134,6 +134,14 @@ class TestSelfHealing:
         使「A 写入 → B 检测」必然跨 tick。压过之后 b 先空重载一次（内容未变，
         无害），随后 a 的新写入 mtime 必然不同。全文件仅此测试是零间隔双写：
         store seam 测试的间隔里有 git commit 子进程兜底，无需同款处理。
+
+        Windows 适配（#55 CI 实证）：空重载一步不可省——省了 b 的基线 stamp
+        是压之前的真实 now，与 a 的写入同处亚 tick 邻域，Windows 的 FILETIME
+        粒度/元数据可见性会让「缓存变了」与「目录变了」的判定顺序平台化；
+        压后重载让 stamp 落在 60 秒前的 past，a 的写入必然跨任何粒度的 tick。
+        scan 桩在 sync 后供给同一记忆：即便 dirs 探测触发 reconcile，对账
+        diff 为空、不会清掉刚重载的条目（macOS 上 reconcile 本就不触发，
+        走缓存重载路径，断言语义不变）。
         """
         pairs: list[tuple[Memory, str]] = []
         a = Index(tmp_path, scan_pairs=lambda: list(pairs))
@@ -141,7 +149,9 @@ class TestSelfHealing:
         assert b.candidates(tokenize("redis")) == []  # b 先加载并落盘空缓存（建立基线）
         past = time.time() - 60
         os.utime(cache_file(tmp_path), (past, past))
+        assert b.candidates(tokenize("redis")) == []  # 压 mtime 后空重载：基线 stamp 落在 past（内容未变，无害）
         mem = make_mem(1, "redis queue depth")
+        pairs.append((mem, rel_of(mem)))
         a.sync(mem, rel_of(mem))  # a（另一进程）写入并更新缓存文件
         assert b.candidates(tokenize("redis")) == [rel_of(mem)]  # b 检测 mtime 变化后重载
 

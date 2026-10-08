@@ -32,28 +32,38 @@ def test_lock_roundtrip(tmp_path: Path) -> None:
 def test_second_process_waits_for_release(tmp_path: Path) -> None:
     """跨进程争锁：持锁子进程 2 秒后才释放，第二个进程必须等到释放后才获锁。
 
-    不做输出握手（readline 无超时，子进程启动失败会挂死 CI）：持锁方若没锁上，
-    本进程立即获锁、waited≈0，下断言自会响亮失败。waited 下界证明确实等待过，
-    上界 9 秒排除「LK_LOCK 超窗降级无锁混入」——那不是互斥，是降级。
+    握手用哨兵文件而非管道 readline（readline 无超时，子进程启动失败会挂死
+    CI）：子进程成功加锁后落哨兵，主进程带截止时间轮询哨兵，子进程没锁上则
+    响亮失败而非抢跑。waited 下界证明确实等待过；上界 9 秒排除「LK_LOCK
+    超窗降级无锁混入」——那不是互斥，是降级。
     """
+    lock_path, sentinel = tmp_path / ".lock", tmp_path / "holder.locked"
     holder = (
         "import os, sys, time, msvcrt\n"
         "fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR)\n"
         "os.lseek(fd, 0, os.SEEK_SET)\n"
         "msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)\n"
+        "open(sys.argv[2], 'w').close()\n"
         "time.sleep(2)\n"
         "os.lseek(fd, 0, os.SEEK_SET)\n"
         "msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)\n"
         "os.close(fd)\n"
     )
-    proc = subprocess.Popen([sys.executable, "-c", holder, str(tmp_path / ".lock")])
+    proc = subprocess.Popen([sys.executable, "-c", holder, str(lock_path), str(sentinel)])
     try:
+        deadline = time.monotonic() + 15
+        while not sentinel.exists():
+            if proc.poll() is not None:
+                pytest.fail(f"holder exited {proc.returncode} before locking")
+            if time.monotonic() > deadline:
+                pytest.fail("holder never acquired the lock within 15s")
+            time.sleep(0.05)
         locker = WriteLocker(tmp_path)
         start = time.monotonic()
         with locker.write_lock():
             waited = time.monotonic() - start
     finally:
         proc.wait(timeout=15)
-    # 功能性互斥断言（非性能钉）：持锁方睡 2 秒 + 进程拉起开销，下界 1 秒、
+    # 功能性互斥断言（非性能钉）：哨兵后持锁方还睡 2 秒，下界 1 秒、
     # 上界 9 秒（LK_LOCK 窗约 10 秒，留 1 秒余量）
     assert 1.0 <= waited < 9.0, f"exclusion broken or degraded: acquired after {waited:.2f}s"
