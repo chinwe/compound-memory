@@ -18,23 +18,35 @@ compound-memory 是本地多 Agent 共享记忆库（存储 `~/.agents/memory`�
 
 ## 1. 通用接入参数
 
-所有宿主都是 stdio 方式启动同一个 MCP server，只有三个要素。下文示例中 `~` 表示用户主目录，`<仓库>` 为本仓库的克隆位置。`command` / `args` 里的 `~` 与 `<仓库>` 由宿主原样启动，不展开时写成绝对路径。`COMPOUND_MEMORY_ROOT` 由程序展开前缀 `~` 与 `$HOME` / `${HOME}`，未设置或空白则回退 `$HOME/.agents/memory`；JSON / YAML 的 env 块不经 shell，示例写成 `$HOME/.agents/memory`。
+所有宿主都是 stdio 方式启动同一个 MCP server，只有三个要素。日常接入用 `uvx` 从 PyPI 拉起，不绑定仓库路径。下文示例中 `~` 表示用户主目录。`command` 写 `uvx`；宿主若找不到它，改成绝对路径 `~/.local/bin/uvx`（宿主原样启动，不展开 `~`）。`COMPOUND_MEMORY_ROOT` 由程序展开前缀 `~` 与 `$HOME` / `${HOME}`，未设置或空白则回退 `$HOME/.agents/memory`；JSON / YAML 的 env 块不经 shell，示例写成 `$HOME/.agents/memory`。
 
 | 项 | 值 |
 |---|---|
-| 启动命令 | `uv run --directory <仓库> compound-memory-server` |
+| 启动命令 | `uvx --from compound-memory compound-memory-server` |
 | `COMPOUND_MEMORY_ROOT` | 可省略。`~` 与 `$HOME` 前缀会展开；省略或空白即 `$HOME/.agents/memory` |
 | `COMPOUND_MEMORY_AGENT_ID` | **必配**。稳定的本宿主 id（如 `agent-claude`），不可由模型或不可信调用方改写。未设置时自报身份可被伪造，不适合共享 `_shared` 的多 Agent 部署；server 启动日志与 `stats.attestation.warning` 会标明 |
 
-**运行环境（uv）**：项目由 uv 管理（`pyproject.toml` + `uv.lock`），uv 不在 PATH 时用 `~/.local/bin/uv`。宿主配置的 `command` 写 uv 绝对路径、`args` 带 `--directory <仓库>`，依赖环境由 `uv run` 自管——首次克隆先 `uv sync --extra dev` 建 `.venv`。启动走 console script `compound-memory-server`（uv 自身输出走 stderr，不污染 MCP 的 stdio 协议）。
+**运行环境（uvx）**：`uvx` 的参数是 PyPI 包名 `compound-memory`，MCP 入口的 console script 是 `compound-memory-server`，两者不同，所以必须 `--from`。不需要克隆仓库，也不要把仓库路径写进宿主配置。uv 自身输出走 stderr，不污染 MCP 的 stdio 协议。
 
 **首次使用**先初始化空库（已有库可跳过）：
 
 ```bash
-uv run --directory <仓库> compound-memory init
+uvx --from compound-memory compound-memory init
 ```
 
 **验证**：在宿主里让 Agent 调用 `memory_search`（如查询 "compound-memory"），能返回 `{"hits": [...]}` 即接入成功。
+
+### 开发 / 从仓库联调
+
+只在克隆本仓库改源码、或要跑尚未发布的本地改动时使用。这不是日常宿主的默认启动方式。
+
+```bash
+git clone https://github.com/chinwe/compound-memory.git
+cd compound-memory && uv sync --extra dev
+uv run --directory <仓库绝对路径> compound-memory init
+```
+
+宿主配置改为 `command` = `uv`（不在 PATH 时写 `~/.local/bin/uv`），`args` = `["run", "--directory", "<仓库绝对路径>", "compound-memory-server"]`。`<仓库绝对路径>` 由宿主原样传递，不展开占位符。仓库移动后，每个宿主配置里的 `--directory` 都要改。
 
 ### 5 个 MCP tool（唯一读写边界）
 
@@ -67,8 +79,8 @@ uv run --directory <仓库> compound-memory init
   "mcpServers": {
     "compound-memory": {
       "type": "stdio",
-      "command": "~/.local/bin/uv",
-      "args": ["run", "--directory", "<仓库>", "compound-memory-server"],
+      "command": "uvx",
+      "args": ["--from", "compound-memory", "compound-memory-server"],
       "env": {
         "COMPOUND_MEMORY_ROOT": "$HOME/.agents/memory",
         "COMPOUND_MEMORY_AGENT_ID": "agent-workbuddy"
@@ -99,8 +111,8 @@ uv run --directory <仓库> compound-memory init
     "servers": {
       "compound-memory": {
         "type": "stdio",
-        "command": "~/.local/bin/uv",
-        "args": ["run", "--directory", "<仓库>", "compound-memory-server"],
+        "command": "uvx",
+        "args": ["--from", "compound-memory", "compound-memory-server"],
         "env": {
           "COMPOUND_MEMORY_ROOT": "$HOME/.agents/memory",
           "COMPOUND_MEMORY_AGENT_ID": "agent-zcode"
@@ -147,7 +159,8 @@ hook 只做**召回**；**写入与 feedback** 仍靠 Agent 主动调用工具�
 ```bash
 claude mcp add compound-memory \
   -e COMPOUND_MEMORY_ROOT=$HOME/.agents/memory \
-  -- ~/.local/bin/uv run --directory <仓库> compound-memory-server
+  -e COMPOUND_MEMORY_AGENT_ID=agent-claude \
+  -- uvx --from compound-memory compound-memory-server
 ```
 
 加 `-s user` 写入用户级（全局可用），不加则默认 local（仅当前项目）。
@@ -159,8 +172,8 @@ claude mcp add compound-memory \
   "mcpServers": {
     "compound-memory": {
       "type": "stdio",
-      "command": "~/.local/bin/uv",
-      "args": ["run", "--directory", "<仓库>", "compound-memory-server"],
+      "command": "uvx",
+      "args": ["--from", "compound-memory", "compound-memory-server"],
       "env": {
         "COMPOUND_MEMORY_ROOT": "$HOME/.agents/memory",
         "COMPOUND_MEMORY_AGENT_ID": "agent-claude"
@@ -185,8 +198,8 @@ Project config is `.cursor/mcp.json`; user-level is `~/.cursor/mcp.json`:
   "mcpServers": {
     "compound-memory": {
       "type": "stdio",
-      "command": "uv",
-      "args": ["run", "--directory", "<repo>", "compound-memory-server"],
+      "command": "uvx",
+      "args": ["--from", "compound-memory", "compound-memory-server"],
       "env": {
         "COMPOUND_MEMORY_ROOT": "$HOME/.agents/memory",
         "COMPOUND_MEMORY_AGENT_ID": "agent-cursor"
@@ -196,7 +209,7 @@ Project config is `.cursor/mcp.json`; user-level is `~/.cursor/mcp.json`:
 }
 ```
 
-PyPI install: set `command` to `uvx` and `args` to `["--from", "compound-memory", "compound-memory-server"]`. Restart Cursor after saving the file. A `memory_search` result of `{"hits": [...], "retrieval": {...}}` means the server is connected. If `retrieval.mode` is `lexical`, vector recall is off (missing `vec` extra or model); results are BM25 only.
+Restart Cursor after saving the file. A `memory_search` result of `{"hits": [...], "retrieval": {...}}` means the server is connected. If `retrieval.mode` is `lexical`, vector recall is off (missing `vec` extra or model); results are BM25 only. A local checkout is the developer path in §1, not a second default: `uv` plus `["run", "--directory", "<absolute-repo-path>", "compound-memory-server"]` after `uv sync --extra dev`.
 
 Three protocol rules (same as §6; point a Cursor rule at `skills/compound-memory/SKILL.md` so they stay in the session):
 
@@ -215,8 +228,8 @@ dsh 通过 MCP client 插件 `@deepseek-ai/dsh-mcp-client` 接入，一个插件
     config:
       serverName: compound-memory
       transport: stdio
-      command: ~/.local/bin/uv
-      args: ['run', '--directory', '<仓库>', 'compound-memory-server']
+      command: uvx
+      args: ['--from', 'compound-memory', 'compound-memory-server']
       env:
         COMPOUND_MEMORY_ROOT: "$HOME/.agents/memory"
         COMPOUND_MEMORY_AGENT_ID: agent-deepseek
@@ -253,31 +266,33 @@ dsh 通过 MCP client 插件 `@deepseek-ai/dsh-mcp-client` 接入，一个插件
 
 ## 7. 运维与蒸馏（CLI，所有宿主共用）
 
+日常没有仓库目录，前缀是 `uvx --from compound-memory compound-memory`（已 `uv tool install compound-memory` 时可直接写 `compound-memory`）。从仓库联调时在克隆目录改回 `uv run compound-memory`（见 §1）。
+
 ```bash
-uv run compound-memory stats          # 健康度：uses/confidence 固定桶 + 活性 + 蒸馏产出量
+uvx --from compound-memory compound-memory stats          # 健康度：uses/confidence 固定桶 + 活性 + 蒸馏产出量
                                       #   + retrieval（vector/lexical）+ attestation（进程身份是否注入）
                                       #   + expired_active（活动区里 valid_until 已过）
                                       #   + cross_validated（validated_by 去重后 ≥2 的条数，
                                       #     不是「有过一次跨宿主反馈」）
-uv run compound-memory explain <id> [--reader <agent id>]  # 按 id 证据视图（#44）：证据计数
+uvx --from compound-memory compound-memory explain <id> [--reader <agent id>]  # 按 id 证据视图（#44）：证据计数
                                       #   （success/failure/contradiction、last_verified、recent 明细）、
                                       #   跨宿主验证明细（validated_by）、派生标记（蒸馏产物零证据起点）、
                                       #   当前 conf；只读不产生提交；私有 agent-* ns 加 --reader
-uv run compound-memory decay          # 衰减归档（launchd/cron 定时跑；长期未用且少用才动）
-uv run compound-memory revive <id>    # 复活归档记忆（CLI 唯一入口）
-uv run compound-memory forget <id> --agent <agent id> [--reason <动机短语>]  # 终态遗忘（ADR-0009）：
+uvx --from compound-memory compound-memory decay          # 衰减归档（launchd/cron 定时跑；长期未用且少用才动）
+uvx --from compound-memory compound-memory revive <id>    # 复活归档记忆（CLI 唯一入口）
+uvx --from compound-memory compound-memory forget <id> --agent <agent id> [--reason <动机短语>]  # 终态遗忘（ADR-0009）：
                                       #   文件物理移出（活动/归档区皆可）+ 单条 commit 留痕，内容仅存 git 历史；
                                       #   不可复活（对被遗忘记忆 feedback/revive 返回 found: false，恢复 = 带外 git 运维）；
                                       #   私有 agent-* ns 仅属主可遗忘（--agent 与 feedback 同规）；幂等（不存在/已遗忘
                                       #   返回 found: false）；--reason 是动机短语（单行限 80 字符），不贴记忆正文；
                                       #   隐私边界：解决「活动库不再携带」，不解决「历史不再包含」
-uv run compound-memory review-queue   # fact/insight/decision 同 key 冲突队列（人工复核，CLI 唯一入口；展示全量）
-uv run compound-memory review-resolve <废置id> [--reader <agent id>]  # 清行并自动归档废置方；
+uvx --from compound-memory compound-memory review-queue   # fact/insight/decision 同 key 冲突队列（人工复核，CLI 唯一入口；展示全量）
+uvx --from compound-memory compound-memory review-resolve <废置id> [--reader <agent id>]  # 清行并自动归档废置方；
                                       #   私有 agent-* ns 的行仅属主可清（--reader）；--all 只清行不归档，
                                       #   且对非属主的私有行静默保留；contradiction 争议行加 --uphold
                                       #   表示维持原记忆（解冻并按 failure −0.2 折算），缺省为确错归档
-uv run compound-memory rebuild-index  # 手编已有文件内容后重建检索缓存
-uv run compound-memory extract <transcript|dir>  # 会话抽取清单（P0）：确定性扫描 →
+uvx --from compound-memory compound-memory rebuild-index  # 手编已有文件内容后重建检索缓存
+uvx --from compound-memory compound-memory extract <transcript|dir>  # 会话抽取清单（P0）：确定性扫描 →
                                       #   extract/last-candidates.json；Agent 逐条确认后 memory_write 落库
                                       #   transcript 按内容自动判别四种形态（WorkBuddy session log /
                                       #   ZCode 会话库 sqlite / Claude Code session log / dsh zstd session）；
@@ -285,7 +300,7 @@ uv run compound-memory extract <transcript|dir>  # 会话抽取清单（P0）：
                                       #   或 ~/.dsh/sessions（自动跳过 subagents/ 与 dsh subagent 子会话）
                                       #   ZCode 直接指库文件：extract ~/.zcode/cli/db/db.sqlite（只读打开）
                                       #   注意 traces/ 与 rollout/model-io 快照不接入（都只剩部分轮次，是假阴性）
-uv run compound-memory git-log        # 审计轨迹（每次写入自动 commit）
+uvx --from compound-memory compound-memory git-log        # 审计轨迹（每次写入自动 commit）
                                       #   消费端降噪（#31）：--grep PATTERN 只留消息匹配的提交（可多次，OR）、
                                       #   --exclude PATTERN 剔除匹配的提交（可多次）；PATTERN 为正则，作用于
                                       #   消息段（剥掉 hash），过滤发生在 --limit 取数之后，
@@ -295,9 +310,9 @@ uv run compound-memory git-log        # 审计轨迹（每次写入自动 commit
 **蒸馏**（把一批旧记忆沉淀为更高密度产物，判断归调用方 Agent）：
 
 ```bash
-uv run compound-memory distill-plan   # 确定性候选：merge_with / possible_dup_of / promotion_candidate
+uvx --from compound-memory compound-memory distill-plan   # 确定性候选：merge_with / possible_dup_of / promotion_candidate
 # Agent 阅读 last-plan.json 做取舍、拟合并文案（判断段）
-uv run compound-memory distill-apply "合并后的经验" insight agent-zcode \
+uvx --from compound-memory compound-memory distill-apply "合并后的经验" insight agent-zcode \
   --sources <id1>,<id2>                    # 原子落库：产物 links 溯源 + 源归档（可复活）
 ```
 
@@ -307,7 +322,7 @@ launchd（macOS）/ systemd user timer（Linux）/ cron 每天 09:00 自动把�
 
 | 症状 | 处置 |
 |---|---|
-| 宿主里看不到 5 个 memory_* 工具 | 先手动跑启动命令看报错：`uv run --directory <仓库> compound-memory-server`；多为 uv 不在预期路径（`command` 要写绝对路径）或 `--directory` 指向的仓库位置漂移（仓库移动后要同步改各宿主配置） |
+| 宿主里看不到 5 个 memory_* 工具 | 先手动跑启动命令看报错：`uvx --from compound-memory compound-memory-server`。多为 uvx 不在 PATH：`command` 改成 `~/.local/bin/uvx` 的绝对路径。从仓库联调才用 `uv run --directory <仓库绝对路径> compound-memory-server`；那种配置在仓库移动后要同步改 `--directory` |
 | 搜索结果为空 / 召回不全 | `stats` 看记忆量与 `retrieval`；`mode=lexical` 表示向量路没开或当次降级，排序是词面。怀疑索引损坏时 `rebuild-index`（缓存可随时重建，检索降级不报错，但 `retrieval.reason` 会标明） |
 | 检索排序不符合预期 / 想知道某条为什么排前 | `memory_search` 传 `explain: true`（CLI `--explain`）看每条 hit 的排序分量（词面/向量 rank、RRF 分、先验折算项、检索通道）与证据摘要；单条记忆的置信度构成用 CLI `explain <id>`（证据计数、跨宿主验证明细、派生标记） |
 | server 日志出现 `vector recall degraded to lexical` | 向量召回故障已自动降级纯词面（检索不中断）；多为 vec extra 环境或向量索引异常，重装 `--extra vec` 或 `rebuild-index`；未装 vec extra 的宿主不会出现此日志 |

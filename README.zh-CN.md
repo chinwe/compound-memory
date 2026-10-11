@@ -13,20 +13,22 @@
 把下面这句提示词粘贴给你的编码 Agent（Claude Code / Cursor / ZCode 等），它就能完成全部接入：
 
 ```text
-在这台机器上安装并接入 compound-memory（https://github.com/chinwe/compound-memory）——本地优先的多 Agent 共享记忆系统（MCP server + CLI）：安装（`uv tool install compound-memory`，或克隆仓库后 `uv sync --extra dev`）、初始化记忆库（`compound-memory init`，默认 ~/.agents/memory）、在本宿主的 MCP 配置里注册 stdio server——命令 `compound-memory-server`（PyPI 安装）或 `uvx --from compound-memory compound-memory-server`，env 设 `COMPOUND_MEMORY_ROOT=$HOME/.agents/memory` 和 `COMPOUND_MEMORY_AGENT_ID=agent-<你的宿主标识>`——然后调用 `memory_search` 验证返回 `{"hits": [...]}` 即接入成功；若宿主需重启才能加载 MCP server，请告诉我。各宿主配置细节与使用规范见仓库内 docs/agent-integration.md。
+在这台机器上安装并接入 compound-memory（https://github.com/chinwe/compound-memory）——本地优先的多 Agent 共享记忆系统（MCP server + CLI）。日常不要克隆仓库。用 `uvx --from compound-memory compound-memory init` 初始化记忆库（默认 ~/.agents/memory）。在本宿主的 MCP 配置里注册 stdio server：command 为 `uvx`，args 为 `--from compound-memory compound-memory-server`，env 设 `COMPOUND_MEMORY_ROOT=$HOME/.agents/memory` 和 `COMPOUND_MEMORY_AGENT_ID=agent-<你的宿主标识>`。然后调用 `memory_search` 验证返回 `{"hits": [...]}` 即接入成功；若宿主需重启才能加载 MCP server，请告诉我。只有从本地检出做开发时才用 `uv run --directory <仓库>`。各宿主配置细节与使用规范见仓库内 docs/agent-integration.md。
 ```
 
 ### 给人类的步骤
 
-#### 安装（Python ≥ 3.11，二选一）
+#### 安装（Python ≥ 3.11）
 
 ```bash
-# 方式一：源码克隆（uv 管理；MCP 接入同款路径）
+# 默认：PyPI，不克隆。宿主用下面这条拉起 MCP server：
+#   uvx --from compound-memory compound-memory-server
+# 可选：把 CLI 放到 PATH
+uv tool install compound-memory   # 或 pip install compound-memory
+
+# 开发 / 从仓库联调——不是宿主默认启动方式
 git clone https://github.com/chinwe/compound-memory.git
 cd compound-memory && uv sync --extra dev
-
-# 方式二：PyPI 安装（无需克隆，MCP server 可直接 uvx 拉起）
-uv tool install compound-memory   # 或 pip install compound-memory
 ```
 
 #### 初始化记忆库
@@ -34,20 +36,21 @@ uv tool install compound-memory   # 或 pip install compound-memory
 默认 `~/.agents/memory`，可用环境变量 `COMPOUND_MEMORY_ROOT` 覆盖（前缀 `~` 或 `$HOME` 会展开；空白覆盖回退默认路径）：
 
 ```bash
-uv run compound-memory init
+uvx --from compound-memory compound-memory init
+# 已 `uv tool install` 时：compound-memory init
 ```
 
 #### 接入 MCP 宿主（推荐）
 
-让日常 Agent 自动读写共享记忆——
+让日常 Agent 自动读写共享记忆——不绑定仓库路径：
 
 ```json
 {
   "mcpServers": {
     "compound-memory": {
       "type": "stdio",
-      "command": "uv",
-      "args": ["run", "--directory", "<仓库>", "compound-memory-server"],
+      "command": "uvx",
+      "args": ["--from", "compound-memory", "compound-memory-server"],
       "env": {
         "COMPOUND_MEMORY_ROOT": "$HOME/.agents/memory",
         "COMPOUND_MEMORY_AGENT_ID": "agent-<你的宿主标识>"
@@ -57,9 +60,11 @@ uv run compound-memory init
 }
 ```
 
-PyPI 安装形态把 `command`/`args` 换成 `uvx` + `["--from", "compound-memory", "compound-memory-server"]` 即可，不再依赖仓库克隆路径。`COMPOUND_MEMORY_AGENT_ID` **必配**（多 Agent 共享 `_shared` 时）：注入后存储层以进程身份裁决一切自报身份，模型谎报身份、伪造 source 污染跨 Agent 验证的通道一并关闭。未设置时身份可被伪造，只适合单机单调用方；`stats` 的 `attestation.warning` 与 MCP server 启动日志会标明。
+`uvx` 的参数是包名 `compound-memory`，server 的 console script 是 `compound-memory-server`，所以必须 `--from`。`uvx` 不在 PATH 时把 `command` 写成绝对路径 `~/.local/bin/uvx`。`COMPOUND_MEMORY_AGENT_ID` **必配**（多 Agent 共享 `_shared` 时）：注入后存储层以进程身份裁决一切自报身份，模型谎报身份、伪造 source 污染跨 Agent 验证的通道一并关闭。未设置时身份可被伪造，只适合单机单调用方；`stats` 的 `attestation.warning` 与 MCP server 启动日志会标明。
 
-**验证**：在宿主里让 Agent 调用 `memory_search`（如查询任意关键词），能返回 `{"hits": [...]}` 即接入成功；或直接跑 CLI `uv run compound-memory stats`。
+从仓库联调是开发路径，不是第二种默认：`uv sync --extra dev` 之后，`command` 用 `uv`，`args` 用 `["run", "--directory", "<仓库绝对路径>", "compound-memory-server"]`。
+
+**验证**：在宿主里让 Agent 调用 `memory_search`（如查询任意关键词），能返回 `{"hits": [...]}` 即接入成功；或直接跑 CLI `uvx --from compound-memory compound-memory stats`。
 
 #### 下一步
 
@@ -216,8 +221,8 @@ Agent (MCP 客户端 / CLI)
   "mcpServers": {
     "compound-memory": {
       "type": "stdio",
-      "command": "~/.local/bin/uv",
-      "args": ["run", "--directory", "<本目录>", "compound-memory-server"],
+      "command": "uvx",
+      "args": ["--from", "compound-memory", "compound-memory-server"],
       "env": {
         "COMPOUND_MEMORY_ROOT": "$HOME/.agents/memory",
         "COMPOUND_MEMORY_AGENT_ID": "agent-<你的宿主标识>"
@@ -227,7 +232,7 @@ Agent (MCP 客户端 / CLI)
 }
 ```
 
-各宿主配置若不展开 `~` 占位写法，替换为本机绝对路径即可。`COMPOUND_MEMORY_AGENT_ID` 必配，见上文。向量召回路为可选（`uv sync --extra vec`）：未装 extra 或 HF 缓存缺模型时自动降级纯词面，`stats.retrieval.mode` 为 `lexical`。`memory_write` 的 `content` 超过 262144 字符会拒绝且不落盘。embedding 模型与维度可经 `COMPOUND_MEMORY_EMBEDDING_MODEL`（默认 `Xenova/bge-small-zh-v1.5`）与 `COMPOUND_MEMORY_EMBEDDING_DIM`（默认 512）覆盖——换模型属运维动作，改后需显式 `rebuild-index`。
+`uvx` 不在 PATH 时，`command` 写成 `~/.local/bin/uvx` 的绝对路径（宿主不展开 `~`）。从仓库联调才改用 `uv` + `["run", "--directory", "<仓库绝对路径>", "compound-memory-server"]`，见上文，那不是第二种默认。`COMPOUND_MEMORY_AGENT_ID` 必配，见上文。向量召回路为可选（`uv sync --extra vec`）：未装 extra 或 HF 缓存缺模型时自动降级纯词面，`stats.retrieval.mode` 为 `lexical`。`memory_write` 的 `content` 超过 262144 字符会拒绝且不落盘。embedding 模型与维度可经 `COMPOUND_MEMORY_EMBEDDING_MODEL`（默认 `Xenova/bge-small-zh-v1.5`）与 `COMPOUND_MEMORY_EMBEDDING_DIM`（默认 512）覆盖——换模型属运维动作，改后需显式 `rebuild-index`。
 
 ## 平台支持
 
@@ -240,6 +245,8 @@ Python ≥ 3.11，macOS / Linux / Windows。Windows 与 Linux 一样进 CI 矩�
 - 自动 commit 需要 `PATH` 上有 git。
 
 ## CLI
+
+下面是检出仓库后的命令（克隆目录里 `uv run`）。没有克隆时，把 `uv run compound-memory` 换成 `uvx --from compound-memory compound-memory`。
 
 ```bash
 uv sync --extra dev              # 首次克隆后初始化 .venv（之后 uv run 自动使用）
@@ -313,4 +320,4 @@ PyPI 版本不可重传，tag 必须与 `pyproject.toml` 的 `version` 一致（
 
 1. **一次性配置**（PyPI → 项目 → Publishing）：owner `chinwe`、repo `compound-memory`、workflow `release.yml`、environment `pypi`。首次发布时项目尚不存在，在 pypi.org 用"pending publisher"预注册即可。
 2. **发布**：`git tag v0.1.0 && git push origin v0.1.0` → `release.yml` 自动 build + `uv publish`。
-3. 发布后 `uvx --from compound-memory compound-memory-server` 即为通用安装形态（`uvx` 的参数是包名，script 名不同须用 `--from`；MCP 配置里的 `command` 换成 uvx 后不再依赖仓库克隆路径）。
+3. 发布后日常宿主用 `uvx --from compound-memory compound-memory-server`（`uvx` 的参数是包名，script 名不同须用 `--from`）。`server.json` 登记的是 PyPI 包 `compound-memory`（stdio），不写仓库路径。从仓库联调才用 `uv run --directory`。
