@@ -18,7 +18,7 @@
       "environmentVariables": [
         {
           "name": "COMPOUND_MEMORY_ROOT",
-          "description": "Store root directory (defaults to ~/.agents/memory)",
+          "description": "Store root directory. A leading ~ or $HOME/${HOME} is expanded; unset or blank falls back to $HOME/.agents/memory",
           "isRequired": false,
           "format": "string",
           "isSecret": false

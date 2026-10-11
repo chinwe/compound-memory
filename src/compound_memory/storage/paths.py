@@ -15,10 +15,27 @@ from ..model import MEMORY_TYPES, Memory
 def default_root() -> Path:
     """记忆库根目录解析单一定义点：$COMPOUND_MEMORY_ROOT 优先，否则 ~/.agents/memory。
 
-    CLI 与 MCP server 两个 adapter 都从这里取默认——环境变量名与回退路径不得另写一份。
+    CLI、MCP server 与 scripts/distill-prepare.sh 都从这里取默认——环境变量名与回退路径不得另写一份。
+    覆盖值展开用户目录：前缀 ``~``（expanduser）以及 ``$HOME`` / ``${HOME}``
+    （JSON / YAML 的 env 块不经 shell，字面量传入时仍落到真实 home，
+    而不是名为 ``~`` 或 ``$HOME`` 的目录）。未设置或空白覆盖回退默认 home 路径。
     """
     env = os.environ.get("COMPOUND_MEMORY_ROOT")
-    return Path(env) if env else Path.home() / ".agents" / "memory"
+    if env is None or not env.strip():
+        return Path.home() / ".agents" / "memory"
+    return _expand_store_root(env.strip())
+
+
+def _expand_store_root(raw: str) -> Path:
+    """展开覆盖值里的 ~ 与 $HOME / ${HOME} 前缀。${HOME} 必须先于 $HOME 匹配。"""
+    home = Path.home()
+    for prefix in ("${HOME}", "$HOME"):
+        if raw == prefix:
+            return home
+        if raw.startswith(prefix) and raw[len(prefix)] in "/\\":
+            raw = str(home) + raw[len(prefix):]
+            break
+    return Path(raw).expanduser()
 
 
 def ns_root(root: Path) -> Path:
