@@ -2,12 +2,15 @@
 candidates / scored_candidates / lexical_candidates + VEC_POOL。
 
 检索 = 选候选（store 的 layout 职责）+ 排序（scoring.rank 单一定义点），
-结果形状逐位不变（契约 test_search 钉住）。#41 候选快路径：词法缓存给出
+结果形状逐位不变（契约 test_search 钉住）。可见性合取（archived /
+valid_until 已过 / ns 集合 / project 适用性）单点在 visibility.is_retrievable，
+词面候选、向量召回、邻居召回都走它。#41 候选快路径：词法缓存给出
 per-doc token 统计的候选免 parse 进 rank（宽查询大候选集的成本大头是逐
-候选 yaml parse），缓存无条目的候选回退 parse——两条路径输出逐位一致。
-门禁执行时序不动：search 是参数型动词，ns 校验在函数入口（ADR 0003
-裁决 5）。VEC_POOL 随宿主动词（裁决 6）单一定义于此；包级公开面收窄
-（#39）后不再 re-export，storage.search 是唯一导入路径（见 __init__ docstring）。
+候选 yaml parse），缓存无条目的候选回退 parse——两条路径输出逐位一致，
+过滤只在共享候选流里判定一次。门禁执行时序不动：search 是参数型动词，
+ns 校验在函数入口（ADR 0003 裁决 5）。VEC_POOL 随宿主动词（裁决 6）
+单一定义于此；包级公开面收窄（#39）后不再 re-export，storage.search 是
+唯一导入路径（见 __init__ docstring）。
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from pathlib import Path
-from typing import Any, Callable, Protocol, overload
+from typing import Any, Callable, Iterator, Protocol, overload
 
 from ..index import Index
 from ..liveness import ScanWindow
@@ -28,26 +31,16 @@ from ..model import (
     Memory,
     evidence_view,
 )
-from ..scoring import DocStats, expired_by_date, is_expired, rank, tokenize
+from ..scoring import DocStats, rank, tokenize
 from ..vector_index import VectorIndex
 from .validation import check_project
+from .visibility import is_retrievable
 
 # storage 域告警的单点 logger：向量降级（#19）的观测出口
 logger = logging.getLogger(__name__)
 
 # 向量召回候选池：词面候选 ∪ 向量 KNN 前 VEC_POOL 条（ns/活性过滤后）
 VEC_POOL = 16
-
-
-def in_project_scope(mem_project: str | None, project: str | None) -> bool:
-    """project 适用性谓词（ADR 0010，检索过滤的收口单点）：字段为空 = 全局通用，
-    任何读方可见；已标注 = 仅声明同一项目的读方可见。读方未声明项目
-    （project=None）⇒ 只见全局（fail-closed：「没声明项目 = 全局会话」，
-    项目记忆不外溢；与私有 ns 忘带 reader 即拒的诚实缺省同型）。
-
-    该谓词只做适用性判定，可见性/属主判定（ns 轴）先行不变——私有 ns ∩
-    project 是两级门依次收窄，不在此合并。"""
-    return mem_project is None or mem_project == project
 
 
 class SearchDeps(Protocol):
@@ -98,8 +91,8 @@ def search(
     与 write 的越权抛 PermissionError 对称）。
 
     project 是调用方工作区的适用性上下文（ADR 0010，fail-closed）：不传只见
-    全局（字段为空）记忆，传了见 全局 ∪ 该项目——过滤收口在候选层单点
-    （in_project_scope），词面/向量/邻居三路候选同用；拼错的 slug 响亮抛
+    全局（字段为空）记忆，传了见 全局 ∪ 该项目——过滤收口在
+    visibility.is_retrievable，词面/向量/邻居三路候选同用；拼错的 slug 响亮抛
     ValueError（与非法 ns 同规，静默空结果会让调用方误判「无相关记忆」）。
 
     explain 是 opt-in 排障面（#44，ADR-0008 展示边界）：True 时每个 hit 附加
@@ -220,8 +213,8 @@ def vector_recall(
     """向量召回：查询编码 + KNN（大池取回后按 ns 集合/去重收敛到 VEC_POOL）。
 
     返回 (vec_sims, vec_rels)；embedder 未注入或任何故障 ⇒ (None, []) 纯词面降级。
-    过期记忆与归档同等排除——候选并集两侧同一套活性语义，不给过期记忆留向量旁路；
-    project 适用性同此（ADR 0010）：向量路召回的项目记忆按同一谓词滤除，
+    valid_until 已过与归档同等排除——候选并集两侧同一套活性语义，不给已过记忆留向量旁路；
+    project 适用性同此（ADR 0010）：向量路召回的项目记忆按 is_retrievable 滤除，
     不给适用性过滤留旁路。"""
     if store._embedder is None:
         return None, []
@@ -246,9 +239,8 @@ def vector_recall(
             if not path.exists():
                 continue
             mem = store.parse(path)
-            if mem.archived or mem.ns not in nss or is_expired(mem, now):
-                continue
-            if not in_project_scope(mem.project, project):
+            # 检索面：归档不进向量候选（include_archived 缺省 False）
+            if not is_retrievable(mem, nss=nss, now=now, project=project, include_archived=False):
                 continue
             sims[mem_id] = cos
             rels.append(rel_path)
@@ -266,12 +258,14 @@ def active_neighbors(
     store: SearchDeps, mem_id: str, nss: set[str], now: dt.date, project: str | None = None,
     include_archived: bool = False,
 ) -> list[Memory]:
-    """邻居召回的数据源（唯一单点，get 与 search 两个面共用，勿在手抄第二份合取式）：
-    hit 的一度 links，过期邻居一律不召回（CONTEXT.md：valid_until 次日起退出邻居召回）。
+    """邻居召回的数据源（唯一单点，get 与 search 两个面共用）：
+    hit 的一度 links。可见性只经 is_retrievable 判定一次。
 
     归档邻居按「面」分策略（两个面真实不同策略，参数即 seam）：检索面（search）
-    缺省排除——检索只呈现活动知识；显式寻址面（get）include_archived=True 保留
-    ——归档是「暂不检索但仍可信」的知识，蒸馏产物溯源（test_distill 钉）依赖它。
+    缺省 include_archived=False——检索只呈现活动知识；显式寻址面（get）
+    include_archived=True 保留——归档是「暂不检索但仍可信」的知识，蒸馏产物
+    溯源（test_distill 钉）依赖它。valid_until 已过的邻居两个面都不召回
+    （CONTEXT.md：valid_until 次日起退出邻居召回）。
 
     ns 集合过滤是访问控制的一部分，不可省：_shared 记忆若链到 agent-* 私有记忆，
     邻居会把私有正文带进调用方不可见的检索结果（2026-10-03 实测泄漏）；
@@ -286,12 +280,12 @@ def active_neighbors(
     out: list[Memory] = []
     for link_id in mem.links:
         neighbor = store.find(link_id)
-        if (
-            neighbor is not None
-            and (include_archived or not neighbor.archived)
-            and not is_expired(neighbor, now)
-            and neighbor.ns in nss
-            and in_project_scope(neighbor.project, project)
+        if neighbor is not None and is_retrievable(
+            neighbor,
+            nss=nss,
+            now=now,
+            project=project,
+            include_archived=include_archived,
         ):
             out.append(neighbor)
     return out
@@ -305,8 +299,9 @@ def lexical_candidates(
 
     凡返回记忆正文的新入口都过身份门：agent-* 必须属主（与 search/get 同一
     规则），_shared 无需身份。extraction 的复述标注（_dup_of）与未来的批量
-    复述检测走此正门，勿直取 candidates 私有件。project 适用性过同套门禁
-    （ADR 0010）：不传只见全局——extraction 缺省调用即全局视野，不构成旁路。
+    复述检测走此正门，勿直取 candidates 私有件。可见性走共享候选流的
+    is_retrievable（ADR 0010）：不传 project 只见全局——extraction 缺省调用
+    即全局视野，不构成旁路。now 不传，不按 valid_until 排除。
     """
     reader = store._resolve_identity(reader, "reader")
     check_project(project)
@@ -340,11 +335,19 @@ def _mem_from_entry(entry: dict[str, Any]) -> Memory:
     )
 
 
+def _view_from_entry(entry: dict[str, Any]) -> tuple[Memory, DocStats]:
+    """缓存条目 → (候选视图, DocStats)。字段损坏抛 KeyError/TypeError/ValueError。"""
+    mem = _mem_from_entry(entry)
+    tf = entry["tf"]
+    if not isinstance(tf, dict):
+        raise TypeError("entry tf is not a mapping")  # 手编损坏条目：降级 parse
+    return mem, DocStats(tf=tf, dl=int(entry["len"]))
+
+
 def _merged_candidate_rels(
     store: SearchDeps, q_tokens: list[str], vec_rels: list[str] | None
 ) -> list[str]:
-    """候选骨架（candidates/scored_candidates 共享）前半：rels 并集——
-    词法索引命中在前，向量 KNN 命中（去重）排尾。"""
+    """候选骨架前半：rels 并集——词法索引命中在前，向量 KNN 命中（去重）排尾。"""
     rels = list(store.index.candidates(q_tokens))
     for rel_path in vec_rels or []:
         if rel_path not in rels:
@@ -353,12 +356,59 @@ def _merged_candidate_rels(
 
 
 def _live_rel_path(store: SearchDeps, rel: str, prefixes: tuple[str, ...]) -> Path | None:
-    """候选骨架后半：ns 前缀剪枝（parse 之前省掉越界 parse）+ 文件存在复查
-    （防索引词条与手编文件的漂移）；越界或文件缺失返回 None。"""
+    """ns 前缀剪枝（加载之前省掉越界 parse）+ 文件存在复查
+    （防索引词条与手编文件的漂移）；越界或文件缺失返回 None。
+
+    前缀剪枝是 parse 前的加速，与 is_retrievable 的 ns 轴对齐；语义判定
+    仍以谓词为准（frontmatter 的 ns 与目录不一致时谓词排除）。"""
     if not rel.startswith(prefixes):
         return None
     path = store.root / rel
     return path if path.exists() else None
+
+
+def _load_candidate(
+    store: SearchDeps, path: Path, entry: dict[str, Any] | None
+) -> tuple[Memory, DocStats | None]:
+    """加载一条候选视图。entry 可用且字段完好时免 parse（stat 对齐）；
+    无条目或字段损坏时 parse，stat 为 None。这里不做可见性过滤。"""
+    if entry is not None:
+        try:
+            return _view_from_entry(entry)
+        except (KeyError, TypeError, ValueError):
+            pass  # 条目字段损坏：降级 parse（检索降级不报错）
+    return store.parse(path), None
+
+
+def _candidate_stream(
+    store: SearchDeps,
+    q_tokens: list[str],
+    nss: set[str],
+    vec_rels: list[str] | None,
+    now: dt.date | None,
+    project: str | None,
+    *,
+    scored: bool,
+) -> Iterator[tuple[Memory, DocStats | None, str]]:
+    """词面 ∪ 向量的唯一内部候选流。可见性只经 is_retrievable 判定一次。
+
+    scored=True（scored_candidates）：缓存条目免 parse，损坏回退 parse，
+    DocStats 与候选对齐。scored=False（candidates / lexical_candidates）：
+    一律 parse——公开词面通道要正文，缓存视图的 content 是占位空串。
+    两条加载路径产出的 Memory 都过同一谓词（检索面 include_archived=False）。
+    """
+    prefixes = tuple(f"namespaces/{ns}/" for ns in nss)
+    rels = _merged_candidate_rels(store, q_tokens, vec_rels)
+    # 只在快路径读 docs：parse 路径不额外触发一次缓存自愈
+    entries = store.index.doc_entries(rels) if scored else {}
+    for rel in rels:
+        path = _live_rel_path(store, rel, prefixes)
+        if path is None:
+            continue
+        mem, stat = _load_candidate(store, path, entries.get(rel) if scored else None)
+        if not is_retrievable(mem, nss=nss, now=now, project=project, include_archived=False):
+            continue
+        yield mem, stat, rel
 
 
 def scored_candidates(
@@ -373,45 +423,17 @@ def scored_candidates(
 
     (candidates, 对齐的 per-doc DocStats——回退位为 None, id → rel 映射)。
 
-    词法缓存（tokens.json v2 docs）有条目的 rel 免 parse：token 频表直接供
-    rank 的 BM25，先验（confidence/uses/日期/type）与身份从条目重建 Memory
-    视图；过期经条目 valid_until 判（expired_by_date 与 is_expired 同源）。
-    无条目（向量路独有召回、条目字段损坏）回退 parse——与旧候选路径行为
-    逐位一致。ns 前缀剪枝与文件存在性复查照旧：防的是索引与手编文件的漂移。
-    project 适用性过滤（ADR 0010）在候选产出前的唯一收口：条目路径与 parse
-    路径输出的 Memory 视图都过同一谓词，两条路径过滤语义逐位一致。
+    加载与过滤都在 `_candidate_stream(scored=True)`：词法缓存有条目的 rel
+    免 parse，token 频表直接供 rank 的 BM25，先验与身份从条目重建 Memory
+    视图；无条目或字段损坏回退 parse。valid_until 已过经视图上的
+    is_expired（与条目 valid_until 同源）在 is_retrievable 里排除。
     """
-    prefixes = tuple(f"namespaces/{ns}/" for ns in nss)
-    rels = _merged_candidate_rels(store, q_tokens, vec_rels)
-    entries = store.index.doc_entries(rels)
     out: list[Memory] = []
     stats: list[DocStats | None] = []
     rels_by_id: dict[str, str] = {}
-    for rel in rels:
-        path = _live_rel_path(store, rel, prefixes)
-        if path is None:
-            continue
-        entry = entries.get(rel)
-        mem: Memory | None = None
-        stat: DocStats | None = None
-        if entry is not None:
-            try:
-                mem = _mem_from_entry(entry)
-                tf = entry["tf"]
-                if not isinstance(tf, dict):
-                    raise TypeError("entry tf is not a mapping")  # 手编损坏条目：降级 parse
-                stat = DocStats(tf=tf, dl=int(entry["len"]))
-                if now is not None and expired_by_date(entry.get("valid_until"), now):
-                    continue
-            except (KeyError, TypeError, ValueError):
-                mem = None  # 条目字段损坏：降级 parse（检索降级不报错）
-        if mem is None:
-            mem = store.parse(path)
-            if mem.archived or (now is not None and is_expired(mem, now)):
-                continue
-            stat = None
-        if not in_project_scope(mem.project, project):
-            continue
+    for mem, stat, rel in _candidate_stream(
+        store, q_tokens, nss, vec_rels, now, project, scored=True
+    ):
         out.append(mem)
         stats.append(stat)
         rels_by_id[mem.id] = rel
@@ -426,27 +448,17 @@ def candidates(
     now: dt.date | None = None,
     project: str | None = None,
 ) -> list[Memory]:
-    """Indexed lookup（parse 路径，lexical_candidates 的数据源）：索引活性
-    （跨进程重载/带外重建）由各缓存内部自愈，
-    这里全信索引命中，只逐一复查文件存在性与 ns 集合/活性——防的是索引
-    词条与手编文件内容的漂移（改内容不改目录 mtime，那条路走显式 rebuild）。
-    vec_rels 非空时，向量 KNN 命中（rel_path 由向量缓存给出）并入候选并集。
-    now 提供时同步排除过期记忆（valid_until 已过 ⇒ 检索不可见，get 不受限）；
-    project 适用性过滤（ADR 0010）与活性同点：不匹配读方上下文的记忆不进候选。
-    ns 前缀剪枝在 parse 之前：活动区 rel 必为 namespaces/<ns>/...（索引不收
-    归档），常见词命中近全库的大库上把 ns 过滤提前省掉全部越界 parse。"""
-    prefixes = tuple(f"namespaces/{ns}/" for ns in nss)
-    rels = _merged_candidate_rels(store, q_tokens, vec_rels)
-    out: list[Memory] = []
-    for rel in rels:
-        path = _live_rel_path(store, rel, prefixes)
-        if path is None:
-            continue
-        mem = store.parse(path)
-        if (
-            not mem.archived
-            and not (now is not None and is_expired(mem, now))
-            and in_project_scope(mem.project, project)
-        ):
-            out.append(mem)
-    return out
+    """Indexed lookup（parse 路径，lexical_candidates 的数据源）。
+
+    与 scored_candidates 共用 `_candidate_stream`（scored=False：一律 parse，
+    正文在内）。索引活性（跨进程重载/带外重建）由各缓存内部自愈；这里复查
+    文件存在性，可见性只经 is_retrievable。vec_rels 非空时向量 KNN 命中并入
+    候选并集。now 为 None 时不按 valid_until 排除（缺省，lexical_candidates
+    不传时钟）；now 提供时 valid_until 已过 ⇒ 检索不可见，get 不受限。
+    """
+    return [
+        mem
+        for mem, _stat, _rel in _candidate_stream(
+            store, q_tokens, nss, vec_rels, now, project, scored=False
+        )
+    ]

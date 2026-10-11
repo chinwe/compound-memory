@@ -86,5 +86,5 @@ _Avoid_: 缓存、tokens.json（那只是它的落盘形态）
 _Avoid_: score、search（search 是整个动作）
 
 **Neighbor recall（邻居召回）**：
-命中记忆的一度 links 展开为邻居正文的复利机制（get 邻居带出与 search 邻居召回共用单点 `storage/search.py` 的 active_neighbors）：只在命中方的 ns 内展开，project 按读方适用性滤除。过期邻居一律不展开（valid_until 次日起退出邻居召回）；归档邻居按面分策略——search 检索面排除（检索只呈现活动知识），get 显式寻址/溯源面保留（蒸馏产物带出归档源）。
+命中记忆的一度 links 展开为邻居正文的复利机制（get 邻居带出与 search 邻居召回共用单点 `storage/search.py` 的 active_neighbors；过滤合取走 `storage/visibility.py` 的 `is_retrievable`，`include_archived` 区分两个面）：只在命中方的 ns 内展开，project 按读方适用性滤除。过期邻居一律不展开（valid_until 次日起退出邻居召回）；归档邻居按面分策略——search 检索面排除（检索只呈现活动知识），get 显式寻址/溯源面保留（蒸馏产物带出归档源）。
 _Avoid_: 邻居展开、关联推荐（那是推荐系统语义，与复利带出无关）
