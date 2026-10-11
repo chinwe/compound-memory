@@ -33,7 +33,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 
 ## 运维与蒸馏（CLI）
 
-命令前缀 `uv run --directory <仓库> compound-memory`（`<仓库>` 见宿主 MCP 配置的 `--directory` 参数；uv 不在 PATH 时用 `~/.local/bin/uv`）：
+命令前缀 `uvx --from compound-memory compound-memory`（已 `uv tool install compound-memory` 时可直接写 `compound-memory`；uvx 不在 PATH 时用 `~/.local/bin/uvx`）。从仓库联调才用 `uv run --directory <仓库绝对路径> compound-memory`：
 
 | 命令 | 何时用 |
 |---|---|
@@ -63,7 +63,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 
 | 症状 | 处置 |
 |---|---|
-| 宿主看不到 5 个 memory_* 工具 | 手动跑启动命令看报错：多为 uv 不在预期路径，或 `--directory` 指向的仓库位置漂移 |
+| 宿主看不到 5 个 memory_* 工具 | 手动跑 `uvx --from compound-memory compound-memory-server` 看报错：多为 uvx 不在 PATH（`command` 写 `~/.local/bin/uvx` 绝对路径）。从仓库联调时才检查 `--directory` 是否指向克隆目录 |
 | 搜索为空 / 召回不全 | `stats` 看记忆量与 `retrieval`；`mode=lexical` 表示当前是纯词面（缺 vec extra/模型，或当次向量召回失败）。怀疑索引损坏 `rebuild-index`（缓存可随时重建，检索降级不报错） |
 | MCP `memory_search` 的 `retrieval.mode` 为 `lexical` | 结果质量是 BM25，不是向量。补 `--extra vec` 与本地模型后 `rebuild-index`；`reason` 为 `degraded` 时先看 server 日志里的 `vector recall degraded to lexical` |
 | 检索排序不符合预期 / 想知道某条为什么排前 | `memory_search` 传 `explain: true`（CLI `--explain`）看每条 hit 的排序分量（词面/向量 rank、RRF 分、先验折算项、检索通道）与证据摘要；单条记忆的置信度构成用 CLI `explain <id>`（证据计数、跨宿主验证明细、派生标记） |

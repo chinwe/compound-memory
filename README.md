@@ -26,22 +26,24 @@ Every agent session starts from zero: preferences get re-asked, project conventi
 Paste this one-liner into your coding agent (Claude Code, Cursor, ZCode, …) and let it do the rest:
 
 ```text
-Set up compound-memory (https://github.com/chinwe/compound-memory) — a local-first multi-agent shared memory (MCP server + CLI) — on this machine: install it (`uv tool install compound-memory`, or clone the repo and `uv sync --extra dev`), initialize the store (`compound-memory init`, defaults to ~/.agents/memory), register its stdio MCP server in this host's MCP config — command `compound-memory-server` (PyPI install) or `uvx --from compound-memory compound-memory-server`, env `COMPOUND_MEMORY_ROOT=$HOME/.agents/memory` and `COMPOUND_MEMORY_AGENT_ID=agent-<your-host-id>` — then verify by calling `memory_search` and expecting a `{"hits": [...]}` response; if the host needs a restart to load MCP servers, tell me. Host-specific configs and the usage protocol: docs/agent-integration.md in the repo.
+Set up compound-memory (https://github.com/chinwe/compound-memory) — a local-first multi-agent shared memory (MCP server + CLI) — on this machine. Do not clone the repo for a normal install. Initialize the store with `uvx --from compound-memory compound-memory init` (defaults to ~/.agents/memory). Register its stdio MCP server in this host's MCP config: command `uvx`, args `--from compound-memory compound-memory-server`, env `COMPOUND_MEMORY_ROOT=$HOME/.agents/memory` and `COMPOUND_MEMORY_AGENT_ID=agent-<your-host-id>`. Verify by calling `memory_search` and expecting a `{"hits": [...]}` response; if the host needs a restart to load MCP servers, tell me. Use `uv run --directory <repo>` only when developing against a local checkout. Host-specific configs and the usage protocol: docs/agent-integration.md in the repo.
 ```
 
 ### For humans
 
 #### 1. Install
 
-Python ≥ 3.11. Either route works:
+Python ≥ 3.11. The default does not clone the repo:
 
 ```bash
-# Route A: clone the repo (uv-managed; same path the MCP config uses)
+# Default: PyPI. Hosts launch the MCP server with
+#   uvx --from compound-memory compound-memory-server
+# Optional CLI on PATH:
+uv tool install compound-memory   # or: pip install compound-memory
+
+# Developer / local checkout only — not the default host launch
 git clone https://github.com/chinwe/compound-memory.git
 cd compound-memory && uv sync --extra dev
-
-# Route B: install from PyPI (no clone needed)
-uv tool install compound-memory   # or: pip install compound-memory
 ```
 
 #### 2. Initialize your store
@@ -49,20 +51,21 @@ uv tool install compound-memory   # or: pip install compound-memory
 Defaults to `~/.agents/memory`; override with the `COMPOUND_MEMORY_ROOT` env var. A leading `~` or `$HOME` is expanded; a blank override falls back to the default.
 
 ```bash
-uv run compound-memory init
+uvx --from compound-memory compound-memory init
+# after `uv tool install`: compound-memory init
 ```
 
 #### 3. Wire it into your MCP host (recommended)
 
-This lets your everyday agents read/write the shared store automatically:
+This lets your everyday agents read/write the shared store automatically. No repo path:
 
 ```json
 {
   "mcpServers": {
     "compound-memory": {
       "type": "stdio",
-      "command": "uv",
-      "args": ["run", "--directory", "<repo>", "compound-memory-server"],
+      "command": "uvx",
+      "args": ["--from", "compound-memory", "compound-memory-server"],
       "env": {
         "COMPOUND_MEMORY_ROOT": "$HOME/.agents/memory",
         "COMPOUND_MEMORY_AGENT_ID": "agent-<your-host-id>"
@@ -72,9 +75,11 @@ This lets your everyday agents read/write the shared store automatically:
 }
 ```
 
-Installed from PyPI? Swap `command`/`args` for `uvx` + `["--from", "compound-memory", "compound-memory-server"]` — no repo clone needed. `COMPOUND_MEMORY_AGENT_ID` is **required** for any multi-agent store: the process identity wins over whatever the model claims, so a forged `source` cannot write another host's namespace or inflate cross-host validation. Leave it unset only for a single trusted caller on a private machine — `stats` then reports `attestation.warning`, and the MCP server logs the same warning at startup. Without it, identity is self-reported and can be forged.
+`uvx` takes the package name; the server console script is `compound-memory-server`, so `--from` is required. If `uvx` is not on `PATH`, set `command` to the absolute path `~/.local/bin/uvx`. `COMPOUND_MEMORY_AGENT_ID` is **required** for any multi-agent store: the process identity wins over whatever the model claims, so a forged `source` cannot write another host's namespace or inflate cross-host validation. Leave it unset only for a single trusted caller on a private machine — `stats` then reports `attestation.warning`, and the MCP server logs the same warning at startup. Without it, identity is self-reported and can be forged.
 
-**Verify**: ask your agent to call `memory_search` (any keyword) — a `{"hits": [...]}` response means you're connected. Or run `uv run compound-memory stats` from the CLI.
+A local checkout is the developer path, not a second default: `command` `uv`, `args` `["run", "--directory", "<absolute-repo-path>", "compound-memory-server"]` after `uv sync --extra dev`.
+
+**Verify**: ask your agent to call `memory_search` (any keyword) — a `{"hits": [...]}` response means you're connected. Or run `uvx --from compound-memory compound-memory stats` from the CLI.
 
 #### 4. Next step
 
@@ -221,6 +226,8 @@ Tool descriptions embed the protocol rules themselves, so agents keep the loop i
 
 ## CLI
 
+Checkout commands below (`uv run` inside a clone). Hosts that did not clone the repo use `uvx --from compound-memory compound-memory …` instead.
+
 ```bash
 uv sync --extra dev              # first clone: build .venv (later `uv run` reuses it)
 
@@ -298,3 +305,5 @@ PyPI versions are immutable and the tag must match `pyproject.toml`'s `version` 
 ---
 
 MCP Registry name: `mcp-name: io.github.chinwe/compound-memory`
+
+`server.json` records the PyPI package `compound-memory` (stdio). It does not name a repo path. Host configs still use `uvx --from compound-memory compound-memory-server`, because the package name and the server console script differ.
