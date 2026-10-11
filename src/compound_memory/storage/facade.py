@@ -242,9 +242,8 @@ class MemoryStore:
                 same_ns_links.append(l)
         result["links"] = same_ns_links
         if include_neighbors and mem.links:
-            # 邻居活性 + 适用性过滤单点委托：include_archived=True 是 get 的显式
-            # 寻址/溯源面语义（归档邻居带出，蒸馏溯源 test_distill 钉）——
-            # 勿在此手抄第二份合取式
+            # 邻居活性走 active_neighbors → is_retrievable。include_archived=True
+            # 是 get 的显式寻址/溯源面语义（归档邻居带出，蒸馏溯源 test_distill 钉）
             neighbors = [
                 asdict(n)
                 for n in search_mod.active_neighbors(
