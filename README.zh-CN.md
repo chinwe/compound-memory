@@ -13,7 +13,7 @@
 把下面这句提示词粘贴给你的编码 Agent（Claude Code / Cursor / ZCode 等），它就能完成全部接入：
 
 ```text
-在这台机器上安装并接入 compound-memory（https://github.com/chinwe/compound-memory）——本地优先的多 Agent 共享记忆系统（MCP server + CLI）：安装（`uv tool install compound-memory`，或克隆仓库后 `uv sync --extra dev`）、初始化记忆库（`compound-memory init`，默认 ~/.agents/memory）、在本宿主的 MCP 配置里注册 stdio server——命令 `compound-memory-server`（PyPI 安装）或 `uvx --from compound-memory compound-memory-server`，env 设 `COMPOUND_MEMORY_ROOT=~/.agents/memory` 和 `COMPOUND_MEMORY_AGENT_ID=agent-<你的宿主标识>`——然后调用 `memory_search` 验证返回 `{"hits": [...]}` 即接入成功；若宿主需重启才能加载 MCP server，请告诉我。各宿主配置细节与使用规范见仓库内 docs/agent-integration.md。
+在这台机器上安装并接入 compound-memory（https://github.com/chinwe/compound-memory）——本地优先的多 Agent 共享记忆系统（MCP server + CLI）：安装（`uv tool install compound-memory`，或克隆仓库后 `uv sync --extra dev`）、初始化记忆库（`compound-memory init`，默认 ~/.agents/memory）、在本宿主的 MCP 配置里注册 stdio server——命令 `compound-memory-server`（PyPI 安装）或 `uvx --from compound-memory compound-memory-server`，env 设 `COMPOUND_MEMORY_ROOT=$HOME/.agents/memory` 和 `COMPOUND_MEMORY_AGENT_ID=agent-<你的宿主标识>`——然后调用 `memory_search` 验证返回 `{"hits": [...]}` 即接入成功；若宿主需重启才能加载 MCP server，请告诉我。各宿主配置细节与使用规范见仓库内 docs/agent-integration.md。
 ```
 
 ### 给人类的步骤
@@ -31,7 +31,7 @@ uv tool install compound-memory   # 或 pip install compound-memory
 
 #### 初始化记忆库
 
-默认 `~/.agents/memory`，可用环境变量 `COMPOUND_MEMORY_ROOT` 覆盖：
+默认 `~/.agents/memory`，可用环境变量 `COMPOUND_MEMORY_ROOT` 覆盖（前缀 `~` 或 `$HOME` 会展开；空白覆盖回退默认路径）：
 
 ```bash
 uv run compound-memory init
@@ -49,7 +49,7 @@ uv run compound-memory init
       "command": "uv",
       "args": ["run", "--directory", "<仓库>", "compound-memory-server"],
       "env": {
-        "COMPOUND_MEMORY_ROOT": "~/.agents/memory",
+        "COMPOUND_MEMORY_ROOT": "$HOME/.agents/memory",
         "COMPOUND_MEMORY_AGENT_ID": "agent-<你的宿主标识>"
       }
     }
@@ -215,7 +215,7 @@ Agent (MCP 客户端 / CLI)
       "type": "stdio",
       "command": "~/.local/bin/uv",
       "args": ["run", "--directory", "<本目录>", "compound-memory-server"],
-      "env": { "COMPOUND_MEMORY_ROOT": "~/.agents/memory" }
+      "env": { "COMPOUND_MEMORY_ROOT": "$HOME/.agents/memory" }
     }
   }
 }
