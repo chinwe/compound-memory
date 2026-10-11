@@ -23,6 +23,37 @@ _PATH_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # 一次性（id 已含日期），等于放弃同 key 更新通道。日期前缀的取舍归文档，这里只守字符集与结构。
 _KEY_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
+# 单条正文上限（#60）：词法缓存按 token 频表落盘，无上限的 payload 会把
+# tokens.json 与 git 历史撑爆。256 Ki 字符够一条长 episode，挡掉整文件倾倒。
+MAX_CONTENT_CHARS = 262_144
+
+# 未注入进程身份时的固定告警文案（stats / server 启动 / CLI stats 共用，勿另写一份）。
+ATTESTATION_WARNING = (
+    "COMPOUND_MEMORY_AGENT_ID is unset; caller identity is self-reported and can be forged. "
+    "Set a stable agent id in the host MCP env before sharing _shared across agents."
+)
+
+
+def check_content_size(content: str) -> None:
+    """正文体积门（write_new 单点，write/batch/distill 共用）。
+
+    超限是调用方错误：ValueError，且必须发生在落盘之前。"""
+    if len(content) > MAX_CONTENT_CHARS:
+        raise ValueError(
+            f"content exceeds {MAX_CONTENT_CHARS} characters ({len(content)}); "
+            "split it or store a short pointer instead of the full payload"
+        )
+
+
+def attestation_status(agent_id: str | None) -> dict[str, str | bool | None]:
+    """进程身份是否经 COMPOUND_MEMORY_AGENT_ID 注入（#57）。
+
+    未注入不拒绝读写（单机自用仍可用），但 warning 必须出现在 stats 里——
+    多 Agent 共享 _shared 时自报身份可被伪造，缺省不能静默。"""
+    if agent_id:
+        return {"attested": True, "agent_id": agent_id, "warning": None}
+    return {"attested": False, "agent_id": None, "warning": ATTESTATION_WARNING}
+
 
 def check_validity(valid_from: str | None, valid_until: str | None) -> None:
     """有效期字段校验（write 单点）：ISO date 格式 + from<=until，坏输入响亮抛 ValueError。"""

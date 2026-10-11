@@ -10,6 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
+import pytest
+
 from compound_memory.storage import MemoryStore
 
 from conftest import CLOCK_DATE, bag_embedder_factory, sandbox_safe_remove
@@ -65,6 +67,23 @@ class TestVectorRecallBehavior:
         """无 embedder 的 store 与历史行为一致：词面零命中 ⇒ 空结果（不引入回归）。"""
         store.write(content="nginx buffer 配置要点", type="fact", source="agent-a")
         assert store.search("反向代理的缓冲区设置") == []
+        assert store.retrieval_status() == {"mode": "lexical", "reason": "embedder-unavailable"}
+
+    def test_vec_store_reports_vector_mode(self, vec_store: MemoryStore):
+        assert vec_store.retrieval_status()["mode"] == "vector"
+        assert vec_store.retrieval_status()["reason"] is None
+
+    def test_recall_failure_marks_lexical(self, vec_store: MemoryStore, monkeypatch: pytest.MonkeyPatch):
+        """knn 故障降级后，检索仍有词面结果，且 retrieval 标明 degraded（#60）。"""
+        res = vec_store.write(content="vector degrade probe", type="fact", source="agent-a")
+
+        def boom(query_vec: list[float], k: int) -> list[tuple[str, str, float]]:
+            raise RuntimeError("knn down")
+
+        monkeypatch.setattr(vec_store.vector_index, "knn", boom)
+        hits = vec_store.search("degrade probe")
+        assert [h["id"] for h in hits] == [res["id"]]
+        assert vec_store.retrieval_status() == {"mode": "lexical", "reason": "degraded"}
 
 
 class TestVectorIndexInvariants:

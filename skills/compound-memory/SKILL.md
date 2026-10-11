@@ -5,7 +5,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 
 # compound-memory 使用规范
 
-本机跨 Agent 共享记忆库：MCP 服务 `compound-memory`（5 个工具是唯一读写边界），存储 `~/.agents/memory`，CLI 做运维与蒸馏。接入配置（各宿主 MCP 注册）见仓库 `docs/agent-integration.md`。
+本机跨 Agent 共享记忆库：MCP 服务 `compound-memory`（5 个工具是唯一读写边界），存储 `~/.agents/memory`，CLI 做运维与蒸馏。接入配置（各宿主 MCP 注册）见仓库 `docs/agent-integration.md`。宿主 env **必须**设稳定的 `COMPOUND_MEMORY_AGENT_ID`（与下面的 `source` 相同）；未设置时身份可被伪造，`stats.attestation.warning` 与 server 启动日志会标明。
 
 ## 三个必做动作（复利闭环）
 
@@ -21,7 +21,8 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 |---|---|
 | `type` | `fact` 客观事实（配置、账号、环境参数）；`insight` 经验教训；`skill` 可复用操作方法；`episode` 事件经历；`decision` 已做的选择（选型、方案拍板，长寿如 fact，被新决策取代走冲突裁决） |
 | `key` | fact/insight/decision 用稳定英文短横线标识（`user-tts`、`proj-xxx`），格式 `^[a-z0-9]+(-[a-z0-9]+)*$`，`write` 落库前校验（不合规 ValueError）；**禁止日期前缀**——id 已含日期，日期化 key 天然一次性，等于放弃同 key 更新通道（2026-10-05 单日多会话沉淀出成批日期 key 的教训）；更新既有事实复用同 key，新版本与旧版内容不同时返回 `conflict: true` 并入冲突队列 |
-| `source` | 宿主标识：`agent-workbuddy` / `agent-zcode` / `agent-claude` / `agent-deepseek` |
+| `source` | 宿主标识：`agent-workbuddy` / `agent-zcode` / `agent-claude` / `agent-cursor` / `agent-deepseek`。必须与宿主 env `COMPOUND_MEMORY_AGENT_ID` 一致 |
+| `content` | 上限 262144 字符；超限 `ValueError`（`content exceeds`），不落盘。长材料改成短事实或只存指针 |
 | `ns` | 默认 `_shared`；`agent-*` 是私有区，写/读/反馈都只认属主——读私有 ns 须带 `reader`（自己的 agent id，缺省即拒绝），越权抛 `PermissionError`；ns 只允许 `[A-Za-z0-9_-]`（路径组件安全，含 `../`、`/`、`*` 等一律 ValueError——ns 会被直接拼进存储路径）。`memory_search` 不传 `ns` 时自动并搜自有私有区（双通道，见必做动作①） |
 | `valid_from` / `valid_until` | 可选 ISO 日期（YYYY-MM-DD）标注事实有效期；`valid_until` 已过的事实自动退出检索结果（`memory_get` 仍可读）。事实会过时的场景（负责人变更、配置轮换）写新版时带上预期失效日，过期后检索不再被旧值污染 |
 | `project` | 可选项目作用域 slug（`^[a-z0-9]+(-[a-z0-9]+)*$`，与 key 同格式，落库前校验）：标注后该记忆只对声明同一项目的会话检索可见（未标注 = 全局通用）。宿主使用规则声明「本工作区 project=<slug>」后，该工作区的 `memory_write` / `memory_search` 每次携带；CLI 另有 `COMPOUND_MEMORY_PROJECT` env 回退（adapter 层读，store 不读环境变量）。跨项目通用的事实**不要**标 project |
@@ -36,7 +37,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 
 | 命令 | 何时用 |
 |---|---|
-| `stats` | 看健康度：uses/confidence 分布、活性、蒸馏产出 |
+| `stats` | 看健康度：uses/confidence 分布、活性、蒸馏产出；`retrieval.mode` 是 `vector` 还是 `lexical`；`attestation` 是否注入了进程身份 |
 | `explain <id> [--reader <agent id>]` | 按 id 看单条记忆的置信度构成（证据计数 success/failure/contradiction、last_verified、最近反馈明细、跨宿主验证明细 validated_by、派生标记、当前 conf）——排查「这条 conf 为什么这么高/低」「这条是不是蒸馏产物」时用；只读不产生提交，私有 ns 加 `--reader` |
 | `rebuild-index` | 手工编辑过记忆文件**内容**后（活性检测只覆盖新增/删除文件） |
 | `review-queue` / `review-resolve` | 处理同 key 冲突队列与 contradiction 争议（人工裁决入口）：`review-resolve <废置id>` 清行并自动归档废置方（对侧保留活动区）；contradiction 争议行裁决二选一——维持原记忆有效用 `review-resolve <争议id> --uphold`（解冻并按 failure −0.2 折算），确错则缺省路径归档；`--all` 只清空队列不归档（争议行解冻但不折算）。私有 `agent-*` ns 的行仅属主可清（加 `--reader`）——`--all` 会静默保留别人的私有行，显式点名则报错；`review-queue` 展示仍全量 |
@@ -63,7 +64,8 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | 症状 | 处置 |
 |---|---|
 | 宿主看不到 5 个 memory_* 工具 | 手动跑启动命令看报错：多为 uv 不在预期路径，或 `--directory` 指向的仓库位置漂移 |
-| 搜索为空 / 召回不全 | `stats` 看记忆量；怀疑索引损坏 `rebuild-index`（缓存可随时重建，检索降级不报错） |
+| 搜索为空 / 召回不全 | `stats` 看记忆量与 `retrieval`；`mode=lexical` 表示当前是纯词面（缺 vec extra/模型，或当次向量召回失败）。怀疑索引损坏 `rebuild-index`（缓存可随时重建，检索降级不报错） |
+| MCP `memory_search` 的 `retrieval.mode` 为 `lexical` | 结果质量是 BM25，不是向量。补 `--extra vec` 与本地模型后 `rebuild-index`；`reason` 为 `degraded` 时先看 server 日志里的 `vector recall degraded to lexical` |
 | 检索排序不符合预期 / 想知道某条为什么排前 | `memory_search` 传 `explain: true`（CLI `--explain`）看每条 hit 的排序分量（词面/向量 rank、RRF 分、先验折算项、检索通道）与证据摘要；单条记忆的置信度构成用 CLI `explain <id>`（证据计数、跨宿主验证明细、派生标记） |
 | SessionStart 没注入 | hook 任何异常都静默退出；手动跑 `~/.agents/memory/hooks/session_start.py` 查输出是否为合法 `{"additionalContext": ...}` JSON |
 | 写入/读取/反馈 `PermissionError` | ns 越权：日常写读 `_shared`；私有 `agent-*` ns 的读/反馈带 `reader`/`agent`、link 带 `agent`（`agent-<名>` 或 `<名>`） |

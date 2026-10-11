@@ -133,8 +133,9 @@
 ## 覆盖分层（非三层对称）
 
 - **store 层**（上节）：全五要素 characterization；
-- **MCP 层**：只钉 5 个 tool 名、返回形状（`{"hits": ..., "count": n}` 包装只在
-  MCP 层）、`structured_output=False` 单份序列化、异常 → `is_error` 翻译
+- **MCP 层**：只钉 5 个 tool 名、返回形状（`{"hits": ..., "count": n, "retrieval": {mode, reason}}`
+  包装只在 MCP 层——契约变更 #60：词面降级必须出现在 search 信封，hit 形状与 CLI 裸数组不动）、
+  `structured_output=False` 单份序列化、异常 → `is_error` 翻译
   （`tests/contracts/test_mcp_surface.py`）；语义不重测；
 - **CLI 层**：只钉 18 个子命令名与关键 flags（含 D1/D2 的 `link --agent`、
   `review-resolve --reader`、ADR-0009 的 `forget --agent/--reason`、#44 的
@@ -144,7 +145,8 @@
   stderr JSON + exit 2）；
 - **Tier 2 薄钉**（形状 + 错误）：`find` / `decay_sweep` / `review_queue` /
   `rebuild_index` / `stats` / `git_log` / `lexical_candidates`
-  （`tests/contracts/test_ops_tier2.py`）。
+  （`tests/contracts/test_ops_tier2.py`）。stats 键集契约变更 #57/#60：在既有计数键之外
+  增加 `retrieval`（`mode`/`reason`）与 `attestation`（`attested`/`agent_id`/`warning`）。
 
 ## 可选能力声明（vec）
 

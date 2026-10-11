@@ -22,6 +22,7 @@ import pytest
 
 from compound_memory.storage import MemoryStore
 from compound_memory.storage.files import _unlink_file
+from compound_memory.storage.locking import WriteLockError, _spin_until_locked
 
 from conftest import CLOCK_DATE
 
@@ -92,6 +93,45 @@ class TestConcurrentWriters:
         assert store.find(result["id"]) is not None
         msgs = [r.getMessage() for r in caplog.records]
         assert any("write lock unavailable" in m for m in msgs)
+
+    def test_lock_acquire_failure_refuses_write(self, store: MemoryStore, monkeypatch: pytest.MonkeyPatch) -> None:
+        """争锁失败 / 超时必须 fail-closed（#58）：不落盘、不走无锁写入。"""
+        def deny(fd: int) -> None:
+            raise OSError("timed out after 30s waiting for the write lock")
+
+        monkeypatch.setattr("compound_memory.storage.locking._lock_exclusive", deny)
+        before = list(store.ns_root.rglob("*.md"))
+        with pytest.raises(WriteLockError, match="refusing unlocked write"):
+            store.write("must not land", type="fact", source="agent-a")
+        assert list(store.ns_root.rglob("*.md")) == before
+
+    def test_lock_wait_timeout_raises_without_sleeping(self) -> None:
+        """Windows 轮询上界：注入时钟，超时即 OSError，不依赖真实 30 秒。"""
+        clock = {"t": 0.0}
+
+        def lock() -> None:
+            raise OSError("busy")
+
+        def monotonic() -> float:
+            return clock["t"]
+
+        def sleep(dt: float) -> None:
+            clock["t"] += dt
+
+        with pytest.raises(OSError, match="timed out after 0s"):
+            _spin_until_locked(lock, sleep=sleep, monotonic=monotonic, timeout=0.0, poll=0.05)
+        assert clock["t"] == 0.0
+
+        clock["t"] = 0.0
+        calls = {"n": 0}
+
+        def lock_then_ok() -> None:
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise OSError("busy")
+
+        _spin_until_locked(lock_then_ok, sleep=sleep, monotonic=monotonic, timeout=1.0, poll=0.05)
+        assert calls["n"] == 3
 
     def test_batch_holds_lock_reentrancy_no_deadlock(self, tmp_path: Path) -> None:
         """batch 全程持锁：批内动词重入不死锁，批尾 flush+commit 同在临界区。"""

@@ -152,6 +152,7 @@ class MemoryStore:
     #
     # 接口错误约定（单一定义，adapter 各翻译一次）：
     # - 调用方错误（参数非法 / 越权写命名空间 / 自链接）⇒ 抛 ValueError / PermissionError；
+    # - 写锁获取失败 ⇒ WriteLockError（拒绝无锁写入）；锁文件创建失败仍降级并 warning；
     # - 目标记忆不存在 ⇒ 正常返回 {"found": False}——所有按 id 的动词恒含 found 键。
 
     @staticmethod
@@ -392,6 +393,10 @@ class MemoryStore:
     ) -> dict[str, Any]:
         """冲突/争议裁决登记（uphold=维持：ADR-0007 contradiction 裁决二选之一）。"""
         return review.review_resolve(self, ids=ids, all=all, reader=reader, uphold=uphold)
+
+    def retrieval_status(self) -> dict[str, Any]:
+        """向量路是否在生效（#60）。stats 与 MCP memory_search 共用，不扫库。"""
+        return self.vector_index.retrieval_status()
 
     def stats(self) -> dict[str, Any]:
         return stats_mod.stats(self)

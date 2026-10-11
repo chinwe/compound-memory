@@ -24,12 +24,6 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         # requires-python 声称 >=3.11:矩阵让它成为被验证的承诺而非推断
         python-version: ["3.11", "3.12", "3.13"]
-        exclude:
-          # Windows 首上先钉 3.13 单版本验证（#55），全矩阵待套件在 Windows 稳定后再放开
-          - os: windows-latest
-            python-version: "3.11"
-          - os: windows-latest
-            python-version: "3.12"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -55,16 +49,7 @@ jobs:
         run: uv run python scripts/check_git_calls.py
 
       - name: Wheel smoke test
-        # 发布标准的固化:纯 wheel(无 dev/vec extra)必须可安装、CLI 与 server 可跑
-        # 仅 POSIX:venv 可执行文件路径(bin/ vs Scripts\)与 shell 语法是平台差异;
-        # Windows 的纯 wheel 可安装性此矩阵未覆盖(#55 后续可单独补)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          uv build
-          uv venv .smoke-venv
-          uv pip install --python .smoke-venv/bin/python dist/*.whl
-          export COMPOUND_MEMORY_ROOT=.smoke-root
-          .smoke-venv/bin/compound-memory init
-          .smoke-venv/bin/compound-memory write "ci smoke entry" episode agent-ci > /dev/null
-          .smoke-venv/bin/compound-memory search "ci smoke" | grep -q "ci smoke entry"
-          .smoke-venv/bin/compound-memory-server < /dev/null
+        # 纯 wheel（无 dev/vec extra）必须可安装，CLI 与 server 可跑。
+        # Linux 与 Windows 都跑（#58）；脚本按 uname 选 bin/ 或 Scripts\。
+        shell: bash
+        run: bash scripts/wheel_smoke.sh

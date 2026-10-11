@@ -15,6 +15,7 @@ from . import __version__
 from .embedding import auto_encoder
 from .extraction import extract, supported_hosts_summary_en
 from .storage import DISTILL_DUP_SIM_THRESHOLD, MEMORY_TYPES, MemoryStore, PROMOTION_USES_THRESHOLD, default_root
+from .storage.locking import WriteLockError
 
 
 def _emit(payload: Any) -> None:
@@ -106,7 +107,15 @@ def cmd_forget(args: argparse.Namespace) -> None:
 
 
 def cmd_stats(args: argparse.Namespace) -> None:
-    _emit(_open_store(args).stats())
+    payload = _open_store(args).stats()
+    # 诊断走 stderr，stdout 保持纯 JSON。未注入身份 / 词面降级在这里响一声（#57/#60）。
+    warning = (payload.get("attestation") or {}).get("warning")
+    if warning:
+        print(warning, file=sys.stderr)
+    retrieval = payload.get("retrieval") or {}
+    if retrieval.get("mode") == "lexical":
+        print(f"retrieval is lexical-only ({retrieval.get('reason')})", file=sys.stderr)
+    _emit(payload)
 
 
 def cmd_rebuild_index(args: argparse.Namespace) -> None:
@@ -363,8 +372,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args.func(args)
         return 0
-    except (ValueError, PermissionError) as exc:
-        # store 接口的调用方错误统一在这里翻译成 JSON（MCP 侧由框架转 is_error）
+    except (ValueError, PermissionError, WriteLockError) as exc:
+        # store 接口的调用方错误统一在这里翻译成 JSON（MCP 侧由框架转 is_error）。
+        # WriteLockError 是争锁失败的 fail-closed（#58），同样不该变成 traceback。
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
 

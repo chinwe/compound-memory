@@ -72,7 +72,7 @@ This lets your everyday agents read/write the shared store automatically:
 }
 ```
 
-Installed from PyPI? Swap `command`/`args` for `uvx` + `["--from", "compound-memory", "compound-memory-server"]` — no repo clone needed. Setting `COMPOUND_MEMORY_AGENT_ID` is strongly recommended: the store then resolves caller identity from the process env, so a model misreporting its identity (or forging someone else's `source`) is rejected loudly.
+Installed from PyPI? Swap `command`/`args` for `uvx` + `["--from", "compound-memory", "compound-memory-server"]` — no repo clone needed. `COMPOUND_MEMORY_AGENT_ID` is **required** for any multi-agent store: the process identity wins over whatever the model claims, so a forged `source` cannot write another host's namespace or inflate cross-host validation. Leave it unset only for a single trusted caller on a private machine — `stats` then reports `attestation.warning`, and the MCP server logs the same warning at startup. Without it, identity is self-reported and can be forged.
 
 **Verify**: ask your agent to call `memory_search` (any keyword) — a `{"hits": [...]}` response means you're connected. Or run `uv run compound-memory stats` from the CLI.
 
@@ -146,7 +146,7 @@ uv run compound-memory search "serverless timeout"
 ]
 ```
 
-A different host used this memory and reported it back — `uses` +1, `conf` +0.1; and since the reporter `agent-workbuddy` ≠ source `agent-claude`, the first cross-host validation adds another +0.15:
+A different host used this memory and reported it back with the default `success` outcome — `uses` +1, `conf` +0.1; and since the reporter `agent-workbuddy` ≠ source `agent-claude`, the first cross-host validation adds another +0.15:
 
 ```bash
 uv run compound-memory feedback 20261007_86adf1 agent-workbuddy
@@ -188,6 +188,8 @@ uv run compound-memory stats
 }
 ```
 
+Current `stats` also includes `retrieval` (`mode`: `vector` or `lexical`, plus `reason` when the vector channel is off) and `attestation` (`attested`, plus a `warning` when `COMPOUND_MEMORY_AGENT_ID` is unset). `memory_search` carries the same `retrieval` object. CLI `search` stays a bare array.
+
 Three things to notice:
 
 - New memories start at `confidence` 0.5 and move on **evidence** — feedback carries an outcome: `success` raises it, `failure` lowers it (floor 0.05), `contradiction` freezes it into the review queue, `obsolete` archives immediately.
@@ -198,10 +200,10 @@ Three things to notice:
 
 | Interest source | Mechanism |
 |---|---|
-| ① Usage reinforcement | `memory_feedback`: uses+1, conf+0.1 |
+| ① Usage reinforcement | `memory_feedback` carries an outcome. Default `success`: uses+1, confidence +0.1. `failure`: confidence −0.2 (floor 0.05, repeats stack). `contradiction`: confidence frozen, a review-queue row is filed. `obsolete`: archived immediately. `unknown`: the event is recorded and the number does not move |
 | ② Link value | `memory_link` creates bidirectional links; `memory_get` pulls one-hop neighbors; `search` hits embed up to 3 compact neighbors (active memories only, `--no-neighbors` to disable) |
 | ③ Distillation | `distill-plan` (CLI, deterministic candidates + dual-signal dedup annotations) → agent judgment → `distill-apply` atomic commit (product links back to sources; sources archived but revivable) |
-| ④ Cross-agent validation | Feedback from an agent other than the source adds conf +0.15 |
+| ④ Cross-agent validation | On `success` only, the first feedback from a host other than `source` adds +0.15 (once per host per memory; recorded in `validated_by`) |
 
 Scoring (weights are the `W_*` constants in `src/compound_memory/scoring.py`): `0.70·similarity + 0.15·confidence + 0.10·recency(0.5+0.5·e^(−Δt/τ)) + 0.05·type weight`. With the vector channel enabled, ranking switches to RRF fusion with an ε=0.04 prior tie-break (see the spec, "index as cache").
 
@@ -209,11 +211,11 @@ Scoring (weights are the `W_*` constants in `src/compound_memory/scoring.py`): `
 
 | Tool | Purpose | Key points |
 |---|---|---|
-| `memory_write` | Write a memory | `type`: episode/fact/insight/skill/decision; `source`: your agent id; give fact/insight/decision a stable `key`; optional `valid_from`/`valid_until` (ISO dates) and `project` scope |
+| `memory_write` | Write a memory | `type`: episode/fact/insight/skill/decision; `source`: your agent id; give fact/insight/decision a stable `key`; optional `valid_from`/`valid_until` (ISO dates) and `project` scope. `content` over 262144 characters is rejected and nothing is written |
 | `memory_search` | Retrieve | Returns `{"hits": [...]}` ranked by score; embeds up to 3 one-hop neighbors; dual-channel by default (`_shared` + caller's own private ns); optional `project` (fail-closed) and `explain` |
 | `memory_get` | Fetch by id | Always contains a `found` key; pulls one-hop neighbors; private-ns targets require `reader` |
 | `memory_link` | Link two memories | Bidirectional; both sides must be in the same ns; private-ns links require owner identity |
-| `memory_feedback` | Report "this memory was actually used" | Default `outcome=success`: uses+1, conf+0.1; first cross-host validation +0.15; also `failure` / `contradiction` / `obsolete` / `unknown`. **Mandatory after adopting a hit** — that's the loop that makes the store compound |
+| `memory_feedback` | Report how a memory actually behaved | Default `outcome=success`: uses+1, conf+0.1; first cross-host validation +0.15. `failure` −0.2 (floor 0.05); `contradiction` freezes confidence into the review queue; `obsolete` archives now; `unknown` records only. **Mandatory after adopting a hit** — that's the loop that makes the store compound |
 
 Tool descriptions embed the protocol rules themselves, so agents keep the loop intact even without host-side rules injected. Full parameter reference: `docs/agent-integration.md`.
 
@@ -244,12 +246,13 @@ More operations: `explain <id>` (confidence composition + evidence detail for on
 Agent (MCP client / CLI)
   └─ memory_write | memory_search | memory_get | memory_link | memory_feedback
        └─ MemoryStore (~/.agents/memory)
-            ├─ namespaces/_shared/{episode,fact,insight,skill}/*.md   shared area
-            ├─ namespaces/agent-*/...                                  private areas
-            ├─ archive/...                                             decayed archive (revivable)
-            ├─ index/tokens.json                                       rebuildable search cache
-            ├─ review-queue.md                                         fact/insight conflict queue
-            └─ .git/                                                   auto-commit on every write
+            ├─ namespaces/_shared/{episode,fact,insight,skill,decision}/*.md   shared area
+            ├─ namespaces/agent-*/...                                          private areas
+            ├─ archive/...                                                     decayed archive (revivable)
+            ├─ index/tokens.json                                               rebuildable lexical cache
+            ├─ index/vectors.db                                                rebuildable vector cache (optional)
+            ├─ review-queue.md                                                 fact/insight/decision conflict queue
+            └─ .git/                                                           auto-commit on every write
 ```
 
 ## Scheduled distillation prep (launchd / cron / systemd)
@@ -258,6 +261,7 @@ Per ADR 0001, the deterministic prep runs on a schedule while judgment (summariz
 
 ## Documentation
 
+- [`CHANGELOG.md`](CHANGELOG.md) — release notes (0.5.x Windows support and later)
 - [`docs/specs/0001-compound-memory-spec.md`](docs/specs/0001-compound-memory-spec.md) — design spec
 - [`docs/agent-integration.md`](docs/agent-integration.md) — per-host MCP configs + the unified usage protocol (Chinese)
 - [`docs/adr/`](docs/adr/) — architecture decision records
@@ -271,7 +275,21 @@ uv run pytest tests/ -q     # full suite (MCP tool boundary + distillation + lif
 uv run mypy src/compound_memory/
 ```
 
-Test seams: the MCP tool boundary via in-process `mcp.Client(server)` (no subprocess) plus unit tests for core modules (scoring / index / store ops). CI runs tests, type checks, and a pure-wheel install smoke across Python 3.11/3.12/3.13.
+Test seams: the MCP tool boundary via in-process `mcp.Client(server)` (no subprocess) plus unit tests for core modules (scoring / index / store ops). CI runs tests, type checks, and a pure-wheel install smoke on Linux and Windows across Python 3.11/3.12/3.13.
+
+## Platform support
+
+Python ≥ 3.11 on macOS, Linux, and Windows.
+
+| | macOS / Linux | Windows |
+|---|---|---|
+| Install | `pip` / `uv` wheel or a clone | Same. CI installs the pure wheel and runs `init` / `write` / `search` / the server entry point |
+| Write lock | `flock`, waits until the lock is free | `msvcrt` byte-range lock, polls up to 30s. If the wait expires the write **fails** (`WriteLockError`); it does not continue unlocked |
+| Lock file cannot be created | Warning, write proceeds unlocked | Same. This is a broken filesystem, not lock contention |
+| File permissions | POSIX mode bits preserved on atomic replace | No POSIX permissions; the permission-align step is skipped |
+| Vector recall | Optional `vec` extra + a local BGE model | Same code path. Windows CI does not install the `vec` extra; missing it is lexical search, reported by `stats.retrieval` |
+| Scheduled distill prep | launchd, systemd user timer, or cron | No first-party Task Scheduler template; point cron or Task Scheduler at `scripts/distill-prepare.sh` yourself |
+| Git history | `git` on `PATH` | Same |
 
 ## Release
 

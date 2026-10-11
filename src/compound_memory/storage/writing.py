@@ -18,7 +18,7 @@ from typing import Any, Protocol, overload
 
 from ..model import MEMORY_TYPES, TTL_DAYS, TYPE_SPEC, Memory
 from ..review_queue import ReviewQueue
-from .validation import check_key, check_project, check_validity
+from .validation import check_content_size, check_key, check_project, check_validity
 
 
 class WritingDeps(Protocol):
@@ -126,6 +126,7 @@ def write_new(
     批式经 batch()（_commit 单点拦截）。tests 亦用它播种 write 会正当拒绝的
     外部 ns fixture（显式字段落库的测试种子）。evidence 仅蒸馏产物传显式零块
     （ADR-0008）；普通写保持 None——无块记忆靠惰性迁移语义（ADR-0007）。"""
+    check_content_size(content)  # 超限在落盘前拒绝（#60），write/batch/distill 共用这一处
     if type not in MEMORY_TYPES:
         raise ValueError(f"type must be one of {MEMORY_TYPES}, got: {type!r}")
     check_key(key)

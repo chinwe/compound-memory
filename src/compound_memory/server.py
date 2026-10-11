@@ -10,6 +10,7 @@ memory_feedback 是一等公民——复利闭环依赖它。
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, Callable
@@ -19,6 +20,9 @@ from mcp.server.mcpserver import MCPServer
 from .embedding import auto_encoder
 from .model import TYPE_SPEC
 from .storage import MEMORY_TYPES, MemoryStore, default_root
+from .storage.validation import ATTESTATION_WARNING, MAX_CONTENT_CHARS
+
+logger = logging.getLogger(__name__)
 
 mcp = MCPServer("compound-memory")
 
@@ -41,7 +45,9 @@ _WRITE_DESCRIPTION = (
     "joined by dashes) for workspace-specific memories — tagged memories are hidden from searches "
     "that do not pass the same project, while untagged (global) memories stay visible everywhere; "
     "declare your workspace project per the host usage rules and pass it on every write/search in "
-    "that workspace. Returns the stored memory; `conflict: true` means a different version with "
+    "that workspace. content is capped at "
+    f"{MAX_CONTENT_CHARS} characters — longer payloads are rejected and nothing is written. "
+    "Returns the stored memory; `conflict: true` means a different version with "
     "the same key exists and a review entry was queued."
 )
 
@@ -111,11 +117,12 @@ def memory_search(
     project: str | None = None,
     explain: bool = False,
 ) -> dict[str, Any]:
-    """Search memories. Fuses lexical (BM25) and, when the vec extra + model are installed, vector (BGE) recall via RRF; otherwise falls back to lexical only. Each hit's 'similarity' field carries the normalized RRF fusion score (fused/rrf_max) in dual-channel mode, or the normalized BM25 score in lexical-only (linear) mode; per-hit rank components and the evidence summary come via explain=true. Confidence/recency/type act only as a small tie-break. Default scope is _shared PLUS your own private 'agent-<name>' namespace (when your identity is known via attested process id or explicit reader) — private hits surface automatically, no extra query needed. Pass ns explicitly ('_shared' or 'agent-<name>') to search a single namespace. project: your workspace project slug — results span global memories plus that project's; omit it and ONLY global (untagged) memories are returned (fail-closed: project memories never leak into general sessions). Each hit embeds up to 3 trimmed one-hop neighbors (active only, project-filtered) unless include_neighbors=False. explain: optional debugging carrier — pass true to attach a per-hit 'explain' object (lexical/vector rank, RRF score, prior term breakdown, retrieval channel) plus an 'evidence' summary line (outcome counts, last_verified, origin); omitted by default so the default hit shape stays unchanged. reader: your own source agent id — REQUIRED when ns is 'agent-<name>' (private namespace, readable only by its owner host). Returns {'hits': [...]} sorted by score. Compounding rule: after actually adopting a hit, call memory_feedback (agent = your source id) — skipped feedbacks leave the store static."""
-    hits = _store_or_configure().search(
+    """Search memories. Fuses lexical (BM25) and, when the vec extra + model are installed, vector (BGE) recall via RRF; otherwise falls back to lexical only. The response always includes `retrieval` `{mode, reason}`: mode is `vector` or `lexical`, and reason is set when the vector channel is off or the last recall failed (embedder-unavailable, engine-unavailable, or degraded) so a lexical-only fallback is visible without a separate tool. Each hit's 'similarity' field carries the normalized RRF fusion score (fused/rrf_max) in dual-channel mode, or the normalized BM25 score in lexical-only (linear) mode; per-hit rank components and the evidence summary come via explain=true. Confidence/recency/type act only as a small tie-break. Default scope is _shared PLUS your own private 'agent-<name>' namespace (when your identity is known via attested process id or explicit reader) — private hits surface automatically, no extra query needed. Pass ns explicitly ('_shared' or 'agent-<name>') to search a single namespace. project: your workspace project slug — results span global memories plus that project's; omit it and ONLY global (untagged) memories are returned (fail-closed: project memories never leak into general sessions). Each hit embeds up to 3 trimmed one-hop neighbors (active only, project-filtered) unless include_neighbors=False. explain: optional debugging carrier — pass true to attach a per-hit 'explain' object (lexical/vector rank, RRF score, prior term breakdown, retrieval channel) plus an 'evidence' summary line (outcome counts, last_verified, origin); omitted by default so the default hit shape stays unchanged. reader: your own source agent id — REQUIRED when ns is 'agent-<name>' (private namespace, readable only by its owner host). Returns {'hits': [...], 'count', 'retrieval'} sorted by score. Compounding rule: after actually adopting a hit, call memory_feedback (agent = your source id) — skipped feedbacks leave the store static."""
+    store = _store_or_configure()
+    hits = store.search(
         query=query, ns=ns, top_k=top_k, include_neighbors=include_neighbors, reader=reader, project=project, explain=explain
     )
-    return {"hits": hits, "count": len(hits)}
+    return {"hits": hits, "count": len(hits), "retrieval": store.retrieval_status()}
 
 
 @mcp.tool(structured_output=False)
@@ -137,10 +144,20 @@ def memory_feedback(mem_id: str, agent: str, outcome: str = "success") -> dict[s
 
 
 def main() -> None:
+    agent_id = os.environ.get("COMPOUND_MEMORY_AGENT_ID") or None
     if _store is None:
-        # 生产入口自动挂向量路（vec extra + 模型就绪才生效，否则静默降级纯词面）；
-        # 宿主经 COMPOUND_MEMORY_AGENT_ID 注入进程身份，未设置则保持自报身份模式
-        configure(embedder=auto_encoder(), agent_id=os.environ.get("COMPOUND_MEMORY_AGENT_ID") or None)
+        # 生产入口自动挂向量路（vec extra + 模型就绪才生效，否则降级纯词面）；
+        # 宿主必须经 COMPOUND_MEMORY_AGENT_ID 注入进程身份。未设置仍能跑（单机自用），
+        # 但启动日志与 stats.attestation 标明身份可被伪造（#57）。
+        configure(embedder=auto_encoder(), agent_id=agent_id)
+    if not agent_id:
+        logger.warning("%s", ATTESTATION_WARNING)
+    retrieval = _store_or_configure().retrieval_status()
+    if retrieval["mode"] == "lexical":
+        logger.warning(
+            "vector recall unavailable (%s); search is lexical-only",
+            retrieval["reason"],
+        )
     mcp.run()
 
 

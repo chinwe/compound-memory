@@ -43,9 +43,15 @@ uv run python experiments/longmemeval/eval_retrieval.py \
 
 ## 性能注记
 
-灌库不走 `store.write()`：逐条 `_sync_indexes` 在 tokens.json 全量重写下是 O(n²)，
-2.4 万条会话不可行。`ingest.py` 直接 `_save` 落盘 + 一次性 `rebuild_index()`
-（experiments 旁路脚本允许使用内部路径；生产 API 不受影响）。
+灌库走 `store.batch()`（`experiments/longmemeval/ingest.py`）：批内逐条 `write`
+校验语义与单条相同，词法索引落盘和（`--vector` 时）向量编码收拢到批尾一次。
+逐条 `_sync_indexes` 在 tokens.json 全量重写下是 O(n²)，2.4 万条会话不可行，
+所以脚本不再绕过 `_save`，也不再在批尾另跑 `rebuild_index()`。每题的私有 ns
+以该 ns 属主身份写入（`source` = `agent-lme-<question_id>`）。
+
+复现命令见上一节：词面全量用 `--root experiments/longmemeval/data/stores-lex-500`；
+向量 pilot 加 `--limit 50 --vector`（需 vec extra 与本地 BGE 模型）。mapping
+默认写到 `experiments/longmemeval/runs/`，可用 `--mapping-out` 改路径。
 
 ## 结果
 

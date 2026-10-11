@@ -1,10 +1,10 @@
 """Windows 专属锁路径（#55）：msvcrt 分支在非 Windows 平台整文件跳过，
 由 CI 的 windows-latest 矩阵真实执行——macOS 本地跑不到，不构成已验证。
 
-锁的平台语义（等待上界、降级哲学）单点在 locking 模块 docstring，此处不
-复述；本文件只验证跨平台等价的那部分契约：跨进程争锁必须在对方释放后才
-获准，且是在 LK_LOCK 重试窗内等到、而非骑上 10 秒降级路径混进临界区。
-LK_LOCK 超窗走降级的路径两平台共用，已由 test_concurrency 的降级用例覆盖。
+锁的平台语义（等待上界、超时 fail-closed）单点在 locking 模块 docstring，
+此处不复述；本文件只验证跨平台等价的那部分契约：跨进程争锁必须在对方
+释放后才获准，且是在轮询窗内等到、而非超时后无锁混进临界区。超时拒绝
+写入由 test_concurrency 的 fail-closed 用例覆盖（不依赖 Windows）。
 """
 
 from __future__ import annotations
@@ -65,5 +65,5 @@ def test_second_process_waits_for_release(tmp_path: Path) -> None:
     finally:
         proc.wait(timeout=15)
     # 功能性互斥断言（非性能钉）：哨兵后持锁方还睡 2 秒，下界 1 秒、
-    # 上界 9 秒（LK_LOCK 窗约 10 秒，留 1 秒余量）
+    # 上界 9 秒（远小于 30 秒超时，排除「超时后无锁混入」）
     assert 1.0 <= waited < 9.0, f"exclusion broken or degraded: acquired after {waited:.2f}s"

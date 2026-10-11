@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from compound_memory.storage import MemoryStore
+from compound_memory.storage.validation import MAX_CONTENT_CHARS
 from conftest import CLOCK_DATE, sandbox_safe_remove
 
 # 非法 ns 样本：穿越、glob 元字符、路径分隔、空白、非 ASCII——共同点是
@@ -177,3 +178,17 @@ class TestKeyFormat:
         for key in (None, ""):
             mem = store.write("keyless note", type="episode", source="agent-x", key=key)
             assert mem["key"] in (None, "")
+
+
+class TestContentSize:
+    def test_at_limit_is_stored(self, store: MemoryStore):
+        content = "x" * MAX_CONTENT_CHARS
+        mem = store.write(content, type="fact", source="agent-a")
+        assert store.find(mem["id"]) is not None
+        assert len(store.find(mem["id"]).content) == MAX_CONTENT_CHARS  # type: ignore[union-attr]
+
+    def test_over_limit_writes_nothing(self, store: MemoryStore):
+        before = list(store.ns_root.rglob("*.md"))
+        with pytest.raises(ValueError, match="exceeds"):
+            store.write("x" * (MAX_CONTENT_CHARS + 1), type="fact", source="agent-a")
+        assert list(store.ns_root.rglob("*.md")) == before
