@@ -3,6 +3,7 @@
 - Ticket: [chinwe/compound-memory#2](https://github.com/chinwe/compound-memory/issues/2)
 - 分支: `research/distillation-precedents`
 - Status: done（结论供票 003 蒸馏执行者、票 004 管线形状使用）
+- 现行设计以 ADR 0001 与 CLI `distill-plan` / `distill-apply` 为准。下文的 `distill` / `consolidate` 命令名，以及「类型原地晋升」（episode → fact → insight），是调研当时的接口建议，没有按字落地：类型终身不变，晋升是蒸馏新写一条记忆。
 - 方法：只采一手来源（源码 / 官方文档 / 论文 / 官方帮助中心），二手文章仅作导航。所有关键论断标注来源链接。
 
 ## 逐家机制

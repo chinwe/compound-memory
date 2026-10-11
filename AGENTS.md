@@ -20,7 +20,7 @@
   - `scoring.rank`：排序管线与搜索结果形状的唯一位置（权重常量 W_SIM/W_CONF/W_RECENCY/W_TYPE 定义在 scoring.py，改权重只改那里）；
   - `Index`：拥有"活动记忆必被索引、归档必不在索引"不变量，缓存损坏自动重建、检索降级不报错；活性是 store 级的——读路径自动检测跨进程缓存更新（重载）与带外新增/删除文件（目录 mtime 重建，探测共用 `liveness.dirs_newer_than` 单点），手编已有文件**内容**需显式 `rebuild-index`；
   - `MemoryStore.batch`：批量落库正门（逐条校验写穿、批尾一次索引 flush + 一次 commit；失败语义"落地即已提交"，嵌套即 ValueError）。灌库/蒸馏类批量写入一律走它，勿绕过直用 `_save`（experiments 旁路已迁移）；向量侧批尾一次性批量编码，`Index`/`VectorIndex` 的 `defer`/`flush_pending` 仅 batch 调用；锁与 batch 协调体（WriteLocker/_Batch/defer_commit）单点在 `storage/locking.py`；
-  - `MemoryStore._write_lock`：写动词（write/feedback/link/decay/revive/review-resolve/batch）的**读-改-写**全程持锁——按 id 读与门禁也在锁内，`find` 在锁外时并发 feedback 同一记忆丢 uses/confidence（2026-10-05 并发测试实证 13/16）。新增写动词先对这条自查；锁本体在 `storage/locking.py`（facade `_write_lock` 是薄委托）；文件写出共用 `atomic_write_text`（index.py，原子替换 + 唯一临时名 + 权限对齐），勿另写 mkstemp；
+  - `MemoryStore._write_lock`：写动词（write/feedback/link/decay/revive/forget/review-resolve/batch）的**读-改-写**全程持锁——按 id 读与门禁也在锁内，`find` 在锁外时并发 feedback 同一记忆丢 uses/confidence（2026-10-05 并发测试实证 13/16）。新增写动词先对这条自查；锁本体在 `storage/locking.py`（facade `_write_lock` 是薄委托）。POSIX `flock` 阻塞直到获得；Windows `msvcrt` 轮询至多 30 秒，超时或加锁失败抛 `WriteLockError`（拒绝无锁写）；只有锁文件创建失败才 warning 后无锁继续。文件写出共用 `atomic_write_text`（index.py，原子替换 + 唯一临时名 + 权限对齐；无 `fchmod` 的平台跳过权限位），勿另写 mkstemp；
   - `storage/writing.py` 的 `write_new`：落库核心，write/batch/distill_apply/tests 四方共用（勿再复制第二份落库编排）；
   - `storage/indexing.py` 的 `sync_indexes`：全部写路径的索引收口物理单点（活动必入索引、归档必移出），勿绕过直改两份缓存；
   - `extraction.HOSTS`：宿主 transcript 知识单一定义点（parser / 内容嗅探 / 批量 glob / 提示文案 / CLI 帮助全由表生成），新增宿主 = 一个函数 + 一行表，勿在别处加分支；公共尾部（剥壳滤注入去重）用 `collect_user_texts`；

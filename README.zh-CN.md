@@ -173,7 +173,7 @@ uv run compound-memory stats
 }
 ```
 
-当前 `stats` 还会带 `retrieval`（`mode` 为 `vector` 或 `lexical`，向量路关闭时带 `reason`）和 `attestation`（是否注入了 `COMPOUND_MEMORY_AGENT_ID`，未注入时 `warning` 非空）。MCP `memory_search` 带同一份 `retrieval`；CLI `search` 仍是裸数组。
+当前 `stats` 还会带 `retrieval`（`mode` 为 `vector` 或 `lexical`，向量路关闭时带 `reason`）、`attestation`（是否注入了 `COMPOUND_MEMORY_AGENT_ID`，未注入时 `warning` 非空）和 `expired_active`（活动区里 `valid_until` 已过的条数；本快照为 0，上面的 JSON 沿用 v0.4.0 截断）。`cross_validated` 统计的是 `validated_by` 里至少有两个不同 agent 的记忆条数——上面那一次跨宿主首验把它留在 0 是对的。MCP `memory_search` 带同一份 `retrieval`；CLI `search` 仍是裸数组。
 
 三个看点：
 
@@ -200,7 +200,7 @@ Agent (MCP 客户端 / CLI)
 
 | 利息来源 | 实现 |
 |---|---|
-| ① 使用强化 | `memory_feedback` 带 outcome。缺省 `success`：uses+1、confidence +0.1。`failure`：confidence −0.2（地板 0.05，重复累计）。`contradiction`：数值冻结并登记冲突队列。`obsolete`：立即归档。`unknown`：只记事件，数值不动 |
+| ① 使用强化 | 每次 `memory_feedback` 都推进 `uses` 与 `last_used`。置信度按 outcome 折算。缺省 `success`：+0.1。`failure`：−0.2（地板 0.05，重复累计）。`contradiction`：数值冻结并登记冲突队列。`obsolete`：立即归档。`unknown`：只记事件，置信度不动 |
 | ② 关联增值 | `memory_link` 双向关联；`memory_get` 带出一度邻居；`search` 命中自动内嵌精简邻居（上限 3、只召回活动记忆，`--no-neighbors` 可关） |
 | ③ 蒸馏提纯 | `distill-plan`（CLI，确定性候选+双信号去重标注）→ Agent 判断 → `distill-apply` 原子落库（产物 links 溯源，源归档可复活） |
 | ④ 跨 Agent 验证 | 仅 `success`：与 source 不同的宿主**首次**反馈再 +0.15（每宿主每记忆一次，记入 `validated_by`） |
@@ -246,7 +246,7 @@ uv sync --extra dev              # 首次克隆后初始化 .venv（之后 uv ru
 
 uv run compound-memory init               # 初始化空库
 uv run compound-memory write "Vercel Serverless 10s 超时" episode agent-workbuddy
-uv run compound-memory search "Vercel 超时"     # 命中内嵌一度邻居（上限3，--no-neighbors 关闭）
+uv run compound-memory search "Vercel 超时"     # 缺省 top_k=5；命中内嵌一度邻居（上限3，--no-neighbors 关闭）
 uv run compound-memory feedback <id> agent-claude
 uv run compound-memory decay          # cron 定时跑
 uv run compound-memory revive <id>    # 复活归档记忆（CLI 唯一入口）
@@ -290,13 +290,13 @@ systemctl --user enable --now compound-memory-distill-prepare.timer
 systemctl --user list-timers | grep compound-memory   # 验证已加载
 ```
 
-**cron（其他环境）**：`crontab -e` 加入（sed 填充占位符后）：
+**cron（其他环境）**：模板在 `scripts/compound-memory-distill-prepare.cron.example`。`crontab -e` 加入（sed 填充占位符后）：
 
 ```
 0 9 * * * UV_BIN=$HOME/.local/bin/uv COMPOUND_MEMORY_ROOT=$HOME/.agents/memory /bin/sh <仓库>/scripts/distill-prepare.sh >> $HOME/.agents/memory/distill/prepare.log 2>&1
 ```
 
-失败要响亮：脚本 `set -eu`，任何一步失败以非 0 退出（`launchctl list` / `systemctl --user list-units` / cron 邮件可见，日志落 distill/prepare.log）。`distill/` 是运行时产物目录（自动加入库 .gitignore），不产生 commit 噪声——只有 Agent 判断后跑 `distill-apply` 才落一次原子 commit。
+失败要响亮：脚本 `set -eu`，任何一步失败以非 0 退出（`launchctl list` / `systemctl --user list-timers` / cron 邮件可见，日志落 distill/prepare.log）。`distill/` 是运行时产物目录（自动加入库 .gitignore），不产生 commit 噪声——只有 Agent 判断后跑 `distill-apply` 才落一次原子 commit。
 
 ## 开发
 

@@ -41,10 +41,10 @@ uv run --directory <仓库> compound-memory init
 | Tool | 用途 | 关键点 |
 |---|---|---|
 | `memory_write` | 写入记忆 | `type`: episode/fact/insight/skill/decision；`source`: 写入方 agent id；fact/insight/decision 建议带稳定 `key`；可选 `valid_from`/`valid_until`（ISO 日期）标注事实有效期——`valid_until` 已过的事实退出检索结果，但 `memory_get` 仍可读；可选 `project`（小写 slug）标注项目作用域——标注后仅同项目会话检索可见，缺省全局。`content` 超过 262144 字符拒绝且不落盘 |
-| `memory_search` | 检索 | 返回 `{"hits": [...], "count", "retrieval"}` 按分数排序。`retrieval.mode` 为 `vector` 或 `lexical`（向量 extra/模型/引擎不可用或当次召回失败时为 lexical，并带 `reason`），词面降级因此可见。命中自动内嵌最多 3 条一度邻居；`include_neighbors=False` 可关。不传 `ns` 时双通道检索：`_shared` + 调用方自有私有 ns（身份已知时，私有条目自动带出）；显式传 `ns` 只搜该 ns，查 `agent-*` 时必带 `reader`（自己的 agent id），缺省即拒绝。可选 `project`（小写 slug）：**fail-closed**——不传只见全局记忆，传了见 全局 ∪ 该项目。可选 `explain: true`（排障面，#44）：每 hit 附加排序分量对象（词面/向量 rank、RRF 分、先验折算项、检索通道）与证据摘要行，缺省 hit 形状不变。CLI `search` 仍是裸数组，模式看 `stats.retrieval` |
-| `memory_get` | 按 id 取回 | 恒含 `found` 键；默认带一度邻居；目标在私有 ns 时必带 `reader`，缺省即拒绝。按 id 恒可读（project 不限制 get 本体）；可选 `project` 只用于邻居带出的适用性过滤（邻居=全局 ∪ 该项目） |
+| `memory_search` | 检索 | 返回 `{"hits": [...], "count", "retrieval"}` 按分数排序，缺省 `top_k=5`（要看覆盖面须显式放大）。`retrieval.mode` 为 `vector` 或 `lexical`（向量 extra/模型/引擎不可用或当次召回失败时为 lexical，并带 `reason`），词面降级因此可见。命中自动内嵌最多 3 条一度邻居（正文截到 80 字，不含归档邻居）；`include_neighbors=False` 可关。不传 `ns` 时双通道检索：`_shared` + 调用方自有私有 ns（身份已知时，私有条目自动带出）；显式传 `ns` 只搜该 ns，查 `agent-*` 时必带 `reader`（自己的 agent id），缺省即拒绝。可选 `project`（小写 slug）：**fail-closed**——不传只见全局记忆，传了见 全局 ∪ 该项目。可选 `explain: true`（排障面，#44）：每 hit 附加排序分量对象（词面/向量 rank、RRF 分、先验折算项、检索通道）与证据摘要行，缺省 hit 形状不变。CLI `search` 仍是裸数组，模式看 `stats.retrieval` |
+| `memory_get` | 按 id 取回 | 恒含 `found` 键；默认带一度邻居，不设条数上限、正文完整，并保留归档邻居（蒸馏溯源；与 search 的「最多 3 条、截断、排除归档」不同）。`valid_until` 已过的邻居两边都不展开正文。目标在私有 ns 时必带 `reader`，缺省即拒绝。按 id 恒可读（project 不限制 get 本体）；可选 `project` 只用于邻居带出的适用性过滤（邻居=全局 ∪ 该项目） |
 | `memory_link` | 双向关联两条记忆 | 复利来源②：关联带出；两条记忆必须同 ns，跨 ns 链被拒绝；私有 ns 记忆仅属主可连（`agent` 填自己的 agent id） |
-| `memory_feedback` | 上报"这条记忆被实际采纳了"（可带 outcome） | 缺省 `outcome=success`：uses+1、conf+0.1；**跨宿主首验额外 +0.15**（每宿主每记忆一次）。可选 outcome：`failure` 误导（conf −0.2，地板 0.05，重复累计）；`contradiction` 争议（conf 冻结、入冲突队列待裁决）；`obsolete` 被取代（立即归档）；`unknown` 只记事件。归档记忆被 feedback 自动复活（obsolete 除外）；私有 ns 记忆仅属主可反馈。**采纳后必须调用**；用错了要如实报 failure——置信度是证据正确性，只升不降会掩护错误记忆 |
+| `memory_feedback` | 上报"这条记忆被实际采纳了"（可带 outcome） | 每个 outcome 都推进 uses 与 last_used。缺省 `outcome=success`：conf+0.1；**跨宿主首验额外 +0.15**（每宿主每记忆一次）。可选 outcome：`failure` 误导（conf −0.2，地板 0.05，重复累计）；`contradiction` 争议（conf 冻结、入冲突队列待裁决）；`obsolete` 被取代（立即归档）；`unknown` 只记事件，置信度不动。归档记忆被 feedback 自动复活（obsolete 除外）；私有 ns 记忆仅属主可反馈。**采纳后必须调用**；用错了要如实报 failure——置信度是证据正确性，只升不降会掩护错误记忆 |
 
 ### 统一约定（各宿主必须一致）
 
@@ -256,6 +256,9 @@ dsh 通过 MCP client 插件 `@deepseek-ai/dsh-mcp-client` 接入，一个插件
 ```bash
 uv run compound-memory stats          # 健康度：uses/confidence 固定桶 + 活性 + 蒸馏产出量
                                       #   + retrieval（vector/lexical）+ attestation（进程身份是否注入）
+                                      #   + expired_active（活动区里 valid_until 已过）
+                                      #   + cross_validated（validated_by 去重后 ≥2 的条数，
+                                      #     不是「有过一次跨宿主反馈」）
 uv run compound-memory explain <id> [--reader <agent id>]  # 按 id 证据视图（#44）：证据计数
                                       #   （success/failure/contradiction、last_verified、recent 明细）、
                                       #   跨宿主验证明细（validated_by）、派生标记（蒸馏产物零证据起点）、
@@ -318,5 +321,5 @@ launchd（macOS）/ systemd user timer（Linux）/ cron 每天 09:00 自动把�
 | 项目记忆检索不到 / 报 `project must match` | 检索缺省 fail-closed 只见全局记忆：核对调用方 `project` 参数（或 CLI `COMPOUND_MEMORY_PROJECT`）与记忆标注一致；slug 格式与 key 相同（小写字母数字段短横线连接，禁大写/下划线/空格）；按 id `memory_get` 恒可读，可先取回核对 frontmatter |
 | `stats.attestation.warning` 或启动日志提到 `COMPOUND_MEMORY_AGENT_ID is unset` | 宿主 MCP env 没注入进程身份。多 Agent 共享库必须补上稳定的 `COMPOUND_MEMORY_AGENT_ID` 后重启 server；未注入时调用方可以冒充其他 agent |
 | 写入报 `content exceeds` | 正文超过 262144 字符，本次没有落盘。改成短事实或只存指针 |
-| 同 key 写入返回 `conflict: true` | 内容与既有版本不同，已入 `review-queue.md`；裁决（人或主治 Agent）后把废置版本归档：置 frontmatter `archived: true` 移入 `archive/<ns>/<type>/` 并删活动文件（等价 decay 语义），再 `rebuild-index`，记忆库 git 留一条审计 commit |
-| 记忆被归档了 | 按 id `memory_get` 可取回；对它 `memory_feedback` 或 `revive` 即恢复可检索 |
+| 同 key 写入返回 `conflict: true` | 内容与既有版本不同，已入 `review-queue.md`。裁决后跑 `review-resolve <废置id>`：清行并自动归档废置方（索引同步、一次 commit）。不要手改 frontmatter 再搬文件——那会绕过清行与索引收口。`--all` 只清行不归档；私有 `agent-*` 行加 `--reader` |
+| 记忆被归档了 | 按 id `memory_get` 可取回；对它 `memory_feedback`（obsolete 除外）或 `revive` 即恢复可检索。`forget` 之后文件已不在，get / feedback / revive 都是 `found: false`，恢复只能走记忆库 git |

@@ -25,7 +25,7 @@
         },
         {
           "name": "COMPOUND_MEMORY_AGENT_ID",
-          "description": "Agent id for this host (e.g. agent-claude); enables process-identity enforcement",
+          "description": "Stable host agent id (e.g. agent-claude). Required for a multi-agent store: process identity wins over a self-reported source. Unset is only for a single trusted caller; stats.attestation.warning and the server log say so",
           "isRequired": false,
           "format": "string",
           "isSecret": false
