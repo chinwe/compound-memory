@@ -328,6 +328,43 @@ class TestDistillPrepareScript:
         assert plan["candidates"] == []
         assert "distill/" in (root / ".gitignore").read_text(encoding="utf-8")
 
+    @pytest.mark.skipif(not _uv_available(), reason="uv unavailable (not on PATH, no ~/.local/bin/uv)")
+    def test_prepare_script_expands_tilde_root_under_home(self, tmp_path):
+        """脚本经 default_root() 展开 ~，不在 cwd 下建字面量 ~ 目录。
+
+        家目录指到临时目录：验证展开落点，不碰真实 home。Windows 的
+        expanduser 认 USERPROFILE 而非 HOME，两个都要指过去。
+        """
+        repo = Path(__file__).resolve().parents[1]
+        home = tmp_path / "home"
+        work = tmp_path / "work"
+        home.mkdir()
+        work.mkdir()
+        uv = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv")
+        env = {
+            **os.environ,
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "COMPOUND_MEMORY_ROOT": "~/.agents/memory",
+            "UV_BIN": uv,
+        }
+        if os.name == "nt":
+            drive, tail = os.path.splitdrive(str(home))
+            env["HOMEDRIVE"] = drive
+            env["HOMEPATH"] = tail or "\\"
+        env.pop("PYTHONPATH", None)
+        proc = subprocess.run(
+            ["sh", str(repo / "scripts" / "distill-prepare.sh")],
+            env=env,
+            cwd=work,
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        plan = home / ".agents" / "memory" / "distill" / "last-plan.json"
+        assert plan.is_file(), f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
+        assert not (work / "~").exists()
+
     def test_launchagent_plist_template_is_valid(self, tmp_path):
         repo = Path(__file__).resolve().parents[1]
         text = (repo / "scripts" / "com.compound-memory.distill-prepare.plist.tmpl").read_text(encoding="utf-8")

@@ -17,12 +17,12 @@ compound-memory 是本地多 Agent 共享记忆库（存储 `~/.agents/memory`�
 
 ## 1. 通用接入参数
 
-所有宿主都是 stdio 方式启动同一个 MCP server，只有三个要素。下文示例中 `~` 表示用户主目录，`<仓库>` 为本仓库的克隆位置；宿主配置若不展开这些占位写法，替换为本机绝对路径即可。
+所有宿主都是 stdio 方式启动同一个 MCP server，只有三个要素。下文示例中 `~` 表示用户主目录，`<仓库>` 为本仓库的克隆位置。`command` / `args` 里的 `~` 与 `<仓库>` 由宿主原样启动，不展开时写成绝对路径。`COMPOUND_MEMORY_ROOT` 由程序展开前缀 `~` 与 `$HOME` / `${HOME}`，未设置或空白则回退 `$HOME/.agents/memory`；JSON / YAML 的 env 块不经 shell，示例写成 `$HOME/.agents/memory`。
 
 | 项 | 值 |
 |---|---|
 | 启动命令 | `uv run --directory <仓库> compound-memory-server` |
-| `COMPOUND_MEMORY_ROOT` | `~/.agents/memory`（可省略，省略即此默认值） |
+| `COMPOUND_MEMORY_ROOT` | 可省略。`~` 与 `$HOME` 前缀会展开；省略或空白即 `$HOME/.agents/memory` |
 
 **运行环境（uv）**：项目由 uv 管理（`pyproject.toml` + `uv.lock`），uv 不在 PATH 时用 `~/.local/bin/uv`。宿主配置的 `command` 写 uv 绝对路径、`args` 带 `--directory <仓库>`，依赖环境由 `uv run` 自管——首次克隆先 `uv sync --extra dev` 建 `.venv`。启动走 console script `compound-memory-server`（uv 自身输出走 stderr，不污染 MCP 的 stdio 协议）。
 
@@ -68,7 +68,7 @@ uv run --directory <仓库> compound-memory init
       "command": "~/.local/bin/uv",
       "args": ["run", "--directory", "<仓库>", "compound-memory-server"],
       "env": {
-        "COMPOUND_MEMORY_ROOT": "~/.agents/memory",
+        "COMPOUND_MEMORY_ROOT": "$HOME/.agents/memory",
         "COMPOUND_MEMORY_AGENT_ID": "agent-workbuddy"
       }
     }
@@ -100,7 +100,7 @@ uv run --directory <仓库> compound-memory init
         "command": "~/.local/bin/uv",
         "args": ["run", "--directory", "<仓库>", "compound-memory-server"],
         "env": {
-          "COMPOUND_MEMORY_ROOT": "~/.agents/memory",
+          "COMPOUND_MEMORY_ROOT": "$HOME/.agents/memory",
           "COMPOUND_MEMORY_AGENT_ID": "agent-zcode"
         }
       }
@@ -160,7 +160,7 @@ claude mcp add compound-memory \
       "command": "~/.local/bin/uv",
       "args": ["run", "--directory", "<仓库>", "compound-memory-server"],
       "env": {
-        "COMPOUND_MEMORY_ROOT": "~/.agents/memory",
+        "COMPOUND_MEMORY_ROOT": "$HOME/.agents/memory",
         "COMPOUND_MEMORY_AGENT_ID": "agent-claude"
       }
     }
@@ -186,7 +186,7 @@ dsh 通过 MCP client 插件 `@deepseek-ai/dsh-mcp-client` 接入，一个插件
       command: ~/.local/bin/uv
       args: ['run', '--directory', '<仓库>', 'compound-memory-server']
       env:
-        COMPOUND_MEMORY_ROOT: ~/.agents/memory
+        COMPOUND_MEMORY_ROOT: "$HOME/.agents/memory"
         COMPOUND_MEMORY_AGENT_ID: agent-deepseek
       failOnStartupError: true
 ```

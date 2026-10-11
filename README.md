@@ -26,7 +26,7 @@ Every agent session starts from zero: preferences get re-asked, project conventi
 Paste this one-liner into your coding agent (Claude Code, Cursor, ZCode, …) and let it do the rest:
 
 ```text
-Set up compound-memory (https://github.com/chinwe/compound-memory) — a local-first multi-agent shared memory (MCP server + CLI) — on this machine: install it (`uv tool install compound-memory`, or clone the repo and `uv sync --extra dev`), initialize the store (`compound-memory init`, defaults to ~/.agents/memory), register its stdio MCP server in this host's MCP config — command `compound-memory-server` (PyPI install) or `uvx --from compound-memory compound-memory-server`, env `COMPOUND_MEMORY_ROOT=~/.agents/memory` and `COMPOUND_MEMORY_AGENT_ID=agent-<your-host-id>` — then verify by calling `memory_search` and expecting a `{"hits": [...]}` response; if the host needs a restart to load MCP servers, tell me. Host-specific configs and the usage protocol: docs/agent-integration.md in the repo.
+Set up compound-memory (https://github.com/chinwe/compound-memory) — a local-first multi-agent shared memory (MCP server + CLI) — on this machine: install it (`uv tool install compound-memory`, or clone the repo and `uv sync --extra dev`), initialize the store (`compound-memory init`, defaults to ~/.agents/memory), register its stdio MCP server in this host's MCP config — command `compound-memory-server` (PyPI install) or `uvx --from compound-memory compound-memory-server`, env `COMPOUND_MEMORY_ROOT=$HOME/.agents/memory` and `COMPOUND_MEMORY_AGENT_ID=agent-<your-host-id>` — then verify by calling `memory_search` and expecting a `{"hits": [...]}` response; if the host needs a restart to load MCP servers, tell me. Host-specific configs and the usage protocol: docs/agent-integration.md in the repo.
 ```
 
 ### For humans
@@ -46,7 +46,7 @@ uv tool install compound-memory   # or: pip install compound-memory
 
 #### 2. Initialize your store
 
-Defaults to `~/.agents/memory`; override with the `COMPOUND_MEMORY_ROOT` env var.
+Defaults to `~/.agents/memory`; override with the `COMPOUND_MEMORY_ROOT` env var. A leading `~` or `$HOME` is expanded; a blank override falls back to the default.
 
 ```bash
 uv run compound-memory init
@@ -64,7 +64,7 @@ This lets your everyday agents read/write the shared store automatically:
       "command": "uv",
       "args": ["run", "--directory", "<repo>", "compound-memory-server"],
       "env": {
-        "COMPOUND_MEMORY_ROOT": "~/.agents/memory",
+        "COMPOUND_MEMORY_ROOT": "$HOME/.agents/memory",
         "COMPOUND_MEMORY_AGENT_ID": "agent-<your-host-id>"
       }
     }
