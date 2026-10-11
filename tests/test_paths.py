@@ -6,6 +6,7 @@ home，未设置或空白则回退默认路径——字面量 ``~`` 目录会和
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,29 @@ def test_home_var_prefix_resolves_under_real_home(monkeypatch: pytest.MonkeyPatc
     """JSON env 块不经 shell，$HOME 前缀仍要落到真实 home。"""
     monkeypatch.setenv("COMPOUND_MEMORY_ROOT", raw)
     assert default_root() == _DEFAULT
+
+
+def test_tilde_follows_pinned_platform_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """~ 跟着平台 home，不跟着「另一个」家目录变量。
+
+    POSIX 的 expanduser / Path.home() 读 HOME。Windows 先读 USERPROFILE
+    （没有才拼 HOMEDRIVE+HOMEPATH），不读 HOME——只改 HOME 会把记忆库写进真实用户目录。
+    """
+    pinned = tmp_path / "home"
+    other = tmp_path / "other"
+    pinned.mkdir()
+    other.mkdir()
+    if os.name == "nt":
+        monkeypatch.setenv("USERPROFILE", str(pinned))
+        drive, tail = os.path.splitdrive(str(pinned))
+        monkeypatch.setenv("HOMEDRIVE", drive)
+        monkeypatch.setenv("HOMEPATH", tail or "\\")
+        monkeypatch.setenv("HOME", str(other))
+    else:
+        monkeypatch.setenv("HOME", str(pinned))
+        monkeypatch.setenv("USERPROFILE", str(other))
+    monkeypatch.setenv("COMPOUND_MEMORY_ROOT", "~/.agents/memory")
+    assert default_root() == pinned / ".agents" / "memory"
 
 
 def test_absolute_override_is_unchanged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
