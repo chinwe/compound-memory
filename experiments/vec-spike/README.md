@@ -1,7 +1,8 @@
 # Spike：zvec vs sqlite-vec 作为 scoring.rank sim 通道的对比
 
 - 日期: 2026-10-03
-- 背景: spec 0001 将向量索引列为唯一 deferred 项（触发条件：活动记忆 ≥500 条或实际报告召回缺口）；技术路线已验证为 sqlite-vec + BGE-small-zh int8 + RRF（[vector-search-ground](../../docs/wayfinder/research/vector-search-ground.md)，2026-10-01）。阿里 2026-09 开源 zvec/zvec-grep 后需重开引擎对比。
+- 状态: 历史 spike。向量召回已按本文的 RRF 方向落地（spec「索引即缓存」）。下面「向量索引列为 deferred」是开 spike 时的 spec，不是现在。
+- 背景: 当时 spec 0001 将向量索引列为唯一 deferred 项（触发条件：活动记忆 ≥500 条或实际报告召回缺口）；技术路线已验证为 sqlite-vec + BGE-small-zh int8 + RRF（[vector-search-ground](../../docs/wayfinder/research/vector-search-ground.md)，2026-10-01）。阿里 2026-09 开源 zvec/zvec-grep 后需重开引擎对比。
 - 本机: macOS 12 x64（darwin 21.6），Python 3.12.13，uv wheel-only（`UV_ONLY_BINARY=':all:'`）
 - 数据: 真实记忆库活动区 32 条（read-only，`MemoryStore.parse` 直读）；10 条任务式查询，人工标注 expected（spike 级标注，结果为方向性证据而非基准）
 

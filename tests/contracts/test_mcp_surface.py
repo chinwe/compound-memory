@@ -49,7 +49,7 @@ class TestToolSurface:
 
 class TestReturnShapes:
     async def test_memory_search_wraps_hits_envelope(self, memroot: Path):
-        """返回形状红线：{"hits": [...], "count": n} 包装只在 MCP 层（CLI 是裸数组）。"""
+        """返回形状红线：{"hits": [...], "count": n, "retrieval"} 包装只在 MCP 层（CLI 是裸数组）。"""
         async with make_client(memroot) as client:
             written = call(await client.call_tool("memory_write", {
                 "content": "contract mcp shape marker", "type": "fact", "source": "agent-a",

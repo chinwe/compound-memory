@@ -9,8 +9,8 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 
 ## 三个必做动作（复利闭环）
 
-1. **任务开始先检索**：接到非琐碎任务，先 `memory_search` 按任务关键词查相关记忆（用户偏好、项目背景、环境坑）。默认检索即双通道：`_shared` + 本宿主私有 ns（身份已知时自动并入，私有条目无需单独补搜）；显式传 `ns` 则只搜该 ns（精确语义）。**project 作用域（ADR 0010）**：检索缺省 fail-closed——不传 `project` 只见全局（未标注）记忆；宿主使用规则声明了工作区项目时，检索与写入都带上该 `project=<slug>`，即可见 全局 ∪ 该项目。
-2. **采纳即反馈**：命中且**实际采纳**后必须调 `memory_feedback`（`agent` 填本宿主 source id）——复利闭环的核心动作，漏掉它记忆库就不增值。归档记忆被 feedback 自动复活。反馈带 outcome（缺省 `success`）：记忆**用对了**保持缺省；**误导了你**报 `failure`（置信度 −0.2，可降到地板 0.05，重复累计）；**内容有争议**报 `contradiction`（数值冻结、登记冲突队列待裁决）；**已被取代**报 `obsolete`（立即归档）；说不清就报 `unknown`（只记事件不动数值）。置信度是证据正确性、可升可降：success 与跨宿主首验升它，failure 降它。
+1. **任务开始先检索**：接到非琐碎任务，先 `memory_search` 按任务关键词查相关记忆（用户偏好、项目背景、环境坑）。缺省 `top_k=5`，要看覆盖面就显式放大。默认检索即双通道：`_shared` + 本宿主私有 ns（身份已知时自动并入，私有条目无需单独补搜）；显式传 `ns` 则只搜该 ns（精确语义）。**project 作用域（ADR 0010）**：检索缺省 fail-closed——不传 `project` 只见全局（未标注）记忆；宿主使用规则声明了工作区项目时，检索与写入都带上该 `project=<slug>`，即可见 全局 ∪ 该项目。
+2. **采纳即反馈**：命中且**实际采纳**后必须调 `memory_feedback`（`agent` 填本宿主 source id）——复利闭环的核心动作，漏掉它记忆库就不增值。归档记忆被 feedback 自动复活。反馈带 outcome（缺省 `success`）：记忆**用对了**保持缺省；**误导了你**报 `failure`（置信度 −0.2，可降到地板 0.05，重复累计）；**内容有争议**报 `contradiction`（数值冻结、登记冲突队列待裁决）；**已被取代**报 `obsolete`（立即归档）；说不清就报 `unknown`（uses 与 last_used 仍推进，置信度不动）。每个 outcome 都推进 uses 与 last_used。置信度是证据正确性、可升可降：success 与跨宿主首验升它，failure 降它。
 3. **任务结束沉淀**：会话确认的稳定事实（用户偏好、项目约定、环境限制、踩坑结论）用 `memory_write` 写入，判据见下表；一次性、会话内临时信息只存在于会话。
 
 新记忆与已有记忆有因果/派生关系时用 `memory_link` 双向连上，检索时自动带出邻居（两条记忆必须同 ns，跨 ns 链被拒绝；私有 `agent-*` ns 的两条记忆须带 `agent`＝本宿主 source id，仅属主可连）。邻居是线索不是结论：采纳以 hit 本身为准。
@@ -37,7 +37,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 
 | 命令 | 何时用 |
 |---|---|
-| `stats` | 看健康度：uses/confidence 分布、活性、蒸馏产出；`retrieval.mode` 是 `vector` 还是 `lexical`；`attestation` 是否注入了进程身份 |
+| `stats` | 看健康度：uses/confidence 分布、活性、蒸馏产出；`retrieval.mode` 是 `vector` 还是 `lexical`；`attestation` 是否注入了进程身份；`expired_active` 是活动区里 valid_until 已过的条数；`cross_validated` 是 `validated_by` 去重后 ≥2 的条数（一次跨宿主反馈不够） |
 | `explain <id> [--reader <agent id>]` | 按 id 看单条记忆的置信度构成（证据计数 success/failure/contradiction、last_verified、最近反馈明细、跨宿主验证明细 validated_by、派生标记、当前 conf）——排查「这条 conf 为什么这么高/低」「这条是不是蒸馏产物」时用；只读不产生提交，私有 ns 加 `--reader` |
 | `rebuild-index` | 手工编辑过记忆文件**内容**后（活性检测只覆盖新增/删除文件） |
 | `review-queue` / `review-resolve` | 处理同 key 冲突队列与 contradiction 争议（人工裁决入口）：`review-resolve <废置id>` 清行并自动归档废置方（对侧保留活动区）；contradiction 争议行裁决二选一——维持原记忆有效用 `review-resolve <争议id> --uphold`（解冻并按 failure −0.2 折算），确错则缺省路径归档；`--all` 只清空队列不归档（争议行解冻但不折算）。私有 `agent-*` ns 的行仅属主可清（加 `--reader`）——`--all` 会静默保留别人的私有行，显式点名则报错；`review-queue` 展示仍全量 |
@@ -71,7 +71,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | 写入/读取/反馈 `PermissionError` | ns 越权：日常写读 `_shared`；私有 `agent-*` ns 的读/反馈带 `reader`/`agent`、link 带 `agent`（`agent-<名>` 或 `<名>`） |
 | 报 `contradicts attested agent` | 宿主已注入进程身份（`COMPOUND_MEMORY_AGENT_ID`），自报身份与之矛盾：`source`/`agent` 改填自己的 agent id，`reader` 可直接省略（自动补真值）；仍报错则核对宿主 env 配置 |
 | `write` 报 `key must match` | key 格式不合规（禁大写/下划线/空格/日期前缀）：改用小写字母数字段以短横线连接（`proj-xxx`）；key 是同 key 更新的锚点，日期化会让事实更新退化成不断新增 |
-| 写入返回 `conflict: true` | 内容与既有版本不同，已入冲突队列；裁决后 `review-resolve <废置id>` 清行并自动归档废置方（索引同步、自动 commit，无需 rebuild）；`--all` 只清行不归档（无裁决信息） |
+| 写入返回 `conflict: true` | 内容与既有版本不同，已入冲突队列；裁决后 `review-resolve <废置id>` 清行并自动归档废置方（索引同步、自动 commit）。不要手改 frontmatter 再搬文件。`--all` 只清行不归档（无裁决信息） |
 | 项目记忆检索不到 | 先核对调用方 `project` 参数（或 CLI `COMPOUND_MEMORY_PROJECT`）与记忆标注一致；检索缺省 fail-closed 只见全局记忆（ADR 0010），声明对应项目才见 全局 ∪ 该项目；按 id 的 `memory_get` 不受 project 限制，可先取回核对 frontmatter |
 | 报 `project must match` | project slug 格式不合规（禁大写/下划线/空格/连续横线）：与 key 同格式，改用小写字母数字段以短横线连接 |
 

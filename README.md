@@ -17,7 +17,7 @@ Every agent session starts from zero: preferences get re-asked, project conventi
 - **MCP-native** — exactly 5 tools (`memory_write` / `memory_search` / `memory_get` / `memory_link` / `memory_feedback`) as the single read-write boundary; works with any MCP host (Claude Code, ZCode, WorkBuddy, …), plus a full CLI for operations.
 - **Compounding** — confirmed usage raises confidence, related memories are recalled as neighbors, validation from a *different* host counts as independent evidence, and distillation merges many raw memories into fewer, denser ones.
 - **Multi-agent by design** — a `_shared` namespace everyone reads, plus `agent-*` private namespaces each host owns; cross-host validation is tracked per host.
-- **Optional semantic recall** — vector search via sqlite-vec + BGE embeddings, with automatic graceful fallback to pure lexical search when unavailable.
+- **Optional semantic recall** — vector search via sqlite-vec + BGE embeddings, with automatic graceful fallback to pure lexical search when unavailable. Override the model with `COMPOUND_MEMORY_EMBEDDING_MODEL` (default `Xenova/bge-small-zh-v1.5`) and `COMPOUND_MEMORY_EMBEDDING_DIM` (default 512); changing either is an ops action and needs an explicit `rebuild-index`.
 
 ## Quick Start
 
@@ -188,7 +188,7 @@ uv run compound-memory stats
 }
 ```
 
-Current `stats` also includes `retrieval` (`mode`: `vector` or `lexical`, plus `reason` when the vector channel is off) and `attestation` (`attested`, plus a `warning` when `COMPOUND_MEMORY_AGENT_ID` is unset). `memory_search` carries the same `retrieval` object. CLI `search` stays a bare array.
+Current `stats` also includes `retrieval` (`mode`: `vector` or `lexical`, plus `reason` when the vector channel is off), `attestation` (`attested`, plus a `warning` when `COMPOUND_MEMORY_AGENT_ID` is unset), and `expired_active` (active-area memories whose `valid_until` has passed; 0 in this snapshot). `cross_validated` counts memories whose `validated_by` lists at least two distinct agents — the single cross-host validation above correctly leaves it at 0. `memory_search` carries the same `retrieval` object. CLI `search` stays a bare array.
 
 Three things to notice:
 
@@ -200,7 +200,7 @@ Three things to notice:
 
 | Interest source | Mechanism |
 |---|---|
-| ① Usage reinforcement | `memory_feedback` carries an outcome. Default `success`: uses+1, confidence +0.1. `failure`: confidence −0.2 (floor 0.05, repeats stack). `contradiction`: confidence frozen, a review-queue row is filed. `obsolete`: archived immediately. `unknown`: the event is recorded and the number does not move |
+| ① Usage reinforcement | Every `memory_feedback` advances `uses` and `last_used`. Confidence moves by outcome. Default `success`: +0.1. `failure`: −0.2 (floor 0.05, repeats stack). `contradiction`: confidence frozen, a review-queue row is filed. `obsolete`: archived immediately. `unknown`: the event is recorded and confidence does not move |
 | ② Link value | `memory_link` creates bidirectional links; `memory_get` pulls one-hop neighbors; `search` hits embed up to 3 compact neighbors (active memories only, `--no-neighbors` to disable) |
 | ③ Distillation | `distill-plan` (CLI, deterministic candidates + dual-signal dedup annotations) → agent judgment → `distill-apply` atomic commit (product links back to sources; sources archived but revivable) |
 | ④ Cross-agent validation | On `success` only, the first feedback from a host other than `source` adds +0.15 (once per host per memory; recorded in `validated_by`) |
@@ -212,10 +212,10 @@ Scoring (weights are the `W_*` constants in `src/compound_memory/scoring.py`): `
 | Tool | Purpose | Key points |
 |---|---|---|
 | `memory_write` | Write a memory | `type`: episode/fact/insight/skill/decision; `source`: your agent id; give fact/insight/decision a stable `key`; optional `valid_from`/`valid_until` (ISO dates) and `project` scope. `content` over 262144 characters is rejected and nothing is written |
-| `memory_search` | Retrieve | Returns `{"hits": [...]}` ranked by score; embeds up to 3 one-hop neighbors; dual-channel by default (`_shared` + caller's own private ns); optional `project` (fail-closed) and `explain` |
-| `memory_get` | Fetch by id | Always contains a `found` key; pulls one-hop neighbors; private-ns targets require `reader` |
+| `memory_search` | Retrieve | Returns `{"hits": [...], "count", "retrieval"}` ranked by score (default `top_k=5`); embeds up to 3 trimmed one-hop neighbors; dual-channel by default (`_shared` + caller's own private ns); optional `project` (fail-closed) and `explain`. CLI `search` stays a bare array |
+| `memory_get` | Fetch by id | Always contains a `found` key; pulls one-hop neighbors with no count cap and keeps archived neighbors (search caps at 3, trims content to 80 characters, and drops archived neighbors). Expired neighbors are omitted on both paths. Private-ns targets require `reader` |
 | `memory_link` | Link two memories | Bidirectional; both sides must be in the same ns; private-ns links require owner identity |
-| `memory_feedback` | Report how a memory actually behaved | Default `outcome=success`: uses+1, conf+0.1; first cross-host validation +0.15. `failure` −0.2 (floor 0.05); `contradiction` freezes confidence into the review queue; `obsolete` archives now; `unknown` records only. **Mandatory after adopting a hit** — that's the loop that makes the store compound |
+| `memory_feedback` | Report how a memory actually behaved | Every outcome advances `uses` and `last_used`. Default `outcome=success`: conf+0.1; first cross-host validation +0.15. `failure` −0.2 (floor 0.05); `contradiction` freezes confidence into the review queue; `obsolete` archives now; `unknown` records the event and leaves confidence unchanged. **Mandatory after adopting a hit** — that's the loop that makes the store compound |
 
 Tool descriptions embed the protocol rules themselves, so agents keep the loop intact even without host-side rules injected. Full parameter reference: `docs/agent-integration.md`.
 
@@ -226,7 +226,7 @@ uv sync --extra dev              # first clone: build .venv (later `uv run` reus
 
 uv run compound-memory init               # initialize an empty store
 uv run compound-memory write "Vercel Serverless has a 10s timeout" episode agent-workbuddy
-uv run compound-memory search "Vercel timeout"   # hits embed one-hop neighbors (limit 3, --no-neighbors to disable)
+uv run compound-memory search "Vercel timeout"   # default top_k=5; hits embed one-hop neighbors (limit 3, --no-neighbors to disable)
 uv run compound-memory feedback <id> agent-claude
 uv run compound-memory decay          # run from cron
 uv run compound-memory revive <id>    # revive an archived memory
@@ -257,7 +257,7 @@ Agent (MCP client / CLI)
 
 ## Scheduled distillation prep (launchd / cron / systemd)
 
-Per ADR 0001, the deterministic prep runs on a schedule while judgment (summarizing / merging) stays with the calling agent. Every day at 09:00 the candidate list lands in `<root>/distill/last-plan.json`. Pick one scheduler — **launchd** (macOS standard, catches up after sleep), **systemd user timer** (`Persistent=true`, same catch-up), or **cron** (most portable, no catch-up) — all three drive the same platform-neutral `scripts/distill-prepare.sh`. Ready-made templates with copy-paste instructions: `scripts/com.compound-memory.distill-prepare.plist.tmpl` (launchd), `scripts/compound-memory-distill-prepare.{service,timer}.example` (systemd), and the Chinese README for cron. The script runs `set -eu`: any failure exits non-zero (visible via `launchctl list` / `systemctl --user list-timers` / cron mail, log at `distill/prepare.log`). `distill/` is a runtime artifact directory (auto-gitignored) — no commit noise; only `distill-apply` after agent judgment lands one atomic commit.
+Per ADR 0001, the deterministic prep runs on a schedule while judgment (summarizing / merging) stays with the calling agent. Every day at 09:00 the candidate list lands in `<root>/distill/last-plan.json`. Pick one scheduler — **launchd** (macOS standard, catches up after sleep), **systemd user timer** (`Persistent=true`, same catch-up), or **cron** (most portable, no catch-up) — all three drive the same platform-neutral `scripts/distill-prepare.sh`. Ready-made templates: `scripts/com.compound-memory.distill-prepare.plist.tmpl` (launchd), `scripts/compound-memory-distill-prepare.{service,timer}.example` (systemd), and `scripts/compound-memory-distill-prepare.cron.example` (cron). The filled launchd / systemd / cron commands are in the Chinese README. The script runs `set -eu`: any failure exits non-zero (visible via `launchctl list` / `systemctl --user list-timers` / cron mail, log at `distill/prepare.log`). `distill/` is a runtime artifact directory (auto-gitignored) — no commit noise; only `distill-apply` after agent judgment lands one atomic commit.
 
 ## Documentation
 
