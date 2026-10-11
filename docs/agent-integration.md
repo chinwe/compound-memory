@@ -11,6 +11,7 @@ compound-memory 是本地多 Agent 共享记忆库（存储 `~/.agents/memory`�
 | WorkBuddy | ✅ 已接入 | `~/.workbuddy/mcp.json` | `~/.workbuddy/MEMORY.md`（用户级记忆，每会话自动注入） |
 | ZCode | ✅ 已接入 | `~/.zcode/cli/config.json` | SessionStart hook 自动注入 + `~/.zcode/AGENTS.md` |
 | Claude Code | ✅ 已接入 | `~/.claude.json`（用户级） | `~/.claude/CLAUDE.md` + 分发 skill |
+| Cursor | ✅ 可接入 | 项目 `.cursor/mcp.json` 或用户 `~/.cursor/mcp.json` | 项目规则指向 `skills/compound-memory/SKILL.md` |
 | DeepSeek Harness (dsh) | ⬜ 待接入 | `~/.dsh/profiles/web/cordis.patch.yml` | agent 指令文件 |
 
 ---
@@ -23,6 +24,7 @@ compound-memory 是本地多 Agent 共享记忆库（存储 `~/.agents/memory`�
 |---|---|
 | 启动命令 | `uv run --directory <仓库> compound-memory-server` |
 | `COMPOUND_MEMORY_ROOT` | 可省略。`~` 与 `$HOME` 前缀会展开；省略或空白即 `$HOME/.agents/memory` |
+| `COMPOUND_MEMORY_AGENT_ID` | **必配**。稳定的本宿主 id（如 `agent-claude`），不可由模型或不可信调用方改写。未设置时自报身份可被伪造，不适合共享 `_shared` 的多 Agent 部署；server 启动日志与 `stats.attestation.warning` 会标明 |
 
 **运行环境（uv）**：项目由 uv 管理（`pyproject.toml` + `uv.lock`），uv 不在 PATH 时用 `~/.local/bin/uv`。宿主配置的 `command` 写 uv 绝对路径、`args` 带 `--directory <仓库>`，依赖环境由 `uv run` 自管——首次克隆先 `uv sync --extra dev` 建 `.venv`。启动走 console script `compound-memory-server`（uv 自身输出走 stderr，不污染 MCP 的 stdio 协议）。
 
@@ -38,17 +40,17 @@ uv run --directory <仓库> compound-memory init
 
 | Tool | 用途 | 关键点 |
 |---|---|---|
-| `memory_write` | 写入记忆 | `type`: episode/fact/insight/skill/decision；`source`: 写入方 agent id；fact/insight/decision 建议带稳定 `key`；可选 `valid_from`/`valid_until`（ISO 日期）标注事实有效期——`valid_until` 已过的事实退出检索结果，但 `memory_get` 仍可读；可选 `project`（小写 slug）标注项目作用域——标注后仅同项目会话检索可见，缺省全局 |
-| `memory_search` | 检索 | 返回 `{"hits": [...]}` 按分数排序；命中自动内嵌最多 3 条一度邻居；`include_neighbors=False` 可关。不传 `ns` 时双通道检索：`_shared` + 调用方自有私有 ns（身份已知时，私有条目自动带出）；显式传 `ns` 只搜该 ns，查 `agent-*` 时必带 `reader`（自己的 agent id），缺省即拒绝。可选 `project`（小写 slug）：**fail-closed**——不传只见全局记忆，传了见 全局 ∪ 该项目。可选 `explain: true`（排障面，#44）：每 hit 附加排序分量对象（词面/向量 rank、RRF 分、先验折算项、检索通道）与证据摘要行，缺省返回形状不变 |
+| `memory_write` | 写入记忆 | `type`: episode/fact/insight/skill/decision；`source`: 写入方 agent id；fact/insight/decision 建议带稳定 `key`；可选 `valid_from`/`valid_until`（ISO 日期）标注事实有效期——`valid_until` 已过的事实退出检索结果，但 `memory_get` 仍可读；可选 `project`（小写 slug）标注项目作用域——标注后仅同项目会话检索可见，缺省全局。`content` 超过 262144 字符拒绝且不落盘 |
+| `memory_search` | 检索 | 返回 `{"hits": [...], "count", "retrieval"}` 按分数排序。`retrieval.mode` 为 `vector` 或 `lexical`（向量 extra/模型/引擎不可用或当次召回失败时为 lexical，并带 `reason`），词面降级因此可见。命中自动内嵌最多 3 条一度邻居；`include_neighbors=False` 可关。不传 `ns` 时双通道检索：`_shared` + 调用方自有私有 ns（身份已知时，私有条目自动带出）；显式传 `ns` 只搜该 ns，查 `agent-*` 时必带 `reader`（自己的 agent id），缺省即拒绝。可选 `project`（小写 slug）：**fail-closed**——不传只见全局记忆，传了见 全局 ∪ 该项目。可选 `explain: true`（排障面，#44）：每 hit 附加排序分量对象（词面/向量 rank、RRF 分、先验折算项、检索通道）与证据摘要行，缺省 hit 形状不变。CLI `search` 仍是裸数组，模式看 `stats.retrieval` |
 | `memory_get` | 按 id 取回 | 恒含 `found` 键；默认带一度邻居；目标在私有 ns 时必带 `reader`，缺省即拒绝。按 id 恒可读（project 不限制 get 本体）；可选 `project` 只用于邻居带出的适用性过滤（邻居=全局 ∪ 该项目） |
 | `memory_link` | 双向关联两条记忆 | 复利来源②：关联带出；两条记忆必须同 ns，跨 ns 链被拒绝；私有 ns 记忆仅属主可连（`agent` 填自己的 agent id） |
 | `memory_feedback` | 上报"这条记忆被实际采纳了"（可带 outcome） | 缺省 `outcome=success`：uses+1、conf+0.1；**跨宿主首验额外 +0.15**（每宿主每记忆一次）。可选 outcome：`failure` 误导（conf −0.2，地板 0.05，重复累计）；`contradiction` 争议（conf 冻结、入冲突队列待裁决）；`obsolete` 被取代（立即归档）；`unknown` 只记事件。归档记忆被 feedback 自动复活（obsolete 除外）；私有 ns 记忆仅属主可反馈。**采纳后必须调用**；用错了要如实报 failure——置信度是证据正确性，只升不降会掩护错误记忆 |
 
 ### 统一约定（各宿主必须一致）
 
-- **`source` agent id**：WorkBuddy → `agent-workbuddy`；ZCode → `agent-zcode`；Claude Code → `agent-claude`；DeepSeek Harness → `agent-deepseek`。id 用宿主标识而非个性化名字（如 TARS），保证稳定不随命名变化；跨 Agent 验证加分依赖 id 互不相同。
+- **`source` agent id**：WorkBuddy → `agent-workbuddy`；ZCode → `agent-zcode`；Claude Code → `agent-claude`；Cursor → `agent-cursor`；DeepSeek Harness → `agent-deepseek`。id 用宿主标识而非个性化名字（如 TARS），保证稳定不随命名变化；跨 Agent 验证加分依赖 id 互不相同。这个值必须同时写进 `COMPOUND_MEMORY_AGENT_ID`。
 - **namespace**：默认写 `_shared`（全体可见）；`agent-<name>` 是私有区，仅属主可写、读/反馈/关联也须属主身份（`reader`/`agent` 填自己的 agent id，缺省即拒绝）。检索不传 `ns` 时自动并搜自有私有区（双通道）。ns 只允许字符 `[A-Za-z0-9_-]`（ns 会被直接拼进存储路径，含 `../`、`/`、`*` 等一律 ValueError，2026-10-05 审计加固）。日常任务一律用默认值即可。
-- **进程身份注入（建议必配）**：宿主配置的 `env` 加 `COMPOUND_MEMORY_AGENT_ID: <本宿主 agent id>`。注入后存储层以进程身份裁决一切自报身份（source/reader/agent）：缺省自动补真值、等价形式（`agent-x`/`x`）归一化、矛盾响亮拒绝——模型谎报身份失效，伪造 source 污染跨 Agent 验证的通道一并关闭。未注入则保持自报身份模式（协作边界，非安全边界）。
+- **进程身份注入（必配）**：宿主配置的 `env` 必须设 `COMPOUND_MEMORY_AGENT_ID: <本宿主 agent id>`，值稳定且不能由不可信方随意改。注入后存储层以进程身份裁决一切自报身份（source/reader/agent）：缺省自动补真值、等价形式（`agent-x`/`x`）归一化、矛盾响亮拒绝——模型谎报身份失效，伪造 source 污染跨 Agent 验证的通道一并关闭。未注入则退回自报身份：协作边界，不是安全边界，调用方可以冒充其他 agent 的命名空间，**不要**在这种配置下共享 `_shared`。server 启动日志与 `stats.attestation` 会把未注入标成 warning。与 ns（`_shared` / `agent-*`）正交的是 `project`（适用性），身份管的是谁能写谁的 ns。
 - **project 作用域（按需声明）**：项目专属的记忆（该项目才用的约定/配置/踩坑）写入与检索都带 `project=<slug>`（小写短横线 slug，如 `agenthub`）；跨项目通用的事实不标注。检索缺省 **fail-closed**：不传 `project` 只见全局记忆——「没声明项目 = 全局会话」，项目记忆不外溢进一般会话（ADR 0010）。CLI 侧另有 `COMPOUND_MEMORY_PROJECT` env 回退便利通道（adapter 层读，store 自身不读环境变量；MCP server 全局一份、按项目注入无处落地，显式传参是主语义）。`link` 不限 project（同 ns 即可互链）；蒸馏产物继承源的 project；蒸馏/衰减/复活/stats/review 队列保持库级不过滤。
 - **写什么**：稳定事实（用户偏好、项目约定、环境限制、踩坑结论）才写；一次性、会话内临时信息不写。任务状态类（进行时/待办）内容易腐：要么带 `valid_until`、要么改写成不含进行时态的稳定事实——过时的状态记忆比没有更糟。内容用中文，key 用稳定英文短横线标识（如 `user-tts`、`proj-xxx`）。
 
@@ -56,7 +58,7 @@ uv run --directory <仓库> compound-memory init
 
 ---
 
-## 2. WorkBuddy✅
+## 2. WorkBuddy ✅
 
 配置在 `~/.workbuddy/mcp.json`（已生效）：
 
@@ -136,7 +138,7 @@ uv run --directory <仓库> compound-memory init
 
 hook 只做**召回**；**写入与 feedback** 仍靠 Agent 主动调用工具，行为规则写在 `~/.zcode/AGENTS.md`（「compound-memory 记忆使用规则」一节）。有 SessionStart 注入后，任务开始前的 `memory_search` 可酌情省略——注入内容已覆盖大部分高频记忆，但精确查询仍应 search。
 
-## 4. Claude Code ⬜
+## 4. Claude Code ✅
 
 两种方式任选其一：
 
@@ -170,7 +172,37 @@ claude mcp add compound-memory \
 
 **使用规则注入**：把 §6 的规范写进用户级 `~/.claude/CLAUDE.md`（或项目 `CLAUDE.md`）。Claude Code 没有 SessionStart 注入机制，任务开始先 `memory_search` 尤其重要。
 
-验证：`claude mcp list` 应显示 `compound-memory: connected`。
+验证：`claude mcp list` 应显示 `compound-memory: connected`。上面的接入一览与本节同为 ✅：配置与使用规则注入方式已经落地，不是待办。
+
+## 4b. Cursor
+
+Copy-paste setup. `COMPOUND_MEMORY_AGENT_ID` is required (a stable id such as `agent-cursor`). Without it, any caller can claim another host's namespace.
+
+Project config is `.cursor/mcp.json`; user-level is `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "compound-memory": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--directory", "<repo>", "compound-memory-server"],
+      "env": {
+        "COMPOUND_MEMORY_ROOT": "$HOME/.agents/memory",
+        "COMPOUND_MEMORY_AGENT_ID": "agent-cursor"
+      }
+    }
+  }
+}
+```
+
+PyPI install: set `command` to `uvx` and `args` to `["--from", "compound-memory", "compound-memory-server"]`. Restart Cursor after saving the file. A `memory_search` result of `{"hits": [...], "retrieval": {...}}` means the server is connected. If `retrieval.mode` is `lexical`, vector recall is off (missing `vec` extra or model); results are BM25 only.
+
+Three protocol rules (same as §6; point a Cursor rule at `skills/compound-memory/SKILL.md` so they stay in the session):
+
+1. On a non-trivial task, `memory_search` before acting.
+2. After actually using a hit, `memory_feedback` with your agent id (`success` when it helped, `failure` / `contradiction` / `obsolete` / `unknown` when it did not).
+3. At the end of the session, `memory_write` only stable facts (preferences, conventions, environment constraints, pitfalls) — not scratch notes. `content` over 262144 characters is rejected.
 
 ## 5. DeepSeek Harness (dsh) ⬜
 
@@ -223,6 +255,7 @@ dsh 通过 MCP client 插件 `@deepseek-ai/dsh-mcp-client` 接入，一个插件
 
 ```bash
 uv run compound-memory stats          # 健康度：uses/confidence 固定桶 + 活性 + 蒸馏产出量
+                                      #   + retrieval（vector/lexical）+ attestation（进程身份是否注入）
 uv run compound-memory explain <id> [--reader <agent id>]  # 按 id 证据视图（#44）：证据计数
                                       #   （success/failure/contradiction、last_verified、recent 明细）、
                                       #   跨宿主验证明细（validated_by）、派生标记（蒸馏产物零证据起点）、
@@ -272,15 +305,18 @@ launchd（macOS）/ systemd user timer（Linux）/ cron 每天 09:00 自动把�
 | 症状 | 处置 |
 |---|---|
 | 宿主里看不到 5 个 memory_* 工具 | 先手动跑启动命令看报错：`uv run --directory <仓库> compound-memory-server`；多为 uv 不在预期路径（`command` 要写绝对路径）或 `--directory` 指向的仓库位置漂移（仓库移动后要同步改各宿主配置） |
-| 搜索结果为空 / 召回不全 | `stats` 看记忆量；怀疑索引损坏时 `rebuild-index`（缓存可随时重建，检索永远降级不报错） |
+| 搜索结果为空 / 召回不全 | `stats` 看记忆量与 `retrieval`；`mode=lexical` 表示向量路没开或当次降级，排序是词面。怀疑索引损坏时 `rebuild-index`（缓存可随时重建，检索降级不报错，但 `retrieval.reason` 会标明） |
 | 检索排序不符合预期 / 想知道某条为什么排前 | `memory_search` 传 `explain: true`（CLI `--explain`）看每条 hit 的排序分量（词面/向量 rank、RRF 分、先验折算项、检索通道）与证据摘要；单条记忆的置信度构成用 CLI `explain <id>`（证据计数、跨宿主验证明细、派生标记） |
 | server 日志出现 `vector recall degraded to lexical` | 向量召回故障已自动降级纯词面（检索不中断）；多为 vec extra 环境或向量索引异常，重装 `--extra vec` 或 `rebuild-index`；未装 vec extra 的宿主不会出现此日志 |
-| server 日志出现 `write lock unavailable` 或 `skipping unparseable memory file` | 前者：root 上 `.lock` 无法加锁（异常文件系统），已降级无锁写入，避免多宿主并发写；后者：库内有解析失败的坏文件已被扫描跳过并保留原样，按日志路径人工检查/修复该文件 |
+| server 日志出现 `write lock unavailable`，或写入报 `refusing unlocked write` | 前者：`.lock` 文件创建失败（异常文件系统），已降级无锁写入。后者：锁争用超时或加锁系统调用失败，**写入被拒绝**（fail-closed），没有无锁继续；等对方释放后重试。Windows 等待上界 30 秒 |
+| server 日志出现 `skipping unparseable memory file` | 库内有解析失败的坏文件已被扫描跳过并保留原样，按日志路径人工检查/修复该文件 |
 | 手工编辑过记忆文件内容 | 活性检测只覆盖新增/删除，**内容**修改需显式 `rebuild-index` |
 | `git-log` 出现 `orphan changes recovered` | 不是异常：上次会话 commit 失败/进程中断/带外手编留下的未提交变更，已被启动对账收编进这条恢复提交（消息不声称作者）。看到它值得回查当时是否有写动词报过 git 失败；带外变更想要专属提交历史的，手编后自行在记忆库 git commit |
 | SessionStart 没注入 | hook 任何异常都静默退出；手动跑 `~/.agents/memory/hooks/session_start.py` 检查输出是否为合法 `{"additionalContext": ...}` JSON |
 | 写入报 PermissionError | 命名空间越权：`agent-*` 私有区仅属主可写，日常写 `_shared` |
 | 写入/检索报 ValueError（`ns contains characters...`） | ns 含白名单外字符（`../`、`/`、`*`、空格等）：ns 是存储路径组件，只允许 `[A-Za-z0-9_-]`，私有区写 `agent-<宿主 id>` |
 | 项目记忆检索不到 / 报 `project must match` | 检索缺省 fail-closed 只见全局记忆：核对调用方 `project` 参数（或 CLI `COMPOUND_MEMORY_PROJECT`）与记忆标注一致；slug 格式与 key 相同（小写字母数字段短横线连接，禁大写/下划线/空格）；按 id `memory_get` 恒可读，可先取回核对 frontmatter |
+| `stats.attestation.warning` 或启动日志提到 `COMPOUND_MEMORY_AGENT_ID is unset` | 宿主 MCP env 没注入进程身份。多 Agent 共享库必须补上稳定的 `COMPOUND_MEMORY_AGENT_ID` 后重启 server；未注入时调用方可以冒充其他 agent |
+| 写入报 `content exceeds` | 正文超过 262144 字符，本次没有落盘。改成短事实或只存指针 |
 | 同 key 写入返回 `conflict: true` | 内容与既有版本不同，已入 `review-queue.md`；裁决（人或主治 Agent）后把废置版本归档：置 frontmatter `archived: true` 移入 `archive/<ns>/<type>/` 并删活动文件（等价 decay 语义），再 `rebuild-index`，记忆库 git 留一条审计 commit |
 | 记忆被归档了 | 按 id `memory_get` 可取回；对它 `memory_feedback` 或 `revive` 即恢复可检索 |

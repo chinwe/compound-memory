@@ -55,7 +55,9 @@ class TestReturnShapes:
                 "content": "contract mcp shape marker", "type": "fact", "source": "agent-a",
             }))
             out = call(await client.call_tool("memory_search", {"query": "mcp shape marker"}))
-            assert set(out) == {"hits", "count"}
+            # 契约变更 #60：信封增加 retrieval（mode/reason），hit 形状与 CLI 裸数组不动。
+            assert set(out) == {"hits", "count", "retrieval"}
+            assert out["retrieval"]["mode"] in {"lexical", "vector"}
             assert out["count"] == 1
             assert [h["id"] for h in out["hits"]] == [written["id"]]
 

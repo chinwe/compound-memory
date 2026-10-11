@@ -1,0 +1,17 @@
+# Changelog
+
+## Unreleased
+
+- Host docs treat `COMPOUND_MEMORY_AGENT_ID` as required. `stats.attestation` and the MCP server startup log say when it is unset, because self-reported identity can be forged (#57).
+- Windows CI matches Linux (Python 3.11, 3.12, and 3.13) and runs the wheel smoke test. A write-lock timeout or lock-syscall failure refuses the write instead of continuing unlocked. Creating the lock file can still fall open with a warning (#58).
+- Docs: architecture tree includes `decision` and `index/vectors.db`; the compounding table matches feedback outcomes; Cursor has a setup snippet; Claude Code status is ✅ in both places; LongMemEval ingest describes `store.batch()` (#59).
+- `stats.retrieval` and MCP `memory_search` report `vector` or `lexical` (with a reason). `memory_write` rejects content over 262144 characters and does not create a file (#60).
+- `COMPOUND_MEMORY_ROOT` expands a leading `~` or `$HOME` (#61).
+
+## 0.5.0
+
+- First release with Windows support: file locking uses `msvcrt` on Windows and `flock` on POSIX; atomic writes skip `fchmod` where it does not exist. Classifiers declare Windows. CI gained `windows-latest` (Python 3.13 in that release; the 3.11/3.12 Windows jobs are unreleased follow-up) (#55).
+- `__version__` follows the packaged release (it had been stuck at 0.2.0). CLI `--version` matches the tag.
+- MCP Registry `server.json` version tracks the PyPI release.
+
+Older tags (`v0.4.3` and below) are on the GitHub releases page.

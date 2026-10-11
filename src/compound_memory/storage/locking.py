@@ -1,13 +1,14 @@
 """写锁与批式落库协调（机制件，#36 片 e）：跨进程互斥、重入、批式收尾。
 
-单一定义点：写锁语义（跨进程互斥/重入/降级告警）与 batch 协调（嵌套拒绝、
+单一定义点：写锁语义（跨进程互斥/重入/失败语义）与 batch 协调（嵌套拒绝、
 批内 commit 延迟计数、批尾 flush+commit 收尾）都在本模块；状态归
 WriteLocker 对象，facade 持有并委托。
 
-平台语义（#55）：POSIX 走 flock，Windows 走 msvcrt 字节范围锁（1 字节 @
-偏移 0）。等待语义有平台差异：flock 阻塞直至获得锁；LK_LOCK 被占时每秒
-重试、约 10 秒仍失败抛 OSError——与锁机制不可用同路，落入既有「降级无锁 +
-warning」路径（宁降级勿死锁，哲学两平台一致，仅等待上界为平台差异）。
+平台语义（#55 / #58）：POSIX 走 flock（阻塞直至获得锁）。Windows 走 msvcrt
+字节范围锁（1 字节 @ 偏移 0），LK_NBLCK 自管轮询，超过
+LOCK_ACQUIRE_TIMEOUT_S 抛 OSError。两种「加锁系统调用失败」都 fail-closed：
+WriteLockError，拒绝无锁写入。只有锁文件本身创建失败（文件系统不让放
+.lock）才降级无锁并 warning——那是锁机制不可用，不是争锁超时。
 """
 
 from __future__ import annotations
@@ -15,25 +16,66 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterator, Protocol
 
 logger = logging.getLogger(__name__)
 
+# Windows 没有无限阻塞的字节范围锁；轮询上界后拒绝写入，而不是无锁继续（#58）。
+LOCK_ACQUIRE_TIMEOUT_S = 30.0
+LOCK_POLL_S = 0.05
+
+
+class WriteLockError(Exception):
+    """已尝试加锁但未获得：调用方必须看到失败，不能无锁写入。"""
+
+
+def _spin_until_locked(
+    lock: Callable[[], None],
+    *,
+    sleep: Callable[[float], None],
+    monotonic: Callable[[], float],
+    timeout: float,
+    poll: float,
+) -> None:
+    """反复调用 lock() 直到成功；每次 OSError 视为「仍被占用」。
+
+    超过 timeout 再抛 OSError（调用方 fail-closed）。clock/sleep 可注入，
+    超时路径不依赖真实等待。"""
+    deadline = monotonic() + timeout
+    while True:
+        try:
+            lock()
+            return
+        except OSError:
+            if monotonic() >= deadline:
+                raise OSError(f"timed out after {timeout:.0f}s waiting for the write lock")
+            sleep(poll)
+
 
 def _lock_exclusive(fd: int) -> None:
     """fd 上的跨进程独占锁：POSIX 走 flock，Windows 走 msvcrt 字节范围锁（#55）。
 
     msvcrt.locking 锁「当前位置起的 n 字节」，故先 seek 到 0；锁定范围与解锁
-    必须同 fd 同偏移同长度配对（见 _unlock_fd）。
+    必须同 fd 同偏移同长度配对（见 _unlock_fd）。争锁超时抛 OSError，由
+    write_lock 转成 WriteLockError（#58：不再降级无锁写入）。
     """
     if sys.platform == "win32":
         import msvcrt
 
-        os.lseek(fd, 0, os.SEEK_SET)
-        # LK_LOCK：被占时每秒重试，约 10 秒仍失败抛 OSError → 调用方降级无锁
-        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        def attempt() -> None:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+
+        _spin_until_locked(
+            attempt,
+            sleep=time.sleep,
+            monotonic=time.monotonic,
+            timeout=LOCK_ACQUIRE_TIMEOUT_S,
+            poll=LOCK_POLL_S,
+        )
     else:
         import fcntl
 
@@ -89,8 +131,9 @@ class WriteLocker:
         多宿主并发写同一 root 时，git add -A 会扫进他人刚落盘的变更、commit 撞
         index.lock 报错（2026-10-02 实测）；flock 串行化写者后两者皆消。flock 关联
         open file description，同进程重复加锁会自锁——batch 持锁期间批内动词经
-        depth 重入直通。锁不可用的异常环境降级无锁并 warning（宁降级勿死锁）；
-        读路径与检索不持锁（索引缓存自身并发安全，见 Index._save 的唯一临时名）。
+        depth 重入直通。锁文件创建失败（机制不可用）降级无锁并 warning；加锁
+        本身失败或超时则 WriteLockError，拒绝无锁写入（#58）。读路径与检索不持锁
+        （索引缓存自身并发安全，见 Index._save 的唯一临时名）。
         """
         if self.lock_depth > 0:
             self.lock_depth += 1
@@ -100,20 +143,27 @@ class WriteLocker:
                 self.lock_depth -= 1
             return
         fd: int | None = None
+        acquired = False
         try:
             fd = os.open(self._root / ".lock", os.O_CREAT | os.O_RDWR, 0o644)
-            _lock_exclusive(fd)
         except OSError as exc:
+            # 锁文件都放不下：没有可等待的锁，维持降级（宁降级勿让单机完全不可写）。
             logger.warning("write lock unavailable: %s; proceeding unlocked", exc)
-            if fd is not None:
+        else:
+            try:
+                _lock_exclusive(fd)
+                acquired = True
+            except OSError as exc:
                 os.close(fd)
-                fd = None
+                raise WriteLockError(
+                    f"write lock not acquired ({exc}); refusing unlocked write"
+                ) from exc
         self.lock_depth += 1
         try:
             yield
         finally:
             self.lock_depth -= 1
-            if fd is not None:
+            if acquired and fd is not None:
                 try:
                     _unlock_fd(fd)
                 finally:

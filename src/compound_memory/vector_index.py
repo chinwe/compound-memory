@@ -60,12 +60,32 @@ class VectorIndex:
         self._engine: VecEngine = engine if engine is not None else SqliteVecEngine(self._path)
         self._rebuilt_stamp: int | None = None  # 自己重建后落盘的 db mtime 基线
         self._pending: list[tuple[Memory, str]] | None = None  # 非 None = batch() 批式通道中
+        # 最近一次向量召回失败的稳定原因码（None = 未降级）。成功的 knn 清掉。
+        self._degraded_reason: str | None = None
 
     # ---------- 降级与活性 ----------
 
     def _usable(self) -> bool:
         # embedder None 守卫在本层；引擎依赖守卫（SQLITE_VEC_OK）在 engine.open()
         return self._embedder is not None
+
+    def retrieval_status(self) -> dict[str, str | None]:
+        """当前召回模式（#60）：lexical 时 reason 说明为什么不是向量路。
+
+        不扫记忆文件。embedder 未注入优先于粘住的降级标记——配置路径
+        与「上次 knn 炸了」是两件不同的事，前者不依赖搜索是否跑过。
+        """
+        if not self._usable():
+            return {"mode": "lexical", "reason": "embedder-unavailable"}
+        if self._degraded_reason:
+            return {"mode": "lexical", "reason": self._degraded_reason}
+        if not self._engine.open():
+            return {"mode": "lexical", "reason": "engine-unavailable"}
+        return {"mode": "vector", "reason": None}
+
+    def note_degraded(self, reason: str) -> None:
+        """向量召回失败：下次 retrieval_status 报 lexical，直到一次成功的 knn。"""
+        self._degraded_reason = reason
 
     def _ensure_live(self) -> None:
         """写路径保活：db 缺失 ⇒ 重建（不做目录 mtime 检查——write 先落文件再 sync，
@@ -217,11 +237,15 @@ class VectorIndex:
             return []
         self._ensure_fresh()
         if not self._engine.open():
+            self._degraded_reason = "engine-unavailable"
             return []
         try:
-            return self._engine.knn(query_vec, k)
+            rows = self._engine.knn(query_vec, k)
         except VectorEngineError:
+            self._degraded_reason = "degraded"
             return []
+        self._degraded_reason = None
+        return rows
 
     def rebuild(self, memories: list[tuple[Memory, str]]) -> dict[str, int]:
         """全量重建（批量编码一次完成）；返回计数；不可用/失败时静默跳过。"""

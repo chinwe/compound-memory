@@ -76,12 +76,16 @@ class TestRebuildIndex:
 class TestStats:
     def test_key_set_pinned(self, store: MemoryStore):
         stats = store.stats()
+        # 契约变更 #57/#60：stats 增加诊断键 retrieval / attestation
+        # （词面降级与进程身份是否注入必须对调用方可见；既有计数键语义不动）。
         assert set(stats) == {
             "total", "archived", "active", "avg_confidence", "by_type", "by_ns",
             "review_queue_entries", "uses_histogram", "confidence_histogram",
             "recent_feedback_7d", "cross_validated", "distilled_total",
-            "distilled_recent_7d", "expired_active",
+            "distilled_recent_7d", "expired_active", "retrieval", "attestation",
         }
+        assert stats["retrieval"]["mode"] in {"lexical", "vector"}
+        assert "attested" in stats["attestation"]
 
     def test_basic_counts(self, store: MemoryStore):
         store.write("tier2 stats fact", type="fact", source="agent-a")

@@ -178,6 +178,17 @@ class TestStats:
         # 既有键不受影响
         assert stats["total"] == 5
         assert stats["by_type"]["insight"] == 2
+        # 契约变更 #57/#60：诊断键。默认测试 store 无进程身份、无 embedder。
+        assert stats["attestation"]["attested"] is False
+        assert "COMPOUND_MEMORY_AGENT_ID" in stats["attestation"]["warning"]
+        assert stats["retrieval"] == {"mode": "lexical", "reason": "embedder-unavailable"}
+
+    def test_stats_attestation_when_agent_id_set(self, tmp_path: Path):
+        store = MemoryStore(
+            tmp_path / "memroot", clock=lambda: CLOCK_DATE, remover=sandbox_safe_remove, agent_id="agent-zcode"
+        )
+        attestation = store.stats()["attestation"]
+        assert attestation == {"attested": True, "agent_id": "agent-zcode", "warning": None}
 
     def test_stats_archived_distillation_still_counted(self, store: MemoryStore):
         """产出量统计覆盖归档区——蒸馏产出是历史事实，不因源/产物归档而消失。"""

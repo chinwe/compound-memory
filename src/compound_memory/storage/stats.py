@@ -13,6 +13,7 @@ from typing import Any, Callable, Iterator, Protocol
 
 from ..model import Memory
 from ..scoring import age_days, is_expired
+from .validation import attestation_status
 
 # stats 健康度桶（#8：固定边界保证跨期可比，恒输出全桶）——
 # uses 桶按复利语义划线：0=死本金、3=归档存活线（ARCHIVE_USES_THRESHOLD）、10+=高价值；
@@ -58,10 +59,12 @@ class StatsDeps(Protocol):
 
     ns_root: Path
     archive_root: Path
+    agent_id: str | None
     _clock: Callable[[], dt.date]
 
     def _scan_parsed(self, base: Path) -> Iterator[tuple[Memory, Path]]: ...
     def review_queue(self) -> list[str]: ...
+    def retrieval_status(self) -> dict[str, Any]: ...
 
 
 def stats(store: StatsDeps) -> dict[str, Any]:
@@ -110,4 +113,8 @@ def stats(store: StatsDeps) -> dict[str, Any]:
         "distilled_total": distilled_total,
         "distilled_recent_7d": distilled_recent,
         "expired_active": expired_active,
+        # 契约变更 #60 / #57：诊断键只增。retrieval 标明词面降级是否在生效；
+        # attestation 标明进程身份是否注入（未注入时 warning 非空）。
+        "retrieval": store.retrieval_status(),
+        "attestation": attestation_status(store.agent_id),
     }

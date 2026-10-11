@@ -74,7 +74,8 @@ class TestWriteAndSearch:
     async def test_search_rejects_empty_query(self, memroot):
         async with make_client(memroot) as client:
             out = call(await client.call_tool("memory_search", {"query": "   "}))
-            assert out == {"hits": [], "count": 0}
+            assert out["hits"] == [] and out["count"] == 0
+            assert out["retrieval"]["mode"] in {"lexical", "vector"}
 
     async def test_search_rejects_bad_ns(self, memroot):
         """拼错的 ns 是调用方错误：必须报错而非静默返回空结果——

@@ -228,6 +228,10 @@ def vector_recall(
     try:
         qvec = store._embedder([query])[0]
         hits = store.vector_index.knn(qvec, k=64)
+        # knn 内部把引擎故障记成 degraded / engine-unavailable 并返回空，
+        # 这里不要把它当成「向量路启用但零命中」——否则 stats 仍报 vector。
+        if store.vector_index.retrieval_status()["mode"] != "vector":
+            return None, []
         sims: dict[str, float] = {}
         rels: list[str] = []
         for mem_id, rel_path, cos in hits:
@@ -254,6 +258,7 @@ def vector_recall(
         # 模型异常会长期被掩盖在「正常降级」里。embedder 未注入是配置路径，
         # 不经此处，不产生日志。
         logger.warning("vector recall degraded to lexical: %s", exc)
+        store.vector_index.note_degraded("degraded")
         return None, []
 
 

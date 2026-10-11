@@ -57,7 +57,7 @@ uv run compound-memory init
 }
 ```
 
-PyPI 安装形态把 `command`/`args` 换成 `uvx` + `["--from", "compound-memory", "compound-memory-server"]` 即可，不再依赖仓库克隆路径。`COMPOUND_MEMORY_AGENT_ID` 建议必配：注入后存储层以进程身份裁决一切自报身份，模型谎报身份、伪造 source 污染跨 Agent 验证的通道一并关闭。
+PyPI 安装形态把 `command`/`args` 换成 `uvx` + `["--from", "compound-memory", "compound-memory-server"]` 即可，不再依赖仓库克隆路径。`COMPOUND_MEMORY_AGENT_ID` **必配**（多 Agent 共享 `_shared` 时）：注入后存储层以进程身份裁决一切自报身份，模型谎报身份、伪造 source 污染跨 Agent 验证的通道一并关闭。未设置时身份可被伪造，只适合单机单调用方；`stats` 的 `attestation.warning` 与 MCP server 启动日志会标明。
 
 **验证**：在宿主里让 Agent 调用 `memory_search`（如查询任意关键词），能返回 `{"hits": [...]}` 即接入成功；或直接跑 CLI `uv run compound-memory stats`。
 
@@ -131,7 +131,7 @@ uv run compound-memory search "serverless timeout"
 ]
 ```
 
-另一宿主采纳了这条记忆并回写反馈——`uses` +1、`conf` +0.1；反馈方 `agent-workbuddy` ≠ source `agent-claude`，跨宿主首验再 +0.15：
+另一宿主采纳了这条记忆并回写反馈（缺省 outcome=`success`）——`uses` +1、`conf` +0.1；反馈方 `agent-workbuddy` ≠ source `agent-claude`，跨宿主首验再 +0.15：
 
 ```bash
 uv run compound-memory feedback 20261007_86adf1 agent-workbuddy
@@ -173,6 +173,8 @@ uv run compound-memory stats
 }
 ```
 
+当前 `stats` 还会带 `retrieval`（`mode` 为 `vector` 或 `lexical`，向量路关闭时带 `reason`）和 `attestation`（是否注入了 `COMPOUND_MEMORY_AGENT_ID`，未注入时 `warning` 非空）。MCP `memory_search` 带同一份 `retrieval`；CLI `search` 仍是裸数组。
+
 三个看点：
 
 - 每条新记忆 `confidence` 0.5 起步，靠**证据**涨跌（feedback 可带 outcome：success 升 / failure 降 / contradiction 冻结入冲突队列 / obsolete 立即归档）；
@@ -185,28 +187,29 @@ uv run compound-memory stats
 Agent (MCP 客户端 / CLI)
   └─ memory_write | memory_search | memory_get | memory_link | memory_feedback
        └─ MemoryStore (~/.agents/memory)
-            ├─ namespaces/_shared/{episode,fact,insight,skill}/*.md   共享区
-            ├─ namespaces/agent-*/...                                  私有区
-            ├─ archive/...                                             衰减归档（可复活）
-            ├─ index/tokens.json                                       可重建的检索缓存
-            ├─ review-queue.md                                         fact/insight 冲突队列
-            └─ .git/                                                   每次写入自动 commit
+            ├─ namespaces/_shared/{episode,fact,insight,skill,decision}/*.md   共享区
+            ├─ namespaces/agent-*/...                                          私有区
+            ├─ archive/...                                                     衰减归档（可复活）
+            ├─ index/tokens.json                                               可重建的词法缓存
+            ├─ index/vectors.db                                                可重建的向量缓存（可选）
+            ├─ review-queue.md                                                 fact/insight/decision 冲突队列
+            └─ .git/                                                           每次写入自动 commit
 ```
 
 ## 复利机制
 
 | 利息来源 | 实现 |
 |---|---|
-| ① 使用强化 | `memory_feedback`: uses+1, conf+0.1 |
+| ① 使用强化 | `memory_feedback` 带 outcome。缺省 `success`：uses+1、confidence +0.1。`failure`：confidence −0.2（地板 0.05，重复累计）。`contradiction`：数值冻结并登记冲突队列。`obsolete`：立即归档。`unknown`：只记事件，数值不动 |
 | ② 关联增值 | `memory_link` 双向关联；`memory_get` 带出一度邻居；`search` 命中自动内嵌精简邻居（上限 3、只召回活动记忆，`--no-neighbors` 可关） |
 | ③ 蒸馏提纯 | `distill-plan`（CLI，确定性候选+双信号去重标注）→ Agent 判断 → `distill-apply` 原子落库（产物 links 溯源，源归档可复活） |
-| ④ 跨 Agent 验证 | 与 source 不同的 agent 反馈时 conf 额外 +0.15 |
+| ④ 跨 Agent 验证 | 仅 `success`：与 source 不同的宿主**首次**反馈再 +0.15（每宿主每记忆一次，记入 `validated_by`） |
 
 评分公式（权重以 `src/compound_memory/scoring.py` 的 `W_*` 常量为准）：`0.70·相似度 + 0.15·置信度 + 0.10·新近度(0.5+0.5·e^(−Δt/τ)) + 0.05·类型权重`；双路（向量路启用）时改为 RRF 融合主序 + ε=0.04 先验 tie-break（见 spec「索引即缓存」）。
 
 ## MCP 接入
 
-各宿主（WorkBuddy / ZCode / Claude Code / DeepSeek Harness）的完整接入配置与统一使用规范见 `docs/agent-integration.md`。5 个 tool 的 description 自带闭环铁律（命中采纳后必须回写 `memory_feedback`、只写稳定事实、复用既有 key），宿主不注入使用规范也能保持复利闭环——注入规范（agent-integration §6）仍推荐，用于收紧写入质量。
+各宿主（WorkBuddy / ZCode / Claude Code / Cursor / DeepSeek Harness）的完整接入配置与统一使用规范见 `docs/agent-integration.md`。5 个 tool 的 description 自带闭环铁律（命中采纳后必须回写 `memory_feedback`、只写稳定事实、复用既有 key），宿主不注入使用规范也能保持复利闭环——注入规范（agent-integration §6）仍推荐，用于收紧写入质量。
 
 ```json
 {
@@ -215,13 +218,26 @@ Agent (MCP 客户端 / CLI)
       "type": "stdio",
       "command": "~/.local/bin/uv",
       "args": ["run", "--directory", "<本目录>", "compound-memory-server"],
-      "env": { "COMPOUND_MEMORY_ROOT": "$HOME/.agents/memory" }
+      "env": {
+        "COMPOUND_MEMORY_ROOT": "$HOME/.agents/memory",
+        "COMPOUND_MEMORY_AGENT_ID": "agent-<你的宿主标识>"
+      }
     }
   }
 }
 ```
 
-各宿主配置若不展开 `~` 占位写法，替换为本机绝对路径即可。向量召回路为可选（`uv sync --extra vec`）：未装 extra 或 HF 缓存缺模型时自动降级纯词面。embedding 模型与维度可经 `COMPOUND_MEMORY_EMBEDDING_MODEL`（默认 `Xenova/bge-small-zh-v1.5`）与 `COMPOUND_MEMORY_EMBEDDING_DIM`（默认 512）覆盖——换模型属运维动作，改后需显式 `rebuild-index`。
+各宿主配置若不展开 `~` 占位写法，替换为本机绝对路径即可。`COMPOUND_MEMORY_AGENT_ID` 必配，见上文。向量召回路为可选（`uv sync --extra vec`）：未装 extra 或 HF 缓存缺模型时自动降级纯词面，`stats.retrieval.mode` 为 `lexical`。`memory_write` 的 `content` 超过 262144 字符会拒绝且不落盘。embedding 模型与维度可经 `COMPOUND_MEMORY_EMBEDDING_MODEL`（默认 `Xenova/bge-small-zh-v1.5`）与 `COMPOUND_MEMORY_EMBEDDING_DIM`（默认 512）覆盖——换模型属运维动作，改后需显式 `rebuild-index`。
+
+## 平台支持
+
+Python ≥ 3.11，macOS / Linux / Windows。Windows 与 Linux 一样进 CI 矩阵（3.11 / 3.12 / 3.13），并跑纯 wheel 冒烟（`init` / `write` / `search` / server 入口）。
+
+- 写锁：POSIX `flock` 一直等到获得锁；Windows 用 `msvcrt` 字节范围锁，最多等 30 秒，超时则写入失败（`WriteLockError`），不会无锁继续。锁文件本身创建失败时两端都告警并降级无锁（文件系统坏了，不是争锁）。
+- 原子写在 Windows 上跳过 POSIX 权限位对齐。
+- 向量 extra 不在 Windows CI 里安装；缺依赖就是词面检索，由 `stats.retrieval` 标明。
+- 定时蒸馏：macOS launchd、Linux systemd、cron。没有现成的 Windows 任务计划程序模板，需要自己把 `scripts/distill-prepare.sh` 挂上去。
+- 自动 commit 需要 `PATH` 上有 git。
 
 ## CLI
 
@@ -289,7 +305,7 @@ uv run pytest tests/ -q     # 全量测试（MCP tool 边界 + 蒸馏 + 生命�
 uv run mypy src/compound_memory/
 ```
 
-测试缝：MCP tool 边界（`mcp.Client(server)` 内存直连，无子进程）+ 核心模块单测（scoring / index / store 运维面）。CI 在 Python 3.11/3.12/3.13 矩阵上跑测试、类型检查与纯 wheel 安装冒烟。
+测试缝：MCP tool 边界（`mcp.Client(server)` 内存直连，无子进程）+ 核心模块单测（scoring / index / store 运维面）。CI 在 Linux 与 Windows 的 Python 3.11/3.12/3.13 矩阵上跑测试、类型检查与纯 wheel 安装冒烟。变更记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 发布
 
