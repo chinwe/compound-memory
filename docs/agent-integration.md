@@ -310,13 +310,18 @@ uvx --from compound-memory compound-memory git-log        # 审计轨迹（每�
 **蒸馏**（把一批旧记忆沉淀为更高密度产物，判断归调用方 Agent）：
 
 ```bash
-uvx --from compound-memory compound-memory distill-plan   # 确定性候选：merge_with / possible_dup_of / promotion_candidate
-# Agent 阅读 last-plan.json 做取舍、拟合并文案（判断段）
+uvx --from compound-memory compound-memory dream --ns _shared   # 只读编排（ADR-0001，无 LLM）：
+                                      #   distill 段 = distill-plan（merge_with / possible_dup_of /
+                                      #   promotion_candidate / key_duplicates）；
+                                      #   decay_signals（expired_count / archived_count / low_activity_count）；
+                                      #   stats_before 与 stats_after 空跑相等。不归档、不 distill-apply、不 forget
+uvx --from compound-memory compound-memory distill-plan   # 只要候选清单时：merge_with / possible_dup_of / promotion_candidate
+# Agent 阅读 last-plan.json 的 distill 段做取舍、拟合并文案（判断段）
 uvx --from compound-memory compound-memory distill-apply "合并后的经验" insight agent-zcode \
   --sources <id1>,<id2>                    # 原子落库：产物 links 溯源 + 源归档（可复活）
 ```
 
-launchd（macOS）/ systemd user timer（Linux）/ cron 每天 09:00 自动把候选清单写到 `<root>/distill/last-plan.json`（安装物与命令见 README「定时蒸馏准备」）。各宿主 Agent 任意会话中发现清单有新候选时按需处理即可。
+launchd（macOS）/ systemd user timer（Linux）/ cron 每天 09:00 自动跑 `dream`，把只读报告写到 `<root>/distill/last-plan.json`（`distill` 段即候选清单；安装物与命令见 README「定时蒸馏准备」）。各宿主 Agent 任意会话中发现报告有新候选时按需处理即可。
 
 ## 8. 故障排查
 

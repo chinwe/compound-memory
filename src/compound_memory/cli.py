@@ -144,6 +144,20 @@ def cmd_distill_plan(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_dream(args: argparse.Namespace) -> None:
+    # 空跑：stdout 是报告 JSON，一行摘要走 stderr（与 stats 的诊断分流同型），
+    # 定时脚本重定向 stdout 时不会把摘要写进报告文件。
+    report = _open_store(args).dream(
+        window_days=args.window,
+        min_uses=args.min_uses,
+        min_confidence=args.min_confidence,
+        ns=args.ns,
+        reader=args.reader,
+    )
+    print(report["summary"], file=sys.stderr)
+    _emit(report)
+
+
 def cmd_distill_apply(args: argparse.Namespace) -> None:
     _emit(
         _open_store(args).distill_apply(
@@ -299,6 +313,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ns", default="_shared")
     p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
     p.set_defaults(func=cmd_distill_plan)
+    p = sub.add_parser(
+        "dream",
+        help="read-only offline consolidation report for one namespace (no writes)",
+        description="Offline consolidation prep for one namespace (ADR-0001: deterministic prep, "
+        "judgment stays with the calling agent; no in-process LLM). Read-only dry-run. "
+        "The distill section is the distill-plan result (merge_with / possible_dup_of / "
+        "promotion_candidate / key_duplicates). decay_signals counts valid_until already passed "
+        "(expired_count), the archive area (archived_count), and low-activity memories that match "
+        "the decay archive predicate (low_activity_count) — counts only, nothing is archived. "
+        "stats_before and stats_after are two stats() snapshots and are equal on this path. "
+        "Does not archive, distill-apply, forget, or write feedback. Not an MCP tool. "
+        "JSON on stdout; a one-line summary on stderr.",
+    )
+    p.add_argument("--window", type=int, default=30, help="recency window in days, passed through to distill-plan")
+    p.add_argument("--min-uses", type=int, default=1, help="activity gate passed through to distill-plan")
+    p.add_argument("--min-confidence", type=float, default=0.5, help="activity gate passed through to distill-plan")
+    p.add_argument("--ns", default="_shared")
+    p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
+    p.set_defaults(func=cmd_dream)
     p = sub.add_parser("distill-apply")
     p.add_argument("content"); p.add_argument("type", choices=MEMORY_TYPES); p.add_argument("source")
     p.add_argument("--sources", required=True, help="comma-separated source memory ids")

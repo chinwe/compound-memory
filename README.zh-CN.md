@@ -258,6 +258,7 @@ uv run compound-memory feedback <id> agent-claude
 uv run compound-memory decay          # cron 定时跑
 uv run compound-memory revive <id>    # 复活归档记忆（CLI 唯一入口）
 uv run compound-memory distill-plan   # 蒸馏候选清单：merge_with（同 key 强信号）+ possible_dup_of（BM25 弱信号）+ promotion_candidate（高活性 episode）
+uv run compound-memory dream --ns _shared   # 只读编排报告：distill 段 + decay_signals + 相等的 stats 快照（不写盘、无 LLM）
 uv run compound-memory distill-apply "合并后的经验" insight agent-workbuddy --sources <id1>,<id2>  # 原子落库：产物(links 溯源, origin=distillation) + 源归档，一次 commit
 uv run compound-memory stats            # 健康度：uses/confidence 固定桶 + 活性 + 蒸馏产出量
 uv run compound-memory rebuild-index  # 索引可随时重建
@@ -269,7 +270,7 @@ uv run compound-memory git-log        # 审计轨迹
 
 ## 定时蒸馏准备（launchd / cron / systemd）
 
-ADR 0001：确定性准备定时跑，判断（摘要/合并）由 Agent 会话内按需完成。每天 09:00 把候选清单写到 `<root>/distill/last-plan.json`。调度器三选一：**launchd**（macOS 系统标准，睡眠错过的计划唤醒后补跑）、**systemd user timer**（`Persistent=true` 同样补跑）、**cron**（最通用但不补跑错过的计划）。三者都调用同一个平台无关的 `scripts/distill-prepare.sh`。
+ADR 0001：确定性准备定时跑，判断（摘要/合并）由 Agent 会话内按需完成。每天 09:00 `dream` 把只读报告写到 `<root>/distill/last-plan.json`（`distill` 段即候选清单；不归档、不 forget）。调度器三选一：**launchd**（macOS 系统标准，睡眠错过的计划唤醒后补跑）、**systemd user timer**（`Persistent=true` 同样补跑）、**cron**（最通用但不补跑错过的计划）。三者都调用同一个平台无关的 `scripts/distill-prepare.sh`。
 
 **launchd（macOS）**：
 
