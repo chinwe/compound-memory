@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- CLI `dream` prints a read-only consolidation report for one namespace: a `distill` section (the `distill-plan` result), `decay_signals`, and equal `stats_before` / `stats_after` snapshots. It does not archive, apply, or forget. Scheduled prep (`scripts/distill-prepare.sh`) runs `dream` (#69).
+
 ## 0.5.3 - 2026-10-12
 
 - Retrieval visibility is unified behind `is_retrievable`, so search and the CLI apply the same archived, expiry, namespace, and project filter (#67).

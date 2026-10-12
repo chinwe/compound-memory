@@ -221,17 +221,27 @@ def feedback(store: LifecycleDeps, mem_id: str, agent: str, outcome: str = "succ
     return result
 
 
+def is_decay_candidate(mem: Memory, now: dt.date) -> bool:
+    """衰减归档谓词的只读形态（decay_sweep 与 dream 共用这一份，勿再复制）。
+
+    与 decay_sweep 逐位相同：类型 ttl 非空、新近基准（last_used 优先，created
+    兜底）距 now 超过 ttl、uses 低于 ARCHIVE_USES_THRESHOLD。ttl 为空或坏/缺
+    日期返回 False——宁可不归档、也不把坏数据计成低活性。
+    """
+    if mem.ttl is None:
+        return False
+    age = recency_age(mem, now)
+    if age is None:
+        return False  # 坏/缺日期：跳过该条（宁可不归档，不因坏数据丢记忆）
+    return age > mem.ttl and mem.uses < ARCHIVE_USES_THRESHOLD
+
+
 def decay_sweep(store: LifecycleDeps) -> list[str]:
     now = store._clock()
     with store._write_lock():  # 批量归档 + 收尾 commit 一个临界区
         archived: list[str] = []
         for mem, _path in store._scan_parsed(store.ns_root):
-            if mem.ttl is None:
-                continue
-            age = recency_age(mem, now)
-            if age is None:
-                continue  # 坏/缺日期：跳过该条而非崩掉整场扫描（宁可不归档，不因坏数据丢记忆）
-            if age > mem.ttl and mem.uses < ARCHIVE_USES_THRESHOLD:
+            if is_decay_candidate(mem, now):
                 store._archive(mem)
                 archived.append(mem.id)
         if archived:

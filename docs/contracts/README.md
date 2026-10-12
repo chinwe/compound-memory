@@ -37,7 +37,7 @@
 
 「git 历史即审计史」：写路径提交消息格式钉死如下，`tests/contracts/anchors.py`
 的 `COMMIT_TEMPLATES` 与本表同源。消息只含 id / ns / type / agent 名，**不含正文**
-（隐私约束）。读路径（search / get / distill_plan）不产生提交。
+（隐私约束）。读路径（search / get / distill_plan / dream）不产生提交。
 
 | 动词 | 模板 |
 | --- | --- |
@@ -107,6 +107,12 @@
   邻居召回与蒸馏候选）；无复活通道（feedback/revive 对被遗忘记忆返回
   found: False）；stats 不设 forgotten 计数（三态模型零新增例外）；入口仅
   store + CLI（MCP 恰好 5 tool 红线不动）。
+- **dream**（#69 契约变更，CLI-only）：只读离线编排。`distill` 段即同参
+  `distill_plan`；`decay_signals` 只计数（`expired_count` = 该 ns 活动区
+  valid_until 已过，`archived_count` = 该 ns 归档区规模，`low_activity_count`
+  = 命中 decay 归档谓词的活动记忆）；`stats_before` / `stats_after` 是全库
+  `stats()` 两次快照，空跑相等。`dry_run` 恒 true。不归档、不 distill_apply、
+  不 forget、不写 feedback；不进 MCP。扫私有 ns 须属主。**不产生提交**。
 - **distill_plan**：确定性候选扫描（判断归调用方）。归档区与过期记忆不参与；
   活性门（uses/confidence）+ 窗口（新近基准 last_used 优先）；产出主候选
   （merge_with / possible_dup_of / promotion_candidate 三类信号）与
@@ -137,9 +143,10 @@
   包装只在 MCP 层——契约变更 #60：词面降级必须出现在 search 信封，hit 形状与 CLI 裸数组不动）、
   `structured_output=False` 单份序列化、异常 → `is_error` 翻译
   （`tests/contracts/test_mcp_surface.py`）；语义不重测；
-- **CLI 层**：只钉 18 个子命令名与关键 flags（含 D1/D2 的 `link --agent`、
+- **CLI 层**：只钉 19 个子命令名与关键 flags（含 D1/D2 的 `link --agent`、
   `review-resolve --reader`、ADR-0009 的 `forget --agent/--reason`、#44 的
-  `explain --reader` 与 `search --explain`——17→18 契约变更）
+  `explain --reader` 与 `search --explain`——17→18 契约变更；#69 的 `dream`
+  `--ns`/`--reader`——18→19 契约变更，MCP 仍为 5）
   （`tests/contracts/test_cli_surface.py`，
   argparse 结构断言）；行为不重测（CLI 是薄 adapter；调用方错误统一翻译为
   stderr JSON + exit 2）；

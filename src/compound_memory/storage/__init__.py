@@ -9,8 +9,9 @@
 
 包结构（ADR 0003 终态，#36/#37/#38/#39）：facade.py 承载 MemoryStore
 （构造装配 + get/link 方法体 + 机制薄委托 + 动词一行转发）；机制层五件
-（paths/files/gitlayer/locking/validation）与动词层七件（stats/review/
-distill/search/indexing/writing/lifecycle）各为单一定义点。纯谓词 peer
+（paths/files/gitlayer/locking/validation）与动词层（stats/review/
+distill/search/indexing/writing/lifecycle，外加只读编排 dream）各为单一定义点。
+dream 不进包级公开导入面（CLI 经 MemoryStore.dream 调用）。纯谓词 peer
 visibility.py 导出 is_retrievable（检索可见性唯一合取：archived /
 valid_until 已过 / ns 集合 / project 适用性），不进包级公开导入面，
 也不是 git/fs/MCP 后端。

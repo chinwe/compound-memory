@@ -238,6 +238,7 @@ uv run compound-memory feedback <id> agent-claude
 uv run compound-memory decay          # run from cron
 uv run compound-memory revive <id>    # revive an archived memory
 uv run compound-memory distill-plan   # distillation candidates: merge_with (same-key strong) + possible_dup_of (BM25 weak) + promotion_candidate (high-activity episodes)
+uv run compound-memory dream --ns _shared   # read-only report: distill-plan section + decay_signals + equal stats snapshots (no writes, no LLM)
 uv run compound-memory distill-apply "the merged insight" insight agent-workbuddy --sources <id1>,<id2>  # atomic: product (links, origin=distillation) + source archival, one commit
 uv run compound-memory stats            # health: uses/confidence buckets + liveness + distillation yield
 uv run compound-memory rebuild-index  # rebuild the search cache anytime
@@ -264,7 +265,7 @@ Agent (MCP client / CLI)
 
 ## Scheduled distillation prep (launchd / cron / systemd)
 
-Per ADR 0001, the deterministic prep runs on a schedule while judgment (summarizing / merging) stays with the calling agent. Every day at 09:00 the candidate list lands in `<root>/distill/last-plan.json`. Pick one scheduler — **launchd** (macOS standard, catches up after sleep), **systemd user timer** (`Persistent=true`, same catch-up), or **cron** (most portable, no catch-up) — all three drive the same platform-neutral `scripts/distill-prepare.sh`. Ready-made templates: `scripts/com.compound-memory.distill-prepare.plist.tmpl` (launchd), `scripts/compound-memory-distill-prepare.{service,timer}.example` (systemd), and `scripts/compound-memory-distill-prepare.cron.example` (cron). The filled launchd / systemd / cron commands are in the Chinese README. The script runs `set -eu`: any failure exits non-zero (visible via `launchctl list` / `systemctl --user list-timers` / cron mail, log at `distill/prepare.log`). `distill/` is a runtime artifact directory (auto-gitignored) — no commit noise; only `distill-apply` after agent judgment lands one atomic commit.
+Per ADR 0001, the deterministic prep runs on a schedule while judgment (summarizing / merging) stays with the calling agent. Every day at 09:00 `dream` writes a read-only report to `<root>/distill/last-plan.json` (the `distill` object is the candidate list; nothing is archived or forgotten). Pick one scheduler — **launchd** (macOS standard, catches up after sleep), **systemd user timer** (`Persistent=true`, same catch-up), or **cron** (most portable, no catch-up) — all three drive the same platform-neutral `scripts/distill-prepare.sh`. Ready-made templates: `scripts/com.compound-memory.distill-prepare.plist.tmpl` (launchd), `scripts/compound-memory-distill-prepare.{service,timer}.example` (systemd), and `scripts/compound-memory-distill-prepare.cron.example` (cron). The filled launchd / systemd / cron commands are in the Chinese README. The script runs `set -eu`: any failure exits non-zero (visible via `launchctl list` / `systemctl --user list-timers` / cron mail, log at `distill/prepare.log`). `distill/` is a runtime artifact directory (auto-gitignored) — no commit noise; only `distill-apply` after agent judgment lands one atomic commit.
 
 ## Documentation
 

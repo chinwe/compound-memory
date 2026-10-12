@@ -3,7 +3,7 @@
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now compound-memory-distill-prepare.timer
 [Unit]
-Description=compound-memory distill-prepare (deterministic distill plan)
+Description=compound-memory distill-prepare (read-only dream report)
 
 [Service]
 Type=oneshot

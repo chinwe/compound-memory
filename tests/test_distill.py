@@ -325,7 +325,9 @@ class TestDistillPrepareScript:
         )
         assert proc.returncode == 0, proc.stderr
         plan = json.loads((root / "distill" / "last-plan.json").read_text(encoding="utf-8"))
-        assert plan["candidates"] == []
+        assert plan["dry_run"] is True
+        assert plan["distill"]["candidates"] == []
+        assert plan["stats_before"] == plan["stats_after"]
         assert "distill/" in (root / ".gitignore").read_text(encoding="utf-8")
 
     @pytest.mark.skipif(not _uv_available(), reason="uv unavailable (not on PATH, no ~/.local/bin/uv)")

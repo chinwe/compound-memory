@@ -1,8 +1,8 @@
 """MemoryStore 组合点（facade，ADR 0003 终态）：机制件装配 + 动词目录。
 
-机制五件（paths/files/gitlayer/locking/validation，#36）与动词七件
+机制五件（paths/files/gitlayer/locking/validation，#36）与动词
 （读路径 stats/review/distill/search/indexing #37、写路径 writing/
-lifecycle #38）已全部外移，facade 只承载四块：构造装配（布局/索引/
+lifecycle #38、只读编排 dream #69）已全部外移，facade 只承载四块：构造装配（布局/索引/
 写锁/git/嵌入/身份注入）、get 与 link 两个薄动词的方法体（ADR 0003
 裁决 2：留层保「动词目录」可读性）、机制件与写核心的薄委托
 （_write_new/_write_result/_archive/_move_to_active 等 tests 播种与
@@ -26,7 +26,7 @@ from ..liveness import ScanWindow
 from ..model import Memory
 from ..review_queue import ReviewQueue
 from ..vector_index import VectorIndex
-from . import distill, files, gitlayer, indexing, lifecycle, locking, paths, review, search as search_mod, stats as stats_mod, validation, writing
+from . import distill, dream as dream_mod, files, gitlayer, indexing, lifecycle, locking, paths, review, search as search_mod, stats as stats_mod, validation, writing
 from .files import _unlink_file
 from .gitlayer import _git_available
 from .locking import _Batch
@@ -350,6 +350,21 @@ class MemoryStore:
     ) -> dict[str, Any]:
         """蒸馏落库（batch/write 经属性查找）。"""
         return distill.distill_apply(self, content, type, source, source_ids, ns, key, confidence)
+
+    def dream(
+        self,
+        window_days: int = 30,
+        min_uses: int = 1,
+        min_confidence: float = 0.5,
+        ns: str = "_shared",
+        reader: str | None = None,
+    ) -> dict[str, Any]:
+        """只读离线编排（#69，dream 动词）：distill_plan + 衰减计数 + stats 快照。
+
+        入口仅 store + CLI——MCP 恰好 5 tool 红线不动。不归档、不 distill_apply、
+        不 forget、不写 feedback。
+        """
+        return dream_mod.dream(self, window_days, min_uses, min_confidence, ns, reader)
 
     # ---------- 索引（可重建缓存；机制在 index.Index 与 vector_index.VectorIndex） ----------
 
