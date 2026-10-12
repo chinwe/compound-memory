@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.3 - 2026-10-12
+
+- Retrieval visibility is unified behind `is_retrievable`, so search and the CLI apply the same archived, expiry, namespace, and project filter (#67).
+
 ## 0.5.2 - 2026-10-11
 
 - Docs: spec write-lock text matches POSIX `flock` vs Windows `msvcrt` (`WriteLockError` on timeout; unlocked fallback only when the lock file cannot be created). Conflict handling points at `review-resolve` instead of hand-moving files. Feedback docs state that every outcome advances `uses` / `last_used`. `stats.cross_validated` is memories with at least two `validated_by` agents.
