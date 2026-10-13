@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.5 - 2026-10-13
+
 - CLI `dream-apply` applies caller-supplied products (`content`, `type`, `source_ids`) through existing `distill_apply` when the signal is `merge_with`, `key_duplicates`, or an explicitly opted-in `promotion_candidate`. `possible_dup_of` stays report-only. `dream` stays read-only, and timers still call only `dream` (#72).
 
 ## 0.5.4 - 2026-10-12
