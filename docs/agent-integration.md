@@ -317,11 +317,16 @@ uvx --from compound-memory compound-memory dream --ns _shared   # 只读编排�
                                       #   stats_before 与 stats_after 空跑相等。不归档、不 distill-apply、不 forget
 uvx --from compound-memory compound-memory distill-plan   # 只要候选清单时：merge_with / possible_dup_of / promotion_candidate
 # Agent 阅读 last-plan.json 的 distill 段做取舍、拟合并文案（判断段）
+# 半自动落库：proposals.json 是列表，每项自带 content / type / source_ids
+# （晋升项加 promote: true）。先 --dry-run，确认 planned / skipped 后再去掉。
+uvx --from compound-memory compound-memory dream-apply --proposals proposals.json --source agent-zcode --dry-run
+                                      # 只放行 merge_with / key_duplicates / 点名的 promotion_candidate，
+                                      # 经既有 distill-apply 落库；possible_dup_of 只报告。定时任务不要调用
 uvx --from compound-memory compound-memory distill-apply "合并后的经验" insight agent-zcode \
-  --sources <id1>,<id2>                    # 原子落库：产物 links 溯源 + 源归档（可复活）
+  --sources <id1>,<id2>                    # 单条原子落库：产物 links 溯源 + 源归档（可复活）
 ```
 
-launchd（macOS）/ systemd user timer（Linux）/ cron 每天 09:00 自动跑 `dream`，把只读报告写到 `<root>/distill/last-plan.json`（`distill` 段即候选清单；安装物与命令见 README「定时蒸馏准备」）。各宿主 Agent 任意会话中发现报告有新候选时按需处理即可。
+launchd（macOS）/ systemd user timer（Linux）/ cron 每天 09:00 自动跑只读 `dream`，把报告写到 `<root>/distill/last-plan.json`（`distill` 段即候选清单；安装物与命令见 README「定时蒸馏准备」）。定时脚本不调用 `dream-apply`。各宿主 Agent 任意会话中发现报告有新候选时按需处理即可。
 
 ## 8. 故障排查
 

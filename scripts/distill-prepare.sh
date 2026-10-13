@@ -4,6 +4,8 @@
 # distill 段即 distill-plan 候选清单，另有 decay_signals 与 stats 快照。
 # 判断段由调用方 Agent 会话内读取该报告完成，取舍经 distill-apply 原子落库。
 # dream 自身不归档、不 distill-apply、不 forget。
+# 定时路径永远只跑只读 dream（#72）。不要改成带 apply 的命令：落库必须由人/Agent
+# 显式触发，并且先给出产物正文。
 # 失败要响亮：set -eu 下任何一步失败都以非 0 退出（launchd 日志可见）——
 # 静默不跑的蒸馏等于没有蒸馏。
 set -eu

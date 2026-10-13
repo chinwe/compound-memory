@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- CLI `dream-apply` applies caller-supplied products (`content`, `type`, `source_ids`) through existing `distill_apply` when the signal is `merge_with`, `key_duplicates`, or an explicitly opted-in `promotion_candidate`. `possible_dup_of` stays report-only. `dream` stays read-only, and timers still call only `dream` (#72).
+
 ## 0.5.4 - 2026-10-12
 
 - CLI `dream` prints a read-only offline consolidation report (`distill_plan`, decay signals, and stats). It does not auto-write, call an LLM, or add an MCP tool (#70 / #69).
