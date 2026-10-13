@@ -42,7 +42,8 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | `rebuild-index` | 手工编辑过记忆文件**内容**后（活性检测只覆盖新增/删除文件） |
 | `review-queue` / `review-resolve` | 处理同 key 冲突队列与 contradiction 争议（人工裁决入口）：`review-resolve <废置id>` 清行并自动归档废置方（对侧保留活动区）；contradiction 争议行裁决二选一——维持原记忆有效用 `review-resolve <争议id> --uphold`（解冻并按 failure −0.2 折算），确错则缺省路径归档；`--all` 只清空队列不归档（争议行解冻但不折算）。私有 `agent-*` ns 的行仅属主可清（加 `--reader`）——`--all` 会静默保留别人的私有行，显式点名则报错；`review-queue` 展示仍全量 |
 | `decay` | 衰减归档，长期未用且少用才动（定时任务跑） |
-| `dream [--ns <ns>] [--reader <id>]` | 离线只读编排（ADR-0001，无 LLM）：对一个 ns 出报告。`distill` 段复用 distill-plan（merge_with / possible_dup_of / promotion_candidate / key_duplicates）；`decay_signals` 只计数（valid_until 已过、归档区规模、低活性）；`stats_before` / `stats_after` 空跑相等。不写盘、不归档、不 distill-apply、不 forget。定时准备跑的就是它。私有 ns 加 `--reader` |
+| `dream [--ns <ns>] [--reader <id>]` | 离线只读编排（ADR-0001，无 LLM）：对一个 ns 出报告。`distill` 段复用 distill-plan（merge_with / possible_dup_of / promotion_candidate / key_duplicates）；`decay_signals` 只计数（valid_until 已过、归档区规模、低活性）；`stats_before` / `stats_after` 空跑相等。不写盘、不归档、不 distill-apply、不 forget。定时准备跑的就是它，没有 `--apply`。私有 ns 加 `--reader` |
+| `dream-apply --proposals <file> --source <agent> [--dry-run] [--ns <ns>] [--reader <id>]` | 显式半自动落库（#72，无 LLM）。`--proposals` 是 JSON 列表，每项必须自带 `content`、`type`、`source_ids`（可选 `key` / `confidence`；`promote: true` 才允许晋升）。只编排既有 `distill-apply`：同 key 强信号 `merge_with` / `key_duplicates`，以及调用方点名的 `promotion_candidate`。`possible_dup_of` 只报告不落库。未过门槛的项列入 `skipped` 并给原因。`--dry-run` 只打印 `planned`、零写盘。不 forget，没有 `--include-forget`，也没有 git revert 子命令（回看用 `git-log`）。定时任务禁止调用。私有 ns 加 `--reader`，且 `--source` 必须是属主 |
 | `revive <id>` | 复活归档记忆（私有 ns 记忆加 `--reader`） |
 | `forget <id> --agent <agent id> [--reason <动机短语>]` | 终态遗忘（ADR-0009）：文件物理移出（活动/归档区皆可）+ 单条 forget 提交留痕，内容仅存 git 历史。不可复活：对被遗忘记忆 feedback/revive 返回 `found: false`，恢复 = 带外 git 运维（checkout/revert）。私有 `agent-*` ns 仅属主可遗忘（`--agent` 与 feedback 同规）；幂等（不存在/已遗忘返回 `found: false`）。`--reason` 是动机短语（单行、限 80 字符），不贴记忆正文。隐私边界：forget 解决「活动库不再携带」，不解决「历史不再包含」——git 历史清理是另行决策的破坏性运维 |
 | `git-log` | 审计轨迹（每次写入自动 commit）；消费端降噪：`--grep PATTERN`（可多次，OR）只留消息匹配的提交、`--exclude PATTERN`（可多次）剔除匹配的提交，PATTERN 为正则作用于消息段（剥 hash），如 `git-log --exclude feedback` |
@@ -56,9 +57,9 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 
 ### 蒸馏工作流（判断段归调用方 Agent）
 
-1. `dream`：只读报告写到 `<root>/distill/last-plan.json`（launchd 每天 09:00 自动跑）。候选清单在 `distill` 段（与直接跑 `distill-plan` 同字段）：主候选标注 merge_with / possible_dup_of / promotion_candidate；另有 `key_duplicates` 专项段圈出同 key 多版本组（不受活性门限制——清行未归档的废置旧版 uses=0 进不了主候选），逐组「留新归旧」处置。`decay_signals` 只是计数线索，归档仍走 `decay` / `distill-apply` / `review-resolve`，forget 仍是显式 CLI。扫私有 ns 加 `--reader`；`distill-apply` 的源与产物必须同 ns。只要候选清单时可直接 `distill-plan`。
-2. Agent 读 `last-plan.json` 的 `distill` 段做取舍、拟合并文案。判断段不在 server 内（无 LLM，不改写磁盘上的记忆正文）。
-3. `distill-apply "<产物>" insight <source> --sources <id1>,<id2>`：原子落库，产物 links 溯源到源、源归档可复活。任意会话发现清单有新候选时按需处理即可。
+1. `dream`：只读报告写到 `<root>/distill/last-plan.json`（launchd 每天 09:00 自动跑，只跑这条只读命令）。候选清单在 `distill` 段（与直接跑 `distill-plan` 同字段）：主候选标注 merge_with / possible_dup_of / promotion_candidate；另有 `key_duplicates` 专项段圈出同 key 多版本组（不受活性门限制——清行未归档的废置旧版 uses=0 进不了主候选）。`decay_signals` 只是计数线索，归档仍走 `decay` / `distill-apply` / `review-resolve`，forget 仍是显式 CLI。扫私有 ns 加 `--reader`；`distill-apply` 的源与产物必须同 ns。只要候选清单时可直接 `distill-plan`。
+2. Agent 读 `last-plan.json` 的 `distill` 段做取舍、拟合并文案。判断段不在 server 内（无 LLM，不改写磁盘上的记忆正文）。没有产物正文时不要落库。
+3. 落库二选一。已经判断好的单条：`distill-apply "<产物>" insight <source> --sources <id1>,<id2>`，原子落库，产物 links 溯源到源、源归档可复活。要按 dream 门槛收一批：把产物写成 JSON 列表（每项 `content` / `type` / `source_ids`，晋升项加 `promote: true`），先 `dream-apply --proposals <file> --source <本宿主> --dry-run` 看 `planned` / `skipped`，确认后再去掉 `--dry-run`。`dream-apply` 只放行 `merge_with`、`key_duplicates` 和点名的 `promotion_candidate`，`possible_dup_of` 留在报告里。任意会话发现清单有新候选时按需处理即可。
 
 ## 故障排查
 

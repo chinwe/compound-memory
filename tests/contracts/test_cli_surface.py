@@ -1,8 +1,9 @@
 """CLI 层契约（#25 决议第三优先级）：只钉命令面存在性，行为不重测。
 
-CLI 是薄 adapter：19 个子命令名 + 关键 flags（含 D1/D2 的 link --agent 与
+CLI 是薄 adapter：20 个子命令名 + 关键 flags（含 D1/D2 的 link --agent 与
 review-resolve --reader、ADR-0009 的 forget --agent/--reason、#44 的
-explain --reader 与 search --explain、#69 的 dream --ns/--reader）不消失即契约；
+explain --reader 与 search --explain、#69 的 dream --ns/--reader、#72 的
+dream-apply --proposals/--source/--dry-run）不消失即契约；
 结构断言走 argparse 公开解析结果（flag 被消费 = 存在，落进 unknown = 不存在）。
 """
 
@@ -14,12 +15,14 @@ import pytest
 
 from compound_memory.cli import build_parser
 
-# 19 个子命令（#25 决议钉定的命令面；#48/ADR-0009 契约变更：16→17 加 forget；
+# 20 个子命令（#25 决议钉定的命令面；#48/ADR-0009 契约变更：16→17 加 forget；
 # #44/spec-52 Explain 载体裁决的契约变更：17→18 加 explain——按 id 证据视图；
-# #69 契约变更：18→19 加 dream——CLI-only 只读编排，MCP 仍为 5）
+# #69 契约变更：18→19 加 dream——CLI-only 只读编排，MCP 仍为 5；
+# #72 契约变更：19→20 加 dream-apply——显式半自动落库，dream 仍只读，MCP 仍为 5。
+# 不加入 git-revert / dream --apply）
 EXPECTED_COMMANDS = {
     "init", "write", "search", "get", "explain", "link", "feedback", "decay", "revive", "forget",
-    "distill-plan", "distill-apply", "dream", "stats", "rebuild-index", "review-queue",
+    "distill-plan", "distill-apply", "dream", "dream-apply", "stats", "rebuild-index", "review-queue",
     "review-resolve", "git-log", "extract",
 }
 
@@ -36,7 +39,7 @@ def _flag_consumed(parser: argparse.ArgumentParser, argv: list[str]) -> bool:
 
 
 class TestCommandSurface:
-    def test_exactly_nineteen_subcommands(self):
+    def test_exactly_twenty_subcommands(self):
         assert set(_subcommands(build_parser())) == EXPECTED_COMMANDS
 
 
@@ -63,6 +66,12 @@ class TestKeyFlags:
             # dream 只读编排（#69 契约变更）：--ns / --reader 与 distill-plan 同门
             ("dream-reader", ["dream", "--ns", "agent-zcode", "--reader", "zcode"]),
             ("dream-window", ["dream", "--window", "7", "--min-uses", "0", "--min-confidence", "0.2"]),
+            # dream-apply 显式落库（#72 契约变更）：产物包 + 写者身份 + dry-run；无 --apply / --include-forget
+            ("dream-apply-dry-run", ["dream-apply", "--proposals", "p.json", "--source", "agent-a", "--dry-run"]),
+            (
+                "dream-apply-reader",
+                ["dream-apply", "--proposals", "p.json", "--source", "zcode", "--ns", "agent-zcode", "--reader", "zcode"],
+            ),
             # search 的范围/形状 flags
             ("search-top-k", ["search", "q", "--top-k", "10"]),
             ("search-no-neighbors", ["search", "q", "--no-neighbors"]),
@@ -92,3 +101,12 @@ class TestKeyFlags:
     def test_unknown_flag_is_not_consumed(self):
         """对照组：不存在的 flag 落进 unknown——存在性断言的判别力证明。"""
         assert not _flag_consumed(build_parser(), ["link", "a", "b", "--bogus", "x"])
+
+    def test_dream_stays_free_of_apply_switches(self):
+        """#72：dream 不挂 --apply；dream-apply 不挂 --include-forget；无 git-revert 子命令。"""
+        assert not _flag_consumed(build_parser(), ["dream", "--ns", "_shared", "--apply"])
+        assert not _flag_consumed(
+            build_parser(),
+            ["dream-apply", "--proposals", "p.json", "--source", "agent-a", "--include-forget"],
+        )
+        assert "git-revert" not in _subcommands(build_parser())

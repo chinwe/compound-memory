@@ -2,7 +2,7 @@
 
 机制五件（paths/files/gitlayer/locking/validation，#36）与动词
 （读路径 stats/review/distill/search/indexing #37、写路径 writing/
-lifecycle #38、只读编排 dream #69）已全部外移，facade 只承载四块：构造装配（布局/索引/
+lifecycle #38、只读编排 dream #69、显式 dream_apply #72）已全部外移，facade 只承载四块：构造装配（布局/索引/
 写锁/git/嵌入/身份注入）、get 与 link 两个薄动词的方法体（ADR 0003
 裁决 2：留层保「动词目录」可读性）、机制件与写核心的薄委托
 （_write_new/_write_result/_archive/_move_to_active 等 tests 播种与
@@ -362,9 +362,36 @@ class MemoryStore:
         """只读离线编排（#69，dream 动词）：distill_plan + 衰减计数 + stats 快照。
 
         入口仅 store + CLI——MCP 恰好 5 tool 红线不动。不归档、不 distill_apply、
-        不 forget、不写 feedback。
+        不 forget、不写 feedback。写盘入口是 dream_apply。
         """
         return dream_mod.dream(self, window_days, min_uses, min_confidence, ns, reader)
+
+    def dream_apply(
+        self,
+        actions: list[Any],
+        source: str,
+        window_days: int = 30,
+        min_uses: int = 1,
+        min_confidence: float = 0.5,
+        ns: str = "_shared",
+        reader: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """显式半自动落库（#72）。只转发 dream_apply；落库仍是 distill_apply。
+
+        入口仅 store + CLI——MCP 恰好 5 tool 红线不动。dream 本身保持只读。
+        """
+        return dream_mod.dream_apply(
+            self,
+            actions,
+            source,
+            window_days,
+            min_uses,
+            min_confidence,
+            ns,
+            reader,
+            dry_run,
+        )
 
     # ---------- 索引（可重建缓存；机制在 index.Index 与 vector_index.VectorIndex） ----------
 

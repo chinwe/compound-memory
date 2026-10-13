@@ -158,6 +158,38 @@ def cmd_dream(args: argparse.Namespace) -> None:
     _emit(report)
 
 
+def _load_proposals(path: Path) -> list[Any]:
+    """dream-apply 的产物包。必须是 JSON 列表；缺文件 / 坏 JSON 是调用方错误。"""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"cannot read dream-apply proposals: {path}") from exc
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"dream-apply proposals must be JSON: {exc.msg}") from exc
+    if not isinstance(data, list):
+        raise ValueError("dream-apply proposals must be a JSON list")
+    return data
+
+
+def cmd_dream_apply(args: argparse.Namespace) -> None:
+    # 显式写入口。stdout 是计划/结果 JSON，一行计数摘要走 stderr。
+    # --dry-run 不调用 distill_apply。
+    report = _open_store(args).dream_apply(
+        actions=_load_proposals(Path(args.proposals)),
+        source=args.source,
+        window_days=args.window,
+        min_uses=args.min_uses,
+        min_confidence=args.min_confidence,
+        ns=args.ns,
+        reader=args.reader,
+        dry_run=args.dry_run,
+    )
+    print(report["summary"], file=sys.stderr)
+    _emit(report)
+
+
 def cmd_distill_apply(args: argparse.Namespace) -> None:
     _emit(
         _open_store(args).distill_apply(
@@ -324,6 +356,7 @@ def build_parser() -> argparse.ArgumentParser:
         "the decay archive predicate (low_activity_count) — counts only, nothing is archived. "
         "stats_before and stats_after are two stats() snapshots and are equal on this path. "
         "Does not archive, distill-apply, forget, or write feedback. Not an MCP tool. "
+        "The explicit gated write command is dream-apply; this command has no apply switch. "
         "JSON on stdout; a one-line summary on stderr.",
     )
     p.add_argument("--window", type=int, default=30, help="recency window in days, passed through to distill-plan")
@@ -332,6 +365,30 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ns", default="_shared")
     p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
     p.set_defaults(func=cmd_dream)
+    p = sub.add_parser(
+        "dream-apply",
+        help="explicitly apply gated dream signals via distill-apply (caller supplies the product)",
+        description="Explicit half-automatic apply for one namespace (ADR-0001 / #72). Separate from "
+        "read-only dream: timers and distill-prepare must not call this. No in-process LLM. Not an MCP tool. "
+        "Proposals are a JSON list. Each object must include content, type, and source_ids (optional key, "
+        "confidence, and promote). Nothing is written until that body is present — there is no silent "
+        "keep-new/archive-old. Admitted signals: merge_with and key_duplicates, plus promotion_candidate "
+        "only when that object sets promote true. possible_dup_of is report-only and never admitted. "
+        "Expired and low-activity rows are not admitted. Admitted rows are executed one by one through "
+        "distill-apply (origin stays distillation). Skipped rows are listed with a reason. "
+        "--dry-run prints the plan and writes nothing. Does not forget, and there is no --include-forget "
+        "and no git-revert helper (use git-log). Private agent-* namespaces need --reader, and --source "
+        "must be the owner. JSON on stdout; a one-line count summary on stderr.",
+    )
+    p.add_argument("--proposals", required=True, help="JSON list of products (content, type, source_ids)")
+    p.add_argument("--source", required=True, help="writer identity passed through to distill-apply")
+    p.add_argument("--dry-run", action="store_true", help="print planned actions and write nothing")
+    p.add_argument("--window", type=int, default=30, help="recency window in days, passed through to distill-plan")
+    p.add_argument("--min-uses", type=int, default=1, help="activity gate passed through to distill-plan")
+    p.add_argument("--min-confidence", type=float, default=0.5, help="activity gate passed through to distill-plan")
+    p.add_argument("--ns", default="_shared")
+    p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
+    p.set_defaults(func=cmd_dream_apply)
     p = sub.add_parser("distill-apply")
     p.add_argument("content"); p.add_argument("type", choices=MEMORY_TYPES); p.add_argument("source")
     p.add_argument("--sources", required=True, help="comma-separated source memory ids")
