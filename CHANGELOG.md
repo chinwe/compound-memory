@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-- `lesson_role` (`lesson` or `avoid`) marks a lesson on an existing type. `distill-plan` and `dream` report `negative_salience` and `contradiction_pairs`. `suggested_action` stays merge / promote / review, and `dream-apply` does not admit rows because of those sections (#78).
+## 0.5.7 - 2026-10-15
+
+- Lesson and avoid semantics: `lesson_role` (`lesson` or `avoid`) on an existing type, and link prefixes `avoid:`, `fixes:`, and `contradicts:`. `distill-plan` and `dream` report `negative_salience` and `contradiction_pairs`. `dream-apply` is not widened, and there is no new MCP tool or in-process LLM (#78 / #79).
 
 ## 0.5.6 - 2026-10-15
 
