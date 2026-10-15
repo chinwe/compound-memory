@@ -126,7 +126,10 @@
   key_duplicates 专项段。契约变更 #75：主候选增加 `suggested_action`
   （merge / promote / review，无信号为 null），顶层增加 `suggested_actions`
   簇清单（同 key 组自动列 merge + `source_ids`；弱相似列 review）。
-  不放宽 dream-apply，不写 supersedes frontmatter。扫私有 ns 须属主（候选带正文）。**不产生提交**。
+  不放宽 dream-apply，不写 supersedes frontmatter。契约变更 #78：顶层增加
+  `negative_salience` 与 `contradiction_pairs`（failure_count / 低置信 / 矛盾信号 /
+  `lesson_role: avoid` / 同 key 内容冲突 / `contradicts:` 链接）。只报告，不扩
+  suggested_action，不放宽 dream-apply。扫私有 ns 须属主（候选带正文）。**不产生提交**。
 - **distill_apply**：蒸馏落库（原子）。失败语义（P5）：missing 源 ⇒
   `{"found": False, "missing": [...]}` 零操作零提交；跨 ns 源 ⇒ ValueError 整体拒绝；
   源去重保序；已归档源跳过搬运但仍计入清单。成功：产物（origin=distillation、

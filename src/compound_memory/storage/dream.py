@@ -12,6 +12,8 @@ apply 包。valid_until 已过与低活性只出现在 dream 的 decay_signals �
 
 建议动作 suggested_action（merge / promote / review，#75）写在 distill_plan
 上，dream 的 distill 段原样带出，本模块不重算、不放宽门槛。
+negative_salience / contradiction_pairs（#78）同样原样带出：只报告，
+不参与 dream_apply 入选。错教训更新仍是新写正文 + 归档源。
 
 衰减计数复用 lifecycle.is_decay_candidate（与 decay_sweep 同一谓词）。
 valid_until 已过走 scoring.is_expired，与 stats.expired_active 同一日期规则，
@@ -139,6 +141,8 @@ def _summary(ns: str, plan: dict[str, Any], signals: dict[str, int]) -> str:
         f"dream ns={ns} dry-run: "
         f"candidates={len(plan['candidates'])} "
         f"key_duplicates={len(plan['key_duplicates'])} "
+        f"negative={len(plan['negative_salience'])} "
+        f"contradictions={len(plan['contradiction_pairs'])} "
         f"expired={signals['expired_count']} "
         f"archived={signals['archived_count']} "
         f"low_activity={signals['low_activity_count']}"
@@ -156,8 +160,9 @@ def dream(
     """对一个 ns 做只读离线编排，返回报告。
 
     distill 段就是 distill_plan 的返回值（merge_with / possible_dup_of /
-    promotion_candidate / key_duplicates / suggested_action 原样可追溯）。
-    decay_signals 只计数。
+    promotion_candidate / key_duplicates / suggested_action /
+    negative_salience / contradiction_pairs 原样可追溯，本函数不重算）。
+    decay_signals 只计数。负向段与矛盾对不放宽写盘门槛。
     stats_before / stats_after 是全库 stats() 的两次快照；本路径不写，二者相等。
     dry_run 恒为 True。写盘是独立的 dream_apply，不挂在本函数上。
 
@@ -316,7 +321,11 @@ def _record(action: dict[str, Any], *, signal: str | None = None, reason: str | 
 def _classify(
     plan: dict[str, Any], actions: list[dict[str, Any]]
 ) -> tuple[list[tuple[dict[str, Any], str]], list[dict[str, Any]]]:
-    """报告 → 可执行动作。未入选的项带原因留下，不写盘。"""
+    """报告 → 可执行动作。未入选的项带原因留下，不写盘。
+
+    只看 APPLY_SIGNALS。negative_salience 与 contradiction_pairs 不在此列：
+    负向或矛盾本身不放宽入选（#78）。同 key 强信号仍按 #72/#75 的旧门槛走。
+    """
     merge_groups = _merge_id_groups(plan)
     key_groups = _key_id_groups(plan)
     promo = _promotion_ids(plan)

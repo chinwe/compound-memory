@@ -187,11 +187,13 @@ class MemoryStore:
         valid_until: str | None = None,
         evidence: dict[str, Any] | None = None,
         project: str | None = None,
+        lesson_role: str | None = None,
     ) -> dict[str, Any]:
         """写动词（WritingDeps 镜像它）。evidence 仅蒸馏落库传显式零块（ADR-0008），
-        普通写保持 None（无证据块，惰性迁移面）。"""
+        普通写保持 None（无证据块，惰性迁移面）。lesson_role 缺省即普通记忆（#78）。"""
         return writing.write(
-            self, content, type, source, ns, key, links, created, confidence, origin, valid_from, valid_until, evidence, project
+            self, content, type, source, ns, key, links, created, confidence, origin,
+            valid_from, valid_until, evidence, project, lesson_role,
         )
 
     def _write_new(
@@ -209,10 +211,12 @@ class MemoryStore:
         valid_until: str | None = None,
         evidence: dict[str, Any] | None = None,
         project: str | None = None,
+        lesson_role: str | None = None,
     ) -> tuple[Memory, Memory | None]:
         """落库核心（write/batch/distill_apply/tests 四方共用）。"""
         return writing.write_new(
-            self, content, type, source, ns, key, links, created, confidence, origin, valid_from, valid_until, evidence, project
+            self, content, type, source, ns, key, links, created, confidence, origin,
+            valid_from, valid_until, evidence, project, lesson_role,
         )
 
     @staticmethod

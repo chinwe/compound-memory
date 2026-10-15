@@ -32,6 +32,11 @@ TYPE_SPEC: dict[str, TypeSpec] = {
 MEMORY_TYPES = tuple(TYPE_SPEC)
 TTL_DAYS: dict[str, int | None] = {t: s.ttl_days for t, s in TYPE_SPEC.items()}
 
+# 教训角色（#78）：不新增记忆类型。缺省（字段省略）= 普通记忆。
+# lesson 通常落在 insight（稳态也可落 decision）；avoid 落在 decision 并标 avoid。
+# 扫描器只认本字段，不认 key 前缀。
+LESSON_ROLES = ("lesson", "avoid")
+
 # 证据块 recent 明细上限（ADR-0007，perf 守门）：frontmatter parse 是读路径延迟大头，
 # 明细封顶防 yaml 膨胀；老明细语义化进计数不丢失，全史审计走 commit 消息（混合三层②）。
 EVIDENCE_RECENT_CAP = 10
@@ -107,3 +112,6 @@ class Memory:
     # 空 = 跨项目通用（全局）。检索适用性轴，与 ns 的可见性/属主轴正交；
     # 纯元数据过滤，绝不进落盘路径（namespaces/<ns>/<type>/<id>.md 不变）
     project: str | None = None
+    # 教训角色（#78，frontmatter 可选）：lesson / avoid；None = 普通记忆。
+    # 不进 doc_text，不新增 type。允许值校验单点在 validation.check_lesson_role。
+    lesson_role: str | None = None

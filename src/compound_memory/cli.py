@@ -56,6 +56,7 @@ def cmd_write(args: argparse.Namespace) -> None:
             valid_from=args.valid_from,
             valid_until=args.valid_until,
             project=_caller_project(args),
+            lesson_role=args.lesson_role,
         )
     )
 
@@ -263,6 +264,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project", default=None,
                    help="project scope slug for workspace-specific memories "
                         "(omitted = global; falls back to $COMPOUND_MEMORY_PROJECT)")
+    p.add_argument("--lesson-role", default=None, choices=["lesson", "avoid"],
+                   help="optional lesson semantics: lesson (usually insight) or avoid "
+                        "(decision + this field). Omit for an ordinary memory. "
+                        "Do not encode the role in the key.")
     p.set_defaults(func=cmd_write)
 
     p = sub.add_parser("search")
@@ -345,6 +350,9 @@ def build_parser() -> argparse.ArgumentParser:
         "possible_dup_of, including cross-key weak similarity, is review. "
         "Cross-key multi-source consolidation uses the same merge label and a source_ids cluster — "
         "there is no synthesize action and no supersedes frontmatter. "
+        "negative_salience and contradiction_pairs are report-only (failure_count, low confidence, "
+        "contradiction signals, lesson_role avoid, same-key content conflicts, and contradicts: links). "
+        "They do not add a suggested_action and do not widen dream-apply. "
         "Judgment (merge/summarize) stays with the calling agent.",
     )
     p.add_argument("--window", type=int, default=30, help="recency window in days (last_used first, created fallback)")
@@ -359,8 +367,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="Offline consolidation prep for one namespace (ADR-0001: deterministic prep, "
         "judgment stays with the calling agent; no in-process LLM). Read-only dry-run. "
         "The distill section is the distill-plan result (merge_with / possible_dup_of / "
-        "promotion_candidate / key_duplicates / suggested_action). suggested_action is merge, "
-        "promote, or review. decay_signals counts valid_until already passed "
+        "promotion_candidate / key_duplicates / suggested_action / negative_salience / "
+        "contradiction_pairs). suggested_action is merge, promote, or review. "
+        "negative_salience and contradiction_pairs are report-only and do not widen dream-apply. "
+        "decay_signals counts valid_until already passed "
         "(expired_count), the archive area (archived_count), and low-activity memories that match "
         "the decay archive predicate (low_activity_count) — counts only, nothing is archived. "
         "stats_before and stats_after are two stats() snapshots and are equal on this path. "

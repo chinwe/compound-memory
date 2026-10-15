@@ -45,7 +45,11 @@ _WRITE_DESCRIPTION = (
     "joined by dashes) for workspace-specific memories — tagged memories are hidden from searches "
     "that do not pass the same project, while untagged (global) memories stay visible everywhere; "
     "declare your workspace project per the host usage rules and pass it on every write/search in "
-    "that workspace. content is capped at "
+    "that workspace. lesson_role: optional 'lesson' or 'avoid' (omit for an ordinary memory) — "
+    "write a lesson as insight (or a steady decision) and an avoid as decision plus this field; "
+    "do not invent a memory type or encode the role in the key. "
+    "links may start with avoid:, fixes:, or contradicts: plus a target id or key; other link strings "
+    "stay free-form. content is capped at "
     f"{MAX_CONTENT_CHARS} characters — longer payloads are rejected and nothing is written. "
     "Returns the stored memory; `conflict: true` means a different version with "
     "the same key exists and a review entry was queued."
@@ -90,6 +94,7 @@ def memory_write(
     valid_from: str | None = None,
     valid_until: str | None = None,
     project: str | None = None,
+    lesson_role: str | None = None,
 ) -> dict[str, Any]:
     return _store_or_configure().write(
         content=content,
@@ -101,6 +106,7 @@ def memory_write(
         valid_from=valid_from,
         valid_until=valid_until,
         project=project,
+        lesson_role=lesson_role,
     )
 
 

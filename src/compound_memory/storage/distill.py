@@ -9,6 +9,10 @@ review。synthesize 与 supersede 不单列——同 key 多版，以及调用�
 多源综合，都是 merge，簇用 source_ids 标识（不写 supersedes: frontmatter）。
 possible_dup_of 只标 review。落库仍只走 distill_apply。
 
+教训报告（#78）也在本模块：不新增记忆类型，不扩 suggested_action。
+negative_salience / contradiction_pairs 只标注。借用教训语义，不搬因果引擎。
+dream-apply 的入选门槛不因这两段放宽。
+
 distill_apply 的锁语义逐位保持：源读取在写锁内（batch 持锁）、检查失败
 零操作、批尾溯源消息经 batch 句柄覆写；batch 与 write 一律走 store 的
 实例属性查找（测试的 racing_patch 打桩缝，#36 沉淀约束）。
@@ -21,7 +25,7 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol, overload
 
-from ..model import Memory, zero_evidence
+from ..model import EVIDENCE_CONTRADICTION_COUNT, EVIDENCE_FAILURE_COUNT, Memory, evidence_view, zero_evidence
 from ..scoring import doc_text, dup_similarity_matrix, is_expired, recency_age
 from .locking import _Batch
 
@@ -30,8 +34,24 @@ from .locking import _Batch
 DISTILL_DUP_SIM_THRESHOLD = 0.5
 PROMOTION_USES_THRESHOLD = 5
 
-# 建议动作词汇 v1（#75 单一定义点）。没有 synthesize / supersede。
+# 建议动作词汇 v1（#75 单一定义点）。没有 synthesize / supersede，也没有 avoid（#78）。
 SUGGESTED_ACTIONS = ("merge", "promote", "review")
+
+# 教训链接前缀（#78 单一定义点）。扫描器只认这三种；其余 links 仍是自由字符串。
+LESSON_LINK_PREFIXES = ("avoid", "fixes", "contradicts")
+
+# 负向显著性（#78 单一定义点）。低于缺省置信度起点算低置信。
+# score = failure_count + contradiction_count
+#       + 1（lesson_role == avoid）+ 1（自身带 avoid: 链接）
+#       + 1（contradicts: 关系的任一端）+ 0.5（confidence < 本阈值）
+# 夹具钉 score；改权重即契约变更。fixes: 认前缀，但不进这两段。
+NEGATIVE_LOW_CONFIDENCE = 0.5
+_SIGNAL_AVOID = "avoid"
+_SIGNAL_AVOID_LINK = "avoid_link"
+_SIGNAL_FAILURE = "failure_count"
+_SIGNAL_LOW_CONFIDENCE = "low_confidence"
+_SIGNAL_CONTRADICTION_COUNT = "contradiction_count"
+_SIGNAL_CONTRADICTS = "contradicts"
 
 
 class DistillDeps(Protocol):
@@ -64,6 +84,7 @@ class DistillDeps(Protocol):
         valid_until: str | None = None,
         evidence: dict[str, Any] | None = None,
         project: str | None = None,
+        lesson_role: str | None = None,
     ) -> dict[str, Any]: ...
     def _archive(self, mem: Memory) -> None: ...
 
@@ -233,6 +254,150 @@ def _suggested_actions(
     return actions
 
 
+def parse_lesson_link(link: str) -> tuple[str, str] | None:
+    """约定前缀 avoid / fixes / contradicts + 目标 id 或 key。
+
+    前缀必须在字符串开头，目标是单个无空白 token（冒号后的空白会去掉）。
+    其余自由字符串——包括正文里碰巧出现这些词——返回 None。
+    """
+    if not isinstance(link, str):
+        return None
+    for name in LESSON_LINK_PREFIXES:
+        prefix = name + ":"
+        if not link.startswith(prefix):
+            continue
+        target = link[len(prefix):].strip()
+        if target and not any(ch.isspace() for ch in target):
+            return name, target
+        return None
+    return None
+
+
+def _evidence_count(mem: Memory, key: str) -> int:
+    """证据计数：只认正整数。坏类型当 0，不让一条脏 frontmatter 炸掉整场扫描。"""
+    value = evidence_view(mem).get(key, 0)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
+
+
+def _resolve_lesson_targets(
+    token: str,
+    by_id: dict[str, Memory],
+    by_key: dict[str, list[Memory]],
+) -> list[Memory]:
+    """目标先按 id 命中（至多一条）；否则按 key 命中该 ns 扫描集里的全部。"""
+    hit = by_id.get(token)
+    if hit is not None:
+        return [hit]
+    return list(by_key.get(token, []))
+
+
+def _lesson_sections(mems: list[Memory]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """负向显著性与矛盾对（#78）。只读、确定性，不改 suggested_action。
+
+    扫描集与 key_duplicates 相同：活动区、跳过 valid_until 已过与坏日期，
+    不受窗口和活性门限制——否则低置信与 uses=0 的 avoid 会被主候选滤掉。
+    """
+    by_id = {mem.id: mem for mem in mems}
+    by_key: dict[str, list[Memory]] = {}
+    for mem in mems:
+        if mem.key:
+            by_key.setdefault(mem.key, []).append(mem)
+
+    avoid_link_ids: set[str] = set()
+    contradict_pairs: set[tuple[str, str]] = set()
+    for mem in mems:
+        for link in mem.links:
+            parsed = parse_lesson_link(link)
+            if parsed is None:
+                continue
+            kind, target = parsed
+            if kind == "avoid":
+                # 一元信号：这条记忆自己在声明回避，目标解析失败也算。
+                avoid_link_ids.add(mem.id)
+                continue
+            if kind != "contradicts":
+                # fixes: 只认前缀。不进负向段，也不当成矛盾对。
+                continue
+            for other in _resolve_lesson_targets(target, by_id, by_key):
+                if other.id == mem.id:
+                    continue
+                contradict_pairs.add((min(mem.id, other.id), max(mem.id, other.id)))
+
+    endpoints = {cid for pair in contradict_pairs for cid in pair}
+    salience: list[dict[str, Any]] = []
+    for mem in mems:
+        failure_count = _evidence_count(mem, EVIDENCE_FAILURE_COUNT)
+        contradiction_count = _evidence_count(mem, EVIDENCE_CONTRADICTION_COUNT)
+        signals: list[str] = []
+        score = 0.0
+        if mem.lesson_role == "avoid":
+            signals.append(_SIGNAL_AVOID)
+            score += 1.0
+        if mem.id in avoid_link_ids:
+            signals.append(_SIGNAL_AVOID_LINK)
+            score += 1.0
+        if failure_count:
+            signals.append(_SIGNAL_FAILURE)
+            score += failure_count
+        if mem.confidence < NEGATIVE_LOW_CONFIDENCE:
+            signals.append(_SIGNAL_LOW_CONFIDENCE)
+            score += 0.5
+        if contradiction_count:
+            signals.append(_SIGNAL_CONTRADICTION_COUNT)
+            score += contradiction_count
+        if mem.id in endpoints:
+            signals.append(_SIGNAL_CONTRADICTS)
+            score += 1.0
+        if not signals:
+            continue
+        salience.append(
+            {
+                "id": mem.id,
+                "score": score,
+                "lesson_role": mem.lesson_role,
+                "confidence": mem.confidence,
+                "failure_count": failure_count,
+                "contradiction_count": contradiction_count,
+                "signals": signals,
+            }
+        )
+    salience.sort(key=lambda row: (-row["score"], row["id"]))
+
+    pairs: list[dict[str, Any]] = []
+    groups: dict[tuple[str, str], list[Memory]] = {}
+    for mem in mems:
+        if mem.key:
+            groups.setdefault((mem.type, mem.key), []).append(mem)
+    for (mtype, key), members in groups.items():
+        ordered = sorted(members, key=lambda item: item.id)
+        for index, left in enumerate(ordered):
+            for right in ordered[index + 1:]:
+                if left.content.strip() == right.content.strip():
+                    continue
+                pairs.append(
+                    {
+                        "ids": [left.id, right.id],
+                        "reason": "same_key",
+                        "type": mtype,
+                        "key": key,
+                    }
+                )
+    for left_id, right_id in contradict_pairs:
+        left, right = by_id[left_id], by_id[right_id]
+        pairs.append(
+            {
+                "ids": [left_id, right_id],
+                "reason": "contradicts",
+                "type": left.type if left.type == right.type else None,
+                "key": left.key if left.key and left.key == right.key else None,
+            }
+        )
+    pairs.sort(key=lambda row: (row["ids"], row["reason"]))
+    return salience, pairs
+
+
 def distill_plan(
     store: DistillDeps,
     window_days: int = 30,
@@ -253,6 +418,11 @@ def distill_plan(
     suggested_actions 把上述簇列成一份清单：同 key merge 自动列出（仍要调用方
     正文才落库）；promote 只标注，dream-apply 仍须显式点名；possible_dup_of
     只标 review。跨 key 多源综合不另叫 synthesize，落库时用 merge + source_ids。
+    negative_salience / contradiction_pairs（#78）是另两段只读标注：负向条目
+    来自 failure_count、低置信、矛盾计数、lesson_role avoid、avoid: 链接与
+    contradicts: 关系；矛盾对来自同 key 内容冲突或 contradicts: 链接。
+    这两段不受窗口/活性门限制（与 key_duplicates 同人口），不产生新的
+    suggested_action，也不放宽 dream-apply。fixes: 只被识别，不进这两段。
     归档区不参与；过期（valid_until 已过）与坏日期记忆按宁缺勿滥跳过。
 
     reader：候选带正文返回，扫私有 ns 须属主（与 get/search 同规则）。
@@ -279,12 +449,15 @@ def distill_plan(
     # 同 key 多版本专项（2026-10-05 运维盲区）：清行未归档的废置旧版 uses=0，
     # 会被主候选的 uses≥1 活性门滤出人审视野——专项段不受窗口/活性门限制，
     # 只按「同 ns 同 type 同 key 组员 ≥2」圈出全组成员，判断段据此做归档取舍。
+    # 第二遍与 key_duplicates 同人口，教训段复用这份扫描（不再单开第三遍）。
+    scanned: list[Memory] = []
     key_groups: dict[tuple[str, str], list[Memory]] = {}
     for mem, _path in store._scan_parsed(store.ns_root / ns):
         if is_expired(mem, now):
             continue
         if recency_age(mem, now) is None:
             continue  # 坏日期跳过，与主扫描同规（宁缺勿滥）
+        scanned.append(mem)
         if mem.key:
             key_groups.setdefault((mem.type, mem.key), []).append(mem)
     key_duplicates: list[dict[str, Any]] = []
@@ -343,6 +516,7 @@ def distill_plan(
             promotion_candidate=cand["promotion_candidate"],
             in_weak_dup=bool(cand["possible_dup_of"]) or incoming[cand["id"]],
         )
+    negative_salience, contradiction_pairs = _lesson_sections(scanned)
     return {
         "window_days": window_days,
         "min_uses": min_uses,
@@ -351,6 +525,8 @@ def distill_plan(
         "candidates": candidates,
         "key_duplicates": key_duplicates,
         "suggested_actions": _suggested_actions(candidates, key_duplicates),
+        "negative_salience": negative_salience,
+        "contradiction_pairs": contradiction_pairs,
     }
 
 

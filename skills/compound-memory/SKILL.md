@@ -26,10 +26,23 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | `ns` | 默认 `_shared`；`agent-*` 是私有区，写/读/反馈都只认属主——读私有 ns 须带 `reader`（自己的 agent id，缺省即拒绝），越权抛 `PermissionError`；ns 只允许 `[A-Za-z0-9_-]`（路径组件安全，含 `../`、`/`、`*` 等一律 ValueError——ns 会被直接拼进存储路径）。`memory_search` 不传 `ns` 时自动并搜自有私有区（双通道，见必做动作①） |
 | `valid_from` / `valid_until` | 可选 ISO 日期（YYYY-MM-DD）标注事实有效期；`valid_until` 已过的事实自动退出检索结果（`memory_get` 仍可读）。事实会过时的场景（负责人变更、配置轮换）写新版时带上预期失效日，过期后检索不再被旧值污染 |
 | `project` | 可选项目作用域 slug（`^[a-z0-9]+(-[a-z0-9]+)*$`，与 key 同格式，落库前校验）：标注后该记忆只对声明同一项目的会话检索可见（未标注 = 全局通用）。宿主使用规则声明「本工作区 project=<slug>」后，该工作区的 `memory_write` / `memory_search` 每次携带；CLI 另有 `COMPOUND_MEMORY_PROJECT` env 回退（adapter 层读，store 不读环境变量）。跨项目通用的事实**不要**标 project |
+| `lesson_role` | 可选，只有 `lesson` 或 `avoid`；省略 = 普通记忆。不新增类型：lesson 通常写 `insight`（稳态也可写 `decision`），avoid 写 `decision` 并带 `lesson_role: avoid`。不要把角色写进 key。需要并排时，`links` 用前缀 `avoid:` / `fixes:` / `contradicts:` 加目标 id 或 key；其它字符串仍是自由链接 |
 | `状态类事实` | 进行时/待办类内容（「剩余待办」「已就绪待…」）易腐：要么带 `valid_until`，要么改写成不含进行时态的稳定事实；写前自问「这条一个月后还成立吗」，拿不准就不写——过时的状态记忆比没有更糟 |
 | 内容 | 中文，与库内既有条目一致 |
 
 读取语义：按 id 的 `memory_get` 恒含 `found` 键，目标不存在返回 `{"found": false}`；目标在私有 ns 时必带 `reader`；归档记忆仍可 get，对它 `memory_feedback` 或 CLI `revive`（私有 ns 带 `--reader`）即恢复可检索。
+
+## 教训时机（lesson / avoid）
+
+借用教训语义，不搬因果引擎。不新增记忆类型，不新增 MCP 工具，`suggested_action` 仍只有 merge / promote / review。负向段与矛盾对只报告，不放宽 `dream-apply`。
+
+| 时机 | 动作 |
+|---|---|
+| 写教训 | 只写稳态，不写草稿。lesson → `memory_write`，type 多用 `insight`（稳态可用 `decision`），`lesson_role: lesson`。avoid → type `decision`，`lesson_role: avoid`。坑与正解并排时，links 写 `avoid:<id 或 key>`、`fixes:<id 或 key>` 或 `contradicts:<id 或 key>` |
+| 动手前 | 先 `memory_search`，再对命中 `memory_get`。看 `lesson_role`，并顺着 links 里的 `avoid:` 目标再 get（前缀链不会被邻居召回自动展开）。不要为这一步加工具 |
+| 读报告 | `dream` 或 `distill-plan` 的 `negative_salience` 与 `contradiction_pairs`（dream 在 `distill` 段，与 distill-plan 同字段）。高 `failure_count`、低置信、`lesson_role: avoid`、同 key 内容冲突、`contradicts:` 对都在这里。只读 |
+| 失败反馈 | 教训误导了你：`memory_feedback`，`outcome: failure` |
+| 错教训作废 | 新写纠正正文，再归档源。走既有 `memory_write` / `distill-apply`（或 dream-apply 里**本来就过门槛**的同 key merge）。不要因为负向段或矛盾对放宽 `dream-apply` |
 
 ## 运维与蒸馏（CLI）
 
@@ -42,7 +55,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | `rebuild-index` | 手工编辑过记忆文件**内容**后（活性检测只覆盖新增/删除文件） |
 | `review-queue` / `review-resolve` | 处理同 key 冲突队列与 contradiction 争议（人工裁决入口）：`review-resolve <废置id>` 清行并自动归档废置方（对侧保留活动区）；contradiction 争议行裁决二选一——维持原记忆有效用 `review-resolve <争议id> --uphold`（解冻并按 failure −0.2 折算），确错则缺省路径归档；`--all` 只清空队列不归档（争议行解冻但不折算）。私有 `agent-*` ns 的行仅属主可清（加 `--reader`）——`--all` 会静默保留别人的私有行，显式点名则报错；`review-queue` 展示仍全量 |
 | `decay` | 衰减归档，长期未用且少用才动（定时任务跑） |
-| `dream [--ns <ns>] [--reader <id>]` | 离线只读编排（ADR-0001，无 LLM）：对一个 ns 出报告。`distill` 段复用 distill-plan（merge_with / possible_dup_of / promotion_candidate / key_duplicates，以及 `suggested_action`：只有 merge / promote / review）；`decay_signals` 只计数（valid_until 已过、归档区规模、低活性）；`stats_before` / `stats_after` 空跑相等。不写盘、不归档、不 distill-apply、不 forget。定时准备跑的就是它，没有 `--apply`。私有 ns 加 `--reader` |
+| `dream [--ns <ns>] [--reader <id>]` | 离线只读编排（ADR-0001，无 LLM）：对一个 ns 出报告。`distill` 段复用 distill-plan（merge_with / possible_dup_of / promotion_candidate / key_duplicates，`suggested_action` 只有 merge / promote / review，以及只读的 `negative_salience` / `contradiction_pairs`）；`decay_signals` 只计数（valid_until 已过、归档区规模、低活性）；`stats_before` / `stats_after` 空跑相等。不写盘、不归档、不 distill-apply、不 forget。负向段不放宽写盘。定时准备跑的就是它，没有 `--apply`。私有 ns 加 `--reader` |
 | `dream-apply --proposals <file> --source <agent> [--dry-run] [--ns <ns>] [--reader <id>]` | 显式半自动落库（#72，无 LLM）。`--proposals` 是 JSON 列表，每项必须自带 `content`、`type`、`source_ids`（可选 `key` / `confidence`；`promote: true` 才允许晋升）。只编排既有 `distill-apply`：同 key 强信号 `merge_with` / `key_duplicates`，以及调用方点名的 `promotion_candidate`。`suggested_action: review`（`possible_dup_of`）只报告不落库。未过门槛的项列入 `skipped` 并给原因。`--dry-run` 只打印 `planned`、零写盘。不 forget，没有 `--include-forget`，也没有 git revert 子命令（回看用 `git-log`）。定时任务禁止调用。私有 ns 加 `--reader`，且 `--source` 必须是属主 |
 | `revive <id>` | 复活归档记忆（私有 ns 记忆加 `--reader`） |
 | `forget <id> --agent <agent id> [--reason <动机短语>]` | 终态遗忘（ADR-0009）：文件物理移出（活动/归档区皆可）+ 单条 forget 提交留痕，内容仅存 git 历史。不可复活：对被遗忘记忆 feedback/revive 返回 `found: false`，恢复 = 带外 git 运维（checkout/revert）。私有 `agent-*` ns 仅属主可遗忘（`--agent` 与 feedback 同规）；幂等（不存在/已遗忘返回 `found: false`）。`--reason` 是动机短语（单行、限 80 字符），不贴记忆正文。隐私边界：forget 解决「活动库不再携带」，不解决「历史不再包含」——git 历史清理是另行决策的破坏性运维 |
@@ -57,7 +70,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 
 ### 蒸馏工作流（判断段归调用方 Agent）
 
-1. `dream`：只读报告写到 `<root>/distill/last-plan.json`（launchd 每天 09:00 自动跑，只跑这条只读命令）。候选清单在 `distill` 段（与直接跑 `distill-plan` 同字段）：主候选标注 merge_with / possible_dup_of / promotion_candidate，并带 `suggested_action`（只有 **merge** / **promote** / **review**）。`suggested_actions` 把簇列成清单，成员是 `source_ids`。同 key 多版本（`key_duplicates`，含 uses=0 的废置旧版）自动标 merge；高活性 episode 标 promote；`possible_dup_of`（含跨 key 弱相似）标 review。没有 synthesize，也不写 `supersedes:`——跨 key 多源若你判断该综合，动作名仍是 merge，簇就是你给出的 `source_ids`，溯源靠产物 links。`decay_signals` 只是计数线索，归档仍走 `decay` / `distill-apply` / `review-resolve`，forget 仍是显式 CLI。扫私有 ns 加 `--reader`；`distill-apply` 的源与产物必须同 ns。只要候选清单时可直接 `distill-plan`。
+1. `dream`：只读报告写到 `<root>/distill/last-plan.json`（launchd 每天 09:00 自动跑，只跑这条只读命令）。候选清单在 `distill` 段（与直接跑 `distill-plan` 同字段）：主候选标注 merge_with / possible_dup_of / promotion_candidate，并带 `suggested_action`（只有 **merge** / **promote** / **review**）。`suggested_actions` 把簇列成清单，成员是 `source_ids`。同 key 多版本（`key_duplicates`，含 uses=0 的废置旧版）自动标 merge；高活性 episode 标 promote；`possible_dup_of`（含跨 key 弱相似）标 review。同段还有只读的 `negative_salience` 与 `contradiction_pairs`（教训负向与矛盾对，不产生新动作，也不放宽 dream-apply）。没有 synthesize，也不写 `supersedes:`——跨 key 多源若你判断该综合，动作名仍是 merge，簇就是你给出的 `source_ids`，溯源靠产物 links。`decay_signals` 只是计数线索，归档仍走 `decay` / `distill-apply` / `review-resolve`，forget 仍是显式 CLI。扫私有 ns 加 `--reader`；`distill-apply` 的源与产物必须同 ns。只要候选清单时可直接 `distill-plan`。
 2. Agent 读报告的 `suggested_action` 做取舍、自己写产物正文。判断段不在 server 内（无 LLM，不改写磁盘上的记忆正文）。没有产物正文时不要落库。
 3. 按动作落库，仍走既有写路径。**merge**：用簇里的 `source_ids` 写一条综合正文，`distill-apply "<产物>" <type> <source> --sources <id1>,<id2>`（同 key 组也可放进 dream-apply，正文仍要你给）。**promote**：写成更高 type 的新记忆，`dream-apply` 的该项必须带 `promote: true`，或直接 `distill-apply`；类型不原地改。**review**：留在报告里，不要放进 dream-apply。若判断后仍要综合，改按 merge 调用 `distill-apply`。要按门槛收一批：先 `dream-apply --proposals <file> --source <本宿主> --dry-run` 看 `planned` / `skipped`，确认后再去掉 `--dry-run`。产物 links 溯源到源、源归档可复活。任意会话发现清单有新候选时按需处理即可。
 

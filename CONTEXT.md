@@ -48,7 +48,23 @@ _Avoid_: 压缩、summarize（那只是判断段的一个动作）
 
 **Suggested action（建议动作）**：
 `distill_plan` / `dream` 报告上的确定性标注，取值只有 merge、promote、review。merge 覆盖同 key 多版，也覆盖调用方决定的跨 key 多源综合（报告用 source_ids 簇，不另写 supersedes frontmatter）；promote 是高活性 episode 的晋升建议，落库仍须调用方点名并给出正文；review 是 possible_dup_of 弱信号，只报告。
-_Avoid_: synthesize、supersede（并入 merge）、distill-suggest（无此命令）
+_Avoid_: synthesize、supersede（并入 merge）、distill-suggest（无此命令）、avoid（负向不进动作词汇）
+
+**Lesson role（教训角色）**：
+frontmatter 可选字段 `lesson_role`，取值只有 `lesson` 或 `avoid`；省略就是普通记忆。不新增记忆类型：lesson 通常写 `insight`（稳态也可写 `decision`），avoid 写 `decision` 并标 `avoid`。扫描器只认该字段。
+_Avoid_: 新类型 lesson、key 前缀
+
+**Lesson link（教训链接）**：
+`links` 里以约定前缀开头的字符串：`avoid:` / `fixes:` / `contradicts:` 加目标 id 或 key。其余链接仍是自由字符串；确定性扫描只认这三种前缀。
+_Avoid_: 因果边、图引擎
+
+**Negative salience（负向显著性）**：
+`distill_plan` / `dream` 报告字段。确定性条目来自 `failure_count`、低置信、矛盾信号、`lesson_role: avoid`（以及 `avoid:` 链接）。只报告，不放宽 dream-apply。
+_Avoid_: Q 值、因果显著性
+
+**Contradiction pair（矛盾对）**：
+`distill_plan` / `dream` 报告字段。同 key 且内容不同的一对，或 `contradicts:` 链接连起的一对。只报告。
+_Avoid_: 因果图、反事实
 
 **Promotion（晋升）**：
 记忆的洞见价值经蒸馏确认的形态：蒸馏产物（更高密度的新记忆）即晋升结果；源记忆类型终身不变，强化状态由 uses/confidence 表达。
