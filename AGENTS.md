@@ -24,6 +24,7 @@
   - `storage/writing.py` 的 `write_new`：落库核心，write/batch/distill_apply/tests 四方共用（勿再复制第二份落库编排）；
   - `storage/indexing.py` 的 `sync_indexes`：全部写路径的索引收口物理单点（活动必入索引、归档必移出），勿绕过直改两份缓存；
   - `extraction.HOSTS`：宿主 transcript 知识单一定义点（parser / 内容嗅探 / 批量 glob / 提示文案 / CLI 帮助全由表生成），新增宿主 = 一个函数 + 一行表，勿在别处加分支；公共尾部（剥壳滤注入去重）用 `collect_user_texts`；
+  - `storage/distill.py` 的 `SUGGESTED_ACTIONS` / `suggested_action`：建议动作词汇与标注的单一定义点（只有 merge / promote / review）。同 key 多版自动列成 merge 簇（`source_ids`）；possible_dup_of 只标 review；dream 原样带出这段，不重算、不放宽 dream-apply 门槛。不另写 supersedes frontmatter，不加 distill-suggest 命令；
   - `storage/visibility.py` 的 `is_retrievable`：检索可见性过滤的唯一合取（archived、valid_until 已过、ns 集合、project 适用性）。词面候选流（`candidates` / `scored_candidates` 共用一条内部流）、向量召回、邻居召回都走它；`include_archived` 区分检索面（排除归档）与 get 溯源面（保留归档邻居）。勿在调用点再写第二份合取；
   - `MemoryStore.lexical_candidates`：公开词面候选通道（返回记忆正文的入口，已过身份门禁，实现在 `storage/search.py`，过滤走 `is_retrievable`）——extraction 复述标注走它，勿直调 `candidates` 私有件；
   - `scoring.recency_age`：新近基准（last_used 优先，created 兜底），直接返回距 today 天数、坏日期返回 None；排序与衰减共用，勿各算各的；

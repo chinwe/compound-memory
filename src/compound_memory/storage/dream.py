@@ -10,6 +10,9 @@ APPLY_SIGNALS）：merge_with / key_duplicates 在调用方给出正文后可进
 promotion_candidate 还须该条动作显式 promote。possible_dup_of 永远不进
 apply 包。valid_until 已过与低活性只出现在 dream 的 decay_signals 里。
 
+建议动作 suggested_action（merge / promote / review，#75）写在 distill_plan
+上，dream 的 distill 段原样带出，本模块不重算、不放宽门槛。
+
 衰减计数复用 lifecycle.is_decay_candidate（与 decay_sweep 同一谓词）。
 valid_until 已过走 scoring.is_expired，与 stats.expired_active 同一日期规则，
 范围收成单个 ns 的活动区。
@@ -153,7 +156,8 @@ def dream(
     """对一个 ns 做只读离线编排，返回报告。
 
     distill 段就是 distill_plan 的返回值（merge_with / possible_dup_of /
-    promotion_candidate / key_duplicates 原样可追溯）。decay_signals 只计数。
+    promotion_candidate / key_duplicates / suggested_action 原样可追溯）。
+    decay_signals 只计数。
     stats_before / stats_after 是全库 stats() 的两次快照；本路径不写，二者相等。
     dry_run 恒为 True。写盘是独立的 dream_apply，不挂在本函数上。
 

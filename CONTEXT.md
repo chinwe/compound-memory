@@ -46,6 +46,10 @@ _Avoid_: 交叉验证、独立确认（宿主间可能共享同一错误假设�
 把一批源记忆沉淀为更少、更高密度产物的过程。确定性段产出候选清单（含疑似重复标注），判断段由调用方 Agent 完成取舍；产物 links 溯源到源，源归档可复活。
 _Avoid_: 压缩、summarize（那只是判断段的一个动作）
 
+**Suggested action（建议动作）**：
+`distill_plan` / `dream` 报告上的确定性标注，取值只有 merge、promote、review。merge 覆盖同 key 多版，也覆盖调用方决定的跨 key 多源综合（报告用 source_ids 簇，不另写 supersedes frontmatter）；promote 是高活性 episode 的晋升建议，落库仍须调用方点名并给出正文；review 是 possible_dup_of 弱信号，只报告。
+_Avoid_: synthesize、supersede（并入 merge）、distill-suggest（无此命令）
+
 **Promotion（晋升）**：
 记忆的洞见价值经蒸馏确认的形态：蒸馏产物（更高密度的新记忆）即晋升结果；源记忆类型终身不变，强化状态由 uses/confidence 表达。
 _Avoid_: 升级、类型迁移（type 原地变更已禁）

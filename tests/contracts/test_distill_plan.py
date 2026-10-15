@@ -3,6 +3,9 @@
 契约出处：#26（蒸馏框架：三段式分工、归档区不参与、过期跳过）；
 #25（Tier 1 全五要素，但深度行为测试在 tests/test_distill.py——这里钉形状与门禁）。
 plan 是只读扫描：不产生任何 git 提交（side effects 为零是契约的一部分）。
+
+契约变更 #75：候选增加 suggested_action，顶层增加 suggested_actions
+（merge / promote / review）。只加标注，不改扫描门禁与写路径。
 """
 
 from __future__ import annotations
@@ -62,7 +65,9 @@ class TestResultShape:
         plan = store.distill_plan(window_days=7, min_uses=2, min_confidence=0.6, ns="_shared")
         assert set(plan) == {
             "window_days", "min_uses", "min_confidence", "ns", "candidates", "key_duplicates",
+            "suggested_actions",
         }
+        assert plan["suggested_actions"] == []
         assert (plan["window_days"], plan["min_uses"], plan["min_confidence"], plan["ns"]) == (
             7, 2, 0.6, "_shared",
         )
@@ -73,8 +78,9 @@ class TestResultShape:
         (cand,) = store.distill_plan()["candidates"]
         assert set(cand) == {
             "id", "type", "key", "uses", "confidence", "created", "last_used", "content",
-            "merge_with", "possible_dup_of", "promotion_candidate",
+            "merge_with", "possible_dup_of", "promotion_candidate", "suggested_action",
         }
+        assert cand["suggested_action"] is None
 
 
 class TestSideEffects:
