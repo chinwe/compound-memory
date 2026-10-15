@@ -81,6 +81,8 @@ class TestKeyFlags:
             ("write-validity", ["write", "c", "fact", "a", "--valid-from", "2026-01-01", "--valid-until", "2026-12-31"]),
             # project 作用域（ADR 0010）：write/search/get 三动词的 --project
             ("write-project", ["write", "c", "fact", "a", "--project", "agenthub"]),
+            # lesson_role（#78 契约变更）：write 的可选教训角色，不是新子命令
+            ("write-lesson-role", ["write", "c", "decision", "a", "--lesson-role", "avoid"]),
             ("search-project", ["search", "q", "--project", "agenthub"]),
             ("get-project", ["get", "id", "--project", "agenthub"]),
             # distill-apply 的溯源 flags

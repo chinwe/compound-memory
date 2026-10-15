@@ -11,6 +11,8 @@ from __future__ import annotations
 import datetime as dt
 import re
 
+from ..model import LESSON_ROLES
+
 # ns / mem_id 的路径组件白名单：两者都被直接拼进存储路径或 rglob 模式，
 # 来自 LLM/宿主输出，格式不设防时 ns='agent-../../x' 可写出存储根、
 # mem_id='*' 可经 rglob 命中库内任意记忆（2026-10-05 审计 P1-1/P2-3）。
@@ -75,6 +77,20 @@ def check_key(key: str | None) -> None:
     if key and not _KEY_RE.match(key):
         raise ValueError(
             f"key must match {_KEY_RE.pattern} (lowercase alphanumeric segments joined by dashes), got: {key!r}"
+        )
+
+
+def check_lesson_role(lesson_role: str | None) -> None:
+    """lesson_role 校验（write 落库与 frontmatter parse 共用，#78）。
+
+    None = 未标注（普通记忆）。只允许 lesson / avoid；空串与其它值都是
+    调用方错误。扫描器只认这个字段，不认 key 前缀。
+    """
+    if lesson_role is None:
+        return
+    if lesson_role not in LESSON_ROLES:
+        raise ValueError(
+            f"lesson_role must be one of {LESSON_ROLES} or omitted, got: {lesson_role!r}"
         )
 
 

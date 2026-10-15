@@ -216,7 +216,7 @@ Scoring (weights are the `W_*` constants in `src/compound_memory/scoring.py`): `
 
 | Tool | Purpose | Key points |
 |---|---|---|
-| `memory_write` | Write a memory | `type`: episode/fact/insight/skill/decision; `source`: your agent id; give fact/insight/decision a stable `key`; optional `valid_from`/`valid_until` (ISO dates) and `project` scope. `content` over 262144 characters is rejected and nothing is written |
+| `memory_write` | Write a memory | `type`: episode/fact/insight/skill/decision; `source`: your agent id; give fact/insight/decision a stable `key`; optional `valid_from`/`valid_until` (ISO dates), `project` scope, and `lesson_role` (`lesson` or `avoid`; omit for an ordinary memory). `content` over 262144 characters is rejected and nothing is written |
 | `memory_search` | Retrieve | Returns `{"hits": [...], "count", "retrieval"}` ranked by score (default `top_k=5`); embeds up to 3 trimmed one-hop neighbors; dual-channel by default (`_shared` + caller's own private ns); optional `project` (fail-closed) and `explain`. CLI `search` stays a bare array |
 | `memory_get` | Fetch by id | Always contains a `found` key; pulls one-hop neighbors with no count cap and keeps archived neighbors (search caps at 3, trims content to 80 characters, and drops archived neighbors). Expired neighbors are omitted on both paths. Private-ns targets require `reader` |
 | `memory_link` | Link two memories | Bidirectional; both sides must be in the same ns; private-ns links require owner identity |
@@ -237,8 +237,8 @@ uv run compound-memory search "Vercel timeout"   # default top_k=5; hits embed o
 uv run compound-memory feedback <id> agent-claude
 uv run compound-memory decay          # run from cron
 uv run compound-memory revive <id>    # revive an archived memory
-uv run compound-memory distill-plan   # distillation candidates: suggested_action is merge / promote / review (same-key clusters carry source_ids; weak duplicates stay review)
-uv run compound-memory dream --ns _shared   # read-only report: distill-plan section + decay_signals + equal stats snapshots (no writes, no LLM)
+uv run compound-memory distill-plan   # distillation candidates: suggested_action is merge / promote / review; also report-only negative_salience and contradiction_pairs
+uv run compound-memory dream --ns _shared   # read-only report: distill-plan section (including the negative sections) + decay_signals + equal stats snapshots (no writes, no LLM)
 uv run compound-memory dream-apply --proposals apply.json --source agent-workbuddy --dry-run  # gated apply preview; drop --dry-run to run distill-apply on admitted rows
 uv run compound-memory distill-apply "the merged insight" insight agent-workbuddy --sources <id1>,<id2>  # atomic: product (links, origin=distillation) + source archival, one commit
 uv run compound-memory stats            # health: uses/confidence buckets + liveness + distillation yield

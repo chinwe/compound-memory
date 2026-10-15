@@ -18,7 +18,7 @@ import yaml
 from ..index import atomic_write_text
 from ..model import Memory
 from . import paths
-from .validation import _PATH_COMPONENT_RE
+from .validation import _PATH_COMPONENT_RE, check_lesson_role
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +79,15 @@ def parse(path: Path) -> Memory:
     defaults.pop("content", None)
     # 缺必填字段（手编文件最常见坏法）转译为 ValueError：统一解析失败面，
     # 扫描容错与调用方无需各自特判 TypeError
+    known = {f.name for f in dataclasses.fields(Memory)}
     try:
-        return Memory(**{**defaults, **{k: v for k, v in meta.items() if k in {f.name for f in dataclasses.fields(Memory)}}})
+        mem = Memory(**{**defaults, **{k: v for k, v in meta.items() if k in known}})
     except TypeError as exc:
         raise ValueError(f"bad memory file (missing required field): {path}: {exc}") from exc
+    # 允许值与 write 同一谓词：坏 lesson_role 是解析失败（扫描跳过并告警），
+    # 不把未知角色当成普通记忆悄悄放行。
+    check_lesson_role(mem.lesson_role)
+    return mem
 
 
 def parse_for_scan(path: Path) -> Memory | None:

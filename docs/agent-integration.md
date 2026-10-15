@@ -52,7 +52,7 @@ uv run --directory <仓库绝对路径> compound-memory init
 
 | Tool | 用途 | 关键点 |
 |---|---|---|
-| `memory_write` | 写入记忆 | `type`: episode/fact/insight/skill/decision；`source`: 写入方 agent id；fact/insight/decision 建议带稳定 `key`；可选 `valid_from`/`valid_until`（ISO 日期）标注事实有效期——`valid_until` 已过的事实退出检索结果，但 `memory_get` 仍可读；可选 `project`（小写 slug）标注项目作用域——标注后仅同项目会话检索可见，缺省全局。`content` 超过 262144 字符拒绝且不落盘 |
+| `memory_write` | 写入记忆 | `type`: episode/fact/insight/skill/decision；`source`: 写入方 agent id；fact/insight/decision 建议带稳定 `key`；可选 `valid_from`/`valid_until`（ISO 日期）标注事实有效期——`valid_until` 已过的事实退出检索结果，但 `memory_get` 仍可读；可选 `project`（小写 slug）标注项目作用域——标注后仅同项目会话检索可见，缺省全局；可选 `lesson_role`（`lesson` 或 `avoid`，省略即普通记忆）。`content` 超过 262144 字符拒绝且不落盘 |
 | `memory_search` | 检索 | 返回 `{"hits": [...], "count", "retrieval"}` 按分数排序，缺省 `top_k=5`（要看覆盖面须显式放大）。`retrieval.mode` 为 `vector` 或 `lexical`（向量 extra/模型/引擎不可用或当次召回失败时为 lexical，并带 `reason`），词面降级因此可见。命中自动内嵌最多 3 条一度邻居（正文截到 80 字，不含归档邻居）；`include_neighbors=False` 可关。不传 `ns` 时双通道检索：`_shared` + 调用方自有私有 ns（身份已知时，私有条目自动带出）；显式传 `ns` 只搜该 ns，查 `agent-*` 时必带 `reader`（自己的 agent id），缺省即拒绝。可选 `project`（小写 slug）：**fail-closed**——不传只见全局记忆，传了见 全局 ∪ 该项目。可选 `explain: true`（排障面，#44）：每 hit 附加排序分量对象（词面/向量 rank、RRF 分、先验折算项、检索通道）与证据摘要行，缺省 hit 形状不变。CLI `search` 仍是裸数组，模式看 `stats.retrieval` |
 | `memory_get` | 按 id 取回 | 恒含 `found` 键；默认带一度邻居，不设条数上限、正文完整，并保留归档邻居（蒸馏溯源；与 search 的「最多 3 条、截断、排除归档」不同）。`valid_until` 已过的邻居两边都不展开正文。目标在私有 ns 时必带 `reader`，缺省即拒绝。按 id 恒可读（project 不限制 get 本体）；可选 `project` 只用于邻居带出的适用性过滤（邻居=全局 ∪ 该项目） |
 | `memory_link` | 双向关联两条记忆 | 复利来源②：关联带出；两条记忆必须同 ns，跨 ns 链被拒绝；私有 ns 记忆仅属主可连（`agent` 填自己的 agent id） |
@@ -64,7 +64,7 @@ uv run --directory <仓库绝对路径> compound-memory init
 - **namespace**：默认写 `_shared`（全体可见）；`agent-<name>` 是私有区，仅属主可写、读/反馈/关联也须属主身份（`reader`/`agent` 填自己的 agent id，缺省即拒绝）。检索不传 `ns` 时自动并搜自有私有区（双通道）。ns 只允许字符 `[A-Za-z0-9_-]`（ns 会被直接拼进存储路径，含 `../`、`/`、`*` 等一律 ValueError，2026-10-05 审计加固）。日常任务一律用默认值即可。
 - **进程身份注入（必配）**：宿主配置的 `env` 必须设 `COMPOUND_MEMORY_AGENT_ID: <本宿主 agent id>`，值稳定且不能由不可信方随意改。注入后存储层以进程身份裁决一切自报身份（source/reader/agent）：缺省自动补真值、等价形式（`agent-x`/`x`）归一化、矛盾响亮拒绝——模型谎报身份失效，伪造 source 污染跨 Agent 验证的通道一并关闭。未注入则退回自报身份：协作边界，不是安全边界，调用方可以冒充其他 agent 的命名空间，**不要**在这种配置下共享 `_shared`。server 启动日志与 `stats.attestation` 会把未注入标成 warning。与 ns（`_shared` / `agent-*`）正交的是 `project`（适用性），身份管的是谁能写谁的 ns。
 - **project 作用域（按需声明）**：项目专属的记忆（该项目才用的约定/配置/踩坑）写入与检索都带 `project=<slug>`（小写短横线 slug，如 `agenthub`）；跨项目通用的事实不标注。检索缺省 **fail-closed**：不传 `project` 只见全局记忆——「没声明项目 = 全局会话」，项目记忆不外溢进一般会话（ADR 0010）。CLI 侧另有 `COMPOUND_MEMORY_PROJECT` env 回退便利通道（adapter 层读，store 自身不读环境变量；MCP server 全局一份、按项目注入无处落地，显式传参是主语义）。`link` 不限 project（同 ns 即可互链）；蒸馏产物继承源的 project；蒸馏/衰减/复活/stats/review 队列保持库级不过滤。
-- **写什么**：稳定事实（用户偏好、项目约定、环境限制、踩坑结论）才写；一次性、会话内临时信息不写。任务状态类（进行时/待办）内容易腐：要么带 `valid_until`、要么改写成不含进行时态的稳定事实——过时的状态记忆比没有更糟。内容用中文，key 用稳定英文短横线标识（如 `user-tts`、`proj-xxx`）。
+- **写什么**：稳定事实（用户偏好、项目约定、环境限制、踩坑结论）才写；一次性、会话内临时信息不写。任务状态类（进行时/待办）内容易腐：要么带 `valid_until`、要么改写成不含进行时态的稳定事实——过时的状态记忆比没有更糟。内容用中文，key 用稳定英文短横线标识（如 `user-tts`、`proj-xxx`）。稳态教训才标 `lesson_role`（见下方「教训」表）；借用教训语义，不搬因果引擎。
 
 > 这三条约定与「采纳后必须 feedback」铁律已内嵌在 5 个 MCP tool 的 description 里（server.py），宿主即便不注入本规范，agent 读工具说明也能维持复利闭环；注入规范用于进一步收紧写入质量。
 
@@ -256,9 +256,9 @@ dsh 通过 MCP client 插件 `@deepseek-ai/dsh-mcp-client` 接入，一个插件
 1. **任务开始**：接到非琐碎任务时，先按任务关键词 `memory_search` 查相关记忆（用户偏好、项目背景、环境坑）；命中且实际采纳后**必须**调 `memory_feedback`（`agent` 填自己的 source id）强化——这是复利闭环的核心动作，漏掉它记忆库就不增值。
 2. **任务结束**：会话中确认了稳定事实（新的用户偏好、项目约定、环境限制、踩坑结论），用 `memory_write` 沉淀。`type` 怎么选：
    - `fact`：客观事实（配置、账号、环境参数）——带稳定 `key`，同 key 新版本会触发冲突复核；
-   - `insight`：经验教训（怎么绕坑、什么方案有效）——带 `key`；
+   - `insight`：经验教训（怎么绕坑、什么方案有效）——带 `key`；稳态 lesson 通常用这个 type，并标 `lesson_role: lesson`；
    - `skill`：可复用的操作方法；
-   - `decision`：已做的选择（选型、方案拍板）——带 `key`，同 key 新决策触发冲突复核；
+   - `decision`：已做的选择（选型、方案拍板）——带 `key`，同 key 新决策触发冲突复核；avoid 用这个 type，并标 `lesson_role: avoid`；
    - `episode`：事件经历（部署了什么、发生了什么）。
 3. **不写**：一次性、会话内临时信息；记忆内容用中文，与库内既有条目保持一致；更新既有事实优先复用同 `key` 而非新开一条。
 4. **关联**：新记忆与已有记忆有因果/派生关系时用 `memory_link` 连上（必须同 ns；私有 ns 记忆带 `agent` 填自己的 source id），检索时邻居会被自动带出。
@@ -312,11 +312,14 @@ uvx --from compound-memory compound-memory git-log        # 审计轨迹（每�
 ```bash
 uvx --from compound-memory compound-memory dream --ns _shared   # 只读编排（ADR-0001，无 LLM）：
                                       #   distill 段 = distill-plan（merge_with / possible_dup_of /
-                                      #   promotion_candidate / key_duplicates / suggested_action）；
+                                      #   promotion_candidate / key_duplicates / suggested_action /
+                                      #   negative_salience / contradiction_pairs）；
                                       #   suggested_action 只有 merge / promote / review；
+                                      #   负向段与矛盾对只报告，不放宽 dream-apply；
                                       #   decay_signals（expired_count / archived_count / low_activity_count）；
                                       #   stats_before 与 stats_after 空跑相等。不归档、不 distill-apply、不 forget
 uvx --from compound-memory compound-memory distill-plan   # 只要候选清单时：信号 + suggested_action
+                                      #   + negative_salience + contradiction_pairs
 # Agent 读报告：merge（同 key 簇，source_ids 已列出；跨 key 综合也叫 merge，不叫 synthesize）
 # → 自己写正文 → distill-apply 或 dream-apply。promote 须显式 promote: true。
 # review（possible_dup_of，含跨 key 弱相似）不要放进 dream-apply。没有 supersedes: 字段。
@@ -329,7 +332,17 @@ uvx --from compound-memory compound-memory distill-apply "合并后的经验" in
   --sources <id1>,<id2>                    # 单条原子落库：产物 links 溯源 + 源归档（可复活）
 ```
 
-launchd（macOS）/ systemd user timer（Linux）/ cron 每天 09:00 自动跑只读 `dream`，把报告写到 `<root>/distill/last-plan.json`（`distill` 段即候选清单；安装物与命令见 README「定时蒸馏准备」）。定时脚本不调用 `dream-apply`。各宿主 Agent 任意会话中发现报告有新候选时按需处理即可。
+**教训（lesson / avoid）**。借用教训语义，不搬因果引擎。不新增记忆类型，不新增 MCP 工具。
+
+| 时机 | 动作 |
+|---|---|
+| 写教训 | 只写稳态。lesson 多用 `insight`（稳态可用 `decision`），`lesson_role: lesson`。avoid 用 `decision` + `lesson_role: avoid`。不要把角色写进 key。并排时 links 用 `avoid:` / `fixes:` / `contradicts:` 加目标 id 或 key |
+| 动手前 | `memory_search` 之后对命中 `memory_get`，看 `lesson_role`，并顺着 `avoid:` 链接再 get（前缀不会被邻居召回自动展开） |
+| 读报告 | 读 `dream` / `distill-plan` 的 `negative_salience` 与 `contradiction_pairs`（dream 在 `distill` 段）。只读；`suggested_action` 仍只有 merge / promote / review |
+| 失败反馈 | 教训误导了你就 `memory_feedback`，`outcome: failure` |
+| 错教训作废 | 新写纠正正文 + 归档源，走既有 `memory_write` / `distill-apply`。负向段与矛盾对不放宽 `dream-apply` |
+
+launchd（macOS）/ systemd user timer（Linux）/ cron 每天 09:00 自动跑只读 `dream`，把报告写到 `<root>/distill/last-plan.json`（`distill` 段即候选清单，含负向段与矛盾对；安装物与命令见 README「定时蒸馏准备」）。定时脚本不调用 `dream-apply`。各宿主 Agent 任意会话中发现报告有新候选时按需处理即可。
 
 ## 8. 故障排查
 

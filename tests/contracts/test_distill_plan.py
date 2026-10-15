@@ -6,6 +6,8 @@ plan 是只读扫描：不产生任何 git 提交（side effects 为零是契约
 
 契约变更 #75：候选增加 suggested_action，顶层增加 suggested_actions
 （merge / promote / review）。只加标注，不改扫描门禁与写路径。
+契约变更 #78：顶层增加 negative_salience 与 contradiction_pairs。
+只报告，不扩 suggested_action，不放宽 dream-apply，不改主候选门禁。
 """
 
 from __future__ import annotations
@@ -26,6 +28,8 @@ class TestInputEquivalence:
         plan = store.distill_plan()
         assert plan["candidates"] == []
         assert plan["key_duplicates"] == []
+        assert plan["negative_salience"] == []
+        assert plan["contradiction_pairs"] == []
 
     def test_activity_gate_excludes_dead_memories(self, store: MemoryStore):
         """活性门等价类：uses=0 的死本金不进候选（蒸馏只针对被验证过的活记忆）。"""
@@ -65,9 +69,11 @@ class TestResultShape:
         plan = store.distill_plan(window_days=7, min_uses=2, min_confidence=0.6, ns="_shared")
         assert set(plan) == {
             "window_days", "min_uses", "min_confidence", "ns", "candidates", "key_duplicates",
-            "suggested_actions",
+            "suggested_actions", "negative_salience", "contradiction_pairs",
         }
         assert plan["suggested_actions"] == []
+        assert plan["negative_salience"] == []
+        assert plan["contradiction_pairs"] == []
         assert (plan["window_days"], plan["min_uses"], plan["min_confidence"], plan["ns"]) == (
             7, 2, 0.6, "_shared",
         )

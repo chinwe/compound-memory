@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `lesson_role` (`lesson` or `avoid`) marks a lesson on an existing type. `distill-plan` and `dream` report `negative_salience` and `contradiction_pairs`. `suggested_action` stays merge / promote / review, and `dream-apply` does not admit rows because of those sections (#78).
+
 ## 0.5.6 - 2026-10-15
 
 - `distill-plan` and `dream` annotate `suggested_action` as `merge`, `promote`, or `review`. Same-key groups are auto-listed as merge clusters (`source_ids`); cross-key weak duplicates stay `review` and `dream-apply` does not admit them. No new MCP tool, no in-process LLM, and timers still call only `dream` (#75 / #76).
