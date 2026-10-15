@@ -207,7 +207,7 @@ Agent (MCP 客户端 / CLI)
 |---|---|
 | ① 使用强化 | 每次 `memory_feedback` 都推进 `uses` 与 `last_used`。置信度按 outcome 折算。缺省 `success`：+0.1。`failure`：−0.2（地板 0.05，重复累计）。`contradiction`：数值冻结并登记冲突队列。`obsolete`：立即归档。`unknown`：只记事件，置信度不动 |
 | ② 关联增值 | `memory_link` 双向关联；`memory_get` 带出一度邻居；`search` 命中自动内嵌精简邻居（上限 3、只召回活动记忆，`--no-neighbors` 可关） |
-| ③ 蒸馏提纯 | `distill-plan`（CLI，确定性候选+双信号去重标注）→ Agent 判断 → `distill-apply` 原子落库（产物 links 溯源，源归档可复活） |
+| ③ 蒸馏提纯 | `distill-plan`（CLI，确定性候选 + `suggested_action`：merge / promote / review）→ Agent 写正文 → `distill-apply` 原子落库（产物 links 溯源，源归档可复活） |
 | ④ 跨 Agent 验证 | 仅 `success`：与 source 不同的宿主**首次**反馈再 +0.15（每宿主每记忆一次，记入 `validated_by`） |
 
 评分公式（权重以 `src/compound_memory/scoring.py` 的 `W_*` 常量为准）：`0.70·相似度 + 0.15·置信度 + 0.10·新近度(0.5+0.5·e^(−Δt/τ)) + 0.05·类型权重`；双路（向量路启用）时改为 RRF 融合主序 + ε=0.04 先验 tie-break（见 spec「索引即缓存」）。
@@ -257,7 +257,7 @@ uv run compound-memory search "Vercel 超时"     # 缺省 top_k=5；命中内�
 uv run compound-memory feedback <id> agent-claude
 uv run compound-memory decay          # cron 定时跑
 uv run compound-memory revive <id>    # 复活归档记忆（CLI 唯一入口）
-uv run compound-memory distill-plan   # 蒸馏候选清单：merge_with（同 key 强信号）+ possible_dup_of（BM25 弱信号）+ promotion_candidate（高活性 episode）
+uv run compound-memory distill-plan   # 蒸馏候选清单：suggested_action 只有 merge / promote / review（同 key 簇带 source_ids；弱相似标 review）
 uv run compound-memory dream --ns _shared   # 只读编排报告：distill 段 + decay_signals + 相等的 stats 快照（不写盘、无 LLM）
 uv run compound-memory dream-apply --proposals apply.json --source agent-workbuddy --dry-run  # 写盘门槛预览；去掉 --dry-run 才对入选项调用 distill-apply
 uv run compound-memory distill-apply "合并后的经验" insight agent-workbuddy --sources <id1>,<id2>  # 原子落库：产物(links 溯源, origin=distillation) + 源归档，一次 commit

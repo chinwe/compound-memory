@@ -15,6 +15,7 @@ from . import __version__
 from .embedding import auto_encoder
 from .extraction import extract, supported_hosts_summary_en
 from .storage import DISTILL_DUP_SIM_THRESHOLD, MEMORY_TYPES, MemoryStore, PROMOTION_USES_THRESHOLD, default_root
+from .storage.distill import SUGGESTED_ACTIONS
 from .storage.locking import WriteLockError
 
 
@@ -337,7 +338,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="scan distillation candidates and print a signal-annotated list",
         description="Scan distillation candidates (deterministic half of distillation). Signals per candidate: "
         f"merge_with (same ns/type/key, strong), possible_dup_of (BM25 normalized_similarity >= {DISTILL_DUP_SIM_THRESHOLD}, weak), "
-        f"promotion_candidate (episode uses >= {PROMOTION_USES_THRESHOLD}). Judgment (merge/summarize) stays with the calling agent.",
+        f"promotion_candidate (episode uses >= {PROMOTION_USES_THRESHOLD}). "
+        f"suggested_action is one of {', '.join(SUGGESTED_ACTIONS)}, or null when none of those signals fire. "
+        "suggested_actions lists clusters: same-key groups are merge and carry source_ids "
+        "(auto-listed, including below the activity gate); promotion_candidate is promote; "
+        "possible_dup_of, including cross-key weak similarity, is review. "
+        "Cross-key multi-source consolidation uses the same merge label and a source_ids cluster — "
+        "there is no synthesize action and no supersedes frontmatter. "
+        "Judgment (merge/summarize) stays with the calling agent.",
     )
     p.add_argument("--window", type=int, default=30, help="recency window in days (last_used first, created fallback)")
     p.add_argument("--min-uses", type=int, default=1, help="activity gate: uses >= this")
@@ -351,7 +359,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Offline consolidation prep for one namespace (ADR-0001: deterministic prep, "
         "judgment stays with the calling agent; no in-process LLM). Read-only dry-run. "
         "The distill section is the distill-plan result (merge_with / possible_dup_of / "
-        "promotion_candidate / key_duplicates). decay_signals counts valid_until already passed "
+        "promotion_candidate / key_duplicates / suggested_action). suggested_action is merge, "
+        "promote, or review. decay_signals counts valid_until already passed "
         "(expired_count), the archive area (archived_count), and low-activity memories that match "
         "the decay archive predicate (low_activity_count) — counts only, nothing is archived. "
         "stats_before and stats_after are two stats() snapshots and are equal on this path. "

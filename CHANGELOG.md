@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `distill-plan` and `dream` annotate `suggested_action` as `merge`, `promote`, or `review`. Same-key groups are auto-listed as merge clusters (`source_ids`); cross-key weak duplicates stay `review` and `dream-apply` does not admit them. No new MCP tool, no in-process LLM, and timers still call only `dream` (#75).
+
 ## 0.5.5 - 2026-10-13
 
 - CLI `dream-apply` applies caller-supplied products (`content`, `type`, `source_ids`) through existing `distill_apply` when the signal is `merge_with`, `key_duplicates`, or an explicitly opted-in `promotion_candidate`. `possible_dup_of` stays report-only. `dream` stays read-only, and timers still call only `dream` (#72).

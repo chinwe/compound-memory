@@ -312,11 +312,14 @@ uvx --from compound-memory compound-memory git-log        # 审计轨迹（每�
 ```bash
 uvx --from compound-memory compound-memory dream --ns _shared   # 只读编排（ADR-0001，无 LLM）：
                                       #   distill 段 = distill-plan（merge_with / possible_dup_of /
-                                      #   promotion_candidate / key_duplicates）；
+                                      #   promotion_candidate / key_duplicates / suggested_action）；
+                                      #   suggested_action 只有 merge / promote / review；
                                       #   decay_signals（expired_count / archived_count / low_activity_count）；
                                       #   stats_before 与 stats_after 空跑相等。不归档、不 distill-apply、不 forget
-uvx --from compound-memory compound-memory distill-plan   # 只要候选清单时：merge_with / possible_dup_of / promotion_candidate
-# Agent 阅读 last-plan.json 的 distill 段做取舍、拟合并文案（判断段）
+uvx --from compound-memory compound-memory distill-plan   # 只要候选清单时：信号 + suggested_action
+# Agent 读报告：merge（同 key 簇，source_ids 已列出；跨 key 综合也叫 merge，不叫 synthesize）
+# → 自己写正文 → distill-apply 或 dream-apply。promote 须显式 promote: true。
+# review（possible_dup_of，含跨 key 弱相似）不要放进 dream-apply。没有 supersedes: 字段。
 # 半自动落库：proposals.json 是列表，每项自带 content / type / source_ids
 # （晋升项加 promote: true）。先 --dry-run，确认 planned / skipped 后再去掉。
 uvx --from compound-memory compound-memory dream-apply --proposals proposals.json --source agent-zcode --dry-run

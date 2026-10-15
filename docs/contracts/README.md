@@ -123,7 +123,10 @@
 - **distill_plan**：确定性候选扫描（判断归调用方）。归档区与过期记忆不参与；
   活性门（uses/confidence）+ 窗口（新近基准 last_used 优先）；产出主候选
   （merge_with / possible_dup_of / promotion_candidate 三类信号）与
-  key_duplicates 专项段。扫私有 ns 须属主（候选带正文）。**不产生提交**。
+  key_duplicates 专项段。契约变更 #75：主候选增加 `suggested_action`
+  （merge / promote / review，无信号为 null），顶层增加 `suggested_actions`
+  簇清单（同 key 组自动列 merge + `source_ids`；弱相似列 review）。
+  不放宽 dream-apply，不写 supersedes frontmatter。扫私有 ns 须属主（候选带正文）。**不产生提交**。
 - **distill_apply**：蒸馏落库（原子）。失败语义（P5）：missing 源 ⇒
   `{"found": False, "missing": [...]}` 零操作零提交；跨 ns 源 ⇒ ValueError 整体拒绝；
   源去重保序；已归档源跳过搬运但仍计入清单。成功：产物（origin=distillation、

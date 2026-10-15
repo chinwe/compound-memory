@@ -207,7 +207,7 @@ Three things to notice:
 |---|---|
 | ① Usage reinforcement | Every `memory_feedback` advances `uses` and `last_used`. Confidence moves by outcome. Default `success`: +0.1. `failure`: −0.2 (floor 0.05, repeats stack). `contradiction`: confidence frozen, a review-queue row is filed. `obsolete`: archived immediately. `unknown`: the event is recorded and confidence does not move |
 | ② Link value | `memory_link` creates bidirectional links; `memory_get` pulls one-hop neighbors; `search` hits embed up to 3 compact neighbors (active memories only, `--no-neighbors` to disable) |
-| ③ Distillation | `distill-plan` (CLI, deterministic candidates + dual-signal dedup annotations) → agent judgment → `distill-apply` atomic commit (product links back to sources; sources archived but revivable) |
+| ③ Distillation | `distill-plan` (CLI, deterministic candidates + `suggested_action`: merge / promote / review) → agent writes the product → `distill-apply` atomic commit (product links back to sources; sources archived but revivable) |
 | ④ Cross-agent validation | On `success` only, the first feedback from a host other than `source` adds +0.15 (once per host per memory; recorded in `validated_by`) |
 
 Scoring (weights are the `W_*` constants in `src/compound_memory/scoring.py`): `0.70·similarity + 0.15·confidence + 0.10·recency(0.5+0.5·e^(−Δt/τ)) + 0.05·type weight`. With the vector channel enabled, ranking switches to RRF fusion with an ε=0.04 prior tie-break (see the spec, "index as cache").
@@ -237,7 +237,7 @@ uv run compound-memory search "Vercel timeout"   # default top_k=5; hits embed o
 uv run compound-memory feedback <id> agent-claude
 uv run compound-memory decay          # run from cron
 uv run compound-memory revive <id>    # revive an archived memory
-uv run compound-memory distill-plan   # distillation candidates: merge_with (same-key strong) + possible_dup_of (BM25 weak) + promotion_candidate (high-activity episodes)
+uv run compound-memory distill-plan   # distillation candidates: suggested_action is merge / promote / review (same-key clusters carry source_ids; weak duplicates stay review)
 uv run compound-memory dream --ns _shared   # read-only report: distill-plan section + decay_signals + equal stats snapshots (no writes, no LLM)
 uv run compound-memory dream-apply --proposals apply.json --source agent-workbuddy --dry-run  # gated apply preview; drop --dry-run to run distill-apply on admitted rows
 uv run compound-memory distill-apply "the merged insight" insight agent-workbuddy --sources <id1>,<id2>  # atomic: product (links, origin=distillation) + source archival, one commit
