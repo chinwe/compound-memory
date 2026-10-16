@@ -5,7 +5,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 
 # compound-memory 使用规范
 
-本机跨 Agent 共享记忆库：MCP 服务 `compound-memory`（5 个工具是唯一读写边界），存储 `~/.agents/memory`，CLI 做运维与蒸馏。接入配置（各宿主 MCP 注册）见仓库 `docs/agent-integration.md`。宿主 env **必须**设稳定的 `COMPOUND_MEMORY_AGENT_ID`（与下面的 `source` 相同）；未设置时身份可被伪造，`stats.attestation.warning` 与 server 启动日志会标明。
+本机跨 Agent 共享记忆库：MCP 服务 `compound-memory`（5 个工具是唯一读写边界），存储 `~/.agents/memory`，CLI 做运维与蒸馏。接入配置（各宿主 MCP 注册）见仓库 `docs/agent-integration.md`；英文精简版（uvx、必配 agent id、检索→反馈→写入）见 `docs/agent-integration.en.md`。宿主 env **必须**设稳定的 `COMPOUND_MEMORY_AGENT_ID`（与下面的 `source` 相同）；未设置时身份可被伪造，`stats.attestation.warning` 与 server 启动日志会标明。
 
 ## 三个必做动作（复利闭环）
 

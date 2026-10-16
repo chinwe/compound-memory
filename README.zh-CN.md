@@ -4,7 +4,7 @@
 
 本地多 Agent 共享记忆系统——支持复利（越用越值钱）。记忆以带 frontmatter 的 Markdown 落盘，随使用增值，长期不用则衰减归档、可复活。
 
-**快速上手**见下；接入配置与统一使用规范见 `docs/agent-integration.md`；设计 Spec 见 `docs/specs/0001-compound-memory-spec.md`。
+**快速上手**见下；接入配置与统一使用规范见 `docs/agent-integration.md`（英文精简版 [`docs/agent-integration.en.md`](docs/agent-integration.en.md)）；设计 Spec 见 `docs/specs/0001-compound-memory-spec.md`。
 
 ## 快速上手
 
@@ -311,7 +311,7 @@ systemctl --user list-timers | grep compound-memory   # 验证已加载
 
 ```bash
 uv run pytest tests/ -q     # 全量测试（MCP tool 边界 + 蒸馏 + 生命周期/索引/CLI + 输入防御）
-uv run mypy src/compound_memory/
+uv run mypy src/compound_memory/   # 全包非 strict；validation / paths / server 见 pyproject overrides
 ```
 
 测试缝：MCP tool 边界（`mcp.Client(server)` 内存直连，无子进程）+ 核心模块单测（scoring / index / store 运维面）。CI 在 Linux 与 Windows 的 Python 3.11/3.12/3.13 矩阵上跑测试、类型检查与纯 wheel 安装冒烟。变更记录见 [`CHANGELOG.md`](CHANGELOG.md)。

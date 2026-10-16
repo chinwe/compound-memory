@@ -6,8 +6,8 @@
 
 - 项目用 uv 管理（`pyproject.toml` + `uv.lock`）：首次克隆后 `uv sync --extra dev` 建 `.venv`，日常一律 `uv run`（uv 不在 PATH 时用 `~/.local/bin/uv`）。
 - 测试：`uv run pytest tests/ -q`
-- 类型检查：`uv run mypy src/compound_memory/`
-- CLI 冒烟：`uv run compound-memory stats`；在本仓库里启动 MCP server：`uv run compound-memory-server`。宿主日常接入的启动命令是 `uvx --from compound-memory compound-memory-server`（见 `docs/agent-integration.md`）；`uv run --directory <仓库>` 只用于从本仓库联调，不是宿主默认。
+- 类型检查：`uv run mypy src/compound_memory/`（全包非 strict；`storage.validation`、`storage.paths`、`server` 由 `pyproject.toml` 的 per-module overrides 按 strict 等价旗标检查。不要在 override 里写 `strict = true`——mypy 会把它作用到全局 Options，等于整包 strict）。
+- CLI 冒烟：`uv run compound-memory stats`；在本仓库里启动 MCP server：`uv run compound-memory-server`。宿主日常接入的启动命令是 `uvx --from compound-memory compound-memory-server`（完整中文指南 `docs/agent-integration.md`，英文精简版 `docs/agent-integration.en.md`）；`uv run --directory <仓库>` 只用于从本仓库联调，不是宿主默认。
 - 记忆库根目录默认 `~/.agents/memory`，可用 `COMPOUND_MEMORY_ROOT` 覆盖。注意：MemoryStore 每次写入会在记忆库自身的 `.git` 里自动 commit——这是运行时行为，与本仓库的开发 git 无关。
 
 ## 架构边界

@@ -56,7 +56,9 @@ jobs:
         run: uv run pytest tests/ -q
 
       - name: Type check
-        # mypy 的 python_version 固定 3.13(见 pyproject),跑一次即可
+        # mypy 的 python_version 固定 3.13(见 pyproject),跑一次即可。
+        # 全包非 strict；validation / paths / server 由 pyproject 的
+        # per-module overrides 按 strict 等价旗标失败。不要改成全库 --strict。
         if: matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest'
         run: uv run mypy src/compound_memory/
 
