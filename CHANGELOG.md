@@ -2,10 +2,12 @@
 
 ## Unreleased
 
-- CLI `stats` and `doctor` exit 1 when `COMPOUND_MEMORY_AGENT_ID` is unset or blank (the diagnosis is still printed). `doctor` reports attestation, retrieval mode, write lock, and git. MCP tools are unchanged and do not fail a session for a missing agent id.
-- Docs: the English host guide lists `doctor`'s full exit-1 surface (unset or blank agent id, missing or non-directory root, write lock that cannot be acquired, git missing / not a repository / `status` failed). Lexical-only retrieval and a dirty worktree are reported and do not fail. A doctor `write_lock` failure is the probe; lock-file creation failure on the write path still warns and may write unlocked.
-- mypy checks `storage.validation`, `storage.paths`, and `server` with per-module strict flags. The rest of the package stays non-strict.
-- English slim host guide: `docs/agent-integration.en.md` (uvx install, required `COMPOUND_MEMORY_AGENT_ID`, the five MCP tools, search → feedback → write). `docs/agent-integration.md` remains the full Chinese guide.
+## 0.5.8 - 2026-10-16
+
+- CLI `stats` and `doctor` exit 1 when `COMPOUND_MEMORY_AGENT_ID` is unset or blank (the diagnosis is still printed). `doctor` reports attestation, retrieval mode, write lock, and git. MCP tools are unchanged and do not fail a session for a missing agent id (#84).
+- Docs: the English host guide lists `doctor`'s full exit-1 surface (unset or blank agent id, missing or non-directory root, write lock that cannot be acquired, git missing / not a repository / `status` failed). Lexical-only retrieval and a dirty worktree are reported and do not fail. A doctor `write_lock` failure is the probe; lock-file creation failure on the write path still warns and may write unlocked (#88).
+- mypy checks `storage.validation`, `storage.paths`, and `server` with per-module strict flags. The rest of the package stays non-strict (#83).
+- English slim host guide: `docs/agent-integration.en.md` (uvx install, required `COMPOUND_MEMORY_AGENT_ID`, the five MCP tools, search → feedback → write). `docs/agent-integration.md` remains the full Chinese guide (#83).
 
 ## 0.5.7 - 2026-10-15
 
