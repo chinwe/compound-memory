@@ -26,7 +26,7 @@ Every agent session starts from zero: preferences get re-asked, project conventi
 Paste this one-liner into your coding agent (Claude Code, Cursor, ZCode, …) and let it do the rest:
 
 ```text
-Set up compound-memory (https://github.com/chinwe/compound-memory) — a local-first multi-agent shared memory (MCP server + CLI) — on this machine. Do not clone the repo for a normal install. Initialize the store with `uvx --from compound-memory compound-memory init` (defaults to ~/.agents/memory). Register its stdio MCP server in this host's MCP config: command `uvx`, args `--from compound-memory compound-memory-server`, env `COMPOUND_MEMORY_ROOT=$HOME/.agents/memory` and `COMPOUND_MEMORY_AGENT_ID=agent-<your-host-id>`. Verify by calling `memory_search` and expecting a `{"hits": [...]}` response; if the host needs a restart to load MCP servers, tell me. Use `uv run --directory <repo>` only when developing against a local checkout. Host-specific configs and the usage protocol: docs/agent-integration.md in the repo.
+Set up compound-memory (https://github.com/chinwe/compound-memory) — a local-first multi-agent shared memory (MCP server + CLI) — on this machine. Do not clone the repo for a normal install. Initialize the store with `uvx --from compound-memory compound-memory init` (defaults to ~/.agents/memory). Register its stdio MCP server in this host's MCP config: command `uvx`, args `--from compound-memory compound-memory-server`, env `COMPOUND_MEMORY_ROOT=$HOME/.agents/memory` and `COMPOUND_MEMORY_AGENT_ID=agent-<your-host-id>`. Verify by calling `memory_search` and expecting a `{"hits": [...]}` response; if the host needs a restart to load MCP servers, tell me. Use `uv run --directory <repo>` only when developing against a local checkout. Short English setup and the search → feedback → write loop: docs/agent-integration.en.md. Full per-host configs: docs/agent-integration.md.
 ```
 
 ### For humans
@@ -83,7 +83,7 @@ A local checkout is the developer path, not a second default: `command` `uv`, `a
 
 #### 4. Next step
 
-Inject the usage protocol from [`skills/compound-memory/SKILL.md`](skills/compound-memory/SKILL.md) into your host (the search → feedback → distill loop), per `docs/agent-integration.md` §6.
+Inject the usage protocol from [`skills/compound-memory/SKILL.md`](skills/compound-memory/SKILL.md) into your host (the search → feedback → write loop). The short English version is [`docs/agent-integration.en.md`](docs/agent-integration.en.md); the full protocol is `docs/agent-integration.md` §6.
 
 ## Demo
 
@@ -222,7 +222,7 @@ Scoring (weights are the `W_*` constants in `src/compound_memory/scoring.py`): `
 | `memory_link` | Link two memories | Bidirectional; both sides must be in the same ns; private-ns links require owner identity |
 | `memory_feedback` | Report how a memory actually behaved | Every outcome advances `uses` and `last_used`. Default `outcome=success`: conf+0.1; first cross-host validation +0.15. `failure` −0.2 (floor 0.05); `contradiction` freezes confidence into the review queue; `obsolete` archives now; `unknown` records the event and leaves confidence unchanged. **Mandatory after adopting a hit** — that's the loop that makes the store compound |
 
-Tool descriptions embed the protocol rules themselves, so agents keep the loop intact even without host-side rules injected. Full parameter reference: `docs/agent-integration.md`.
+Tool descriptions embed the protocol rules themselves, so agents keep the loop intact even without host-side rules injected. Short English loop: [`docs/agent-integration.en.md`](docs/agent-integration.en.md). Full parameter reference: `docs/agent-integration.md`.
 
 ## CLI
 
@@ -272,7 +272,8 @@ Per ADR 0001, the deterministic prep runs on a schedule while judgment (summariz
 
 - [`CHANGELOG.md`](CHANGELOG.md) — release notes (0.5.x Windows support and later)
 - [`docs/specs/0001-compound-memory-spec.md`](docs/specs/0001-compound-memory-spec.md) — design spec
-- [`docs/agent-integration.md`](docs/agent-integration.md) — per-host MCP configs + the unified usage protocol (Chinese)
+- [`docs/agent-integration.en.md`](docs/agent-integration.en.md) — short English setup (uvx, required agent id, 5 tools, search → feedback → write)
+- [`docs/agent-integration.md`](docs/agent-integration.md) — per-host MCP configs + the unified usage protocol (Chinese; full guide)
 - [`docs/adr/`](docs/adr/) — architecture decision records
 - [`CONTEXT.md`](CONTEXT.md) — glossary (Chinese)
 - [`skills/compound-memory/SKILL.md`](skills/compound-memory/SKILL.md) — usage rules for hosts (Chinese)
@@ -281,8 +282,10 @@ Per ADR 0001, the deterministic prep runs on a schedule while judgment (summariz
 
 ```bash
 uv run pytest tests/ -q     # full suite (MCP tool boundary + distillation + lifecycle/index/CLI + input defense)
-uv run mypy src/compound_memory/
+uv run mypy src/compound_memory/   # whole package, non-strict except the modules below
 ```
+
+`storage.validation`, `storage.paths`, and `server` are checked with the per-module strict flags in `pyproject.toml` (the same `mypy` invocation CI runs on Ubuntu / Python 3.13). Other modules stay on the looser global config. Do not set `strict = true` inside a `[[tool.mypy.overrides]]` block: mypy applies that key to the global options and would strict-check the whole package.
 
 Test seams: the MCP tool boundary via in-process `mcp.Client(server)` (no subprocess) plus unit tests for core modules (scoring / index / store ops). CI runs tests, type checks, and a pure-wheel install smoke on Linux and Windows across Python 3.11/3.12/3.13.
 

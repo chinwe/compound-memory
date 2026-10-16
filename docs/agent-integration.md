@@ -1,5 +1,7 @@
 # Agent 接入与使用指南
 
+**English:** short setup and the search → feedback → write loop — [`agent-integration.en.md`](agent-integration.en.md). This file is the full per-host guide.
+
 compound-memory 是本地多 Agent 共享记忆库（存储 `~/.agents/memory`）。所有 Agent 宿主通过**同一条 MCP 边界**（恰好 5 个 tool）接入，共用**同一套 CLI** 做运维与蒸馏；本文给出常见宿主的接入配置与统一的使用规范。
 
 > 术语遵循根目录 `CONTEXT.md`；架构与复利机制见 `README.md`。

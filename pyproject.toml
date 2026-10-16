@@ -45,9 +45,34 @@ testpaths = ["tests"]
 
 [tool.mypy]
 python_version = "3.13"
+# 全包保持非 strict。收紧只发生在下面的 per-module overrides，
+# 其余模块继续按这组宽松旗标检查（CI 同一条 mypy 命令）。
 strict = false
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
 module = ["onnxruntime.*", "onnxruntime", "tokenizers.*", "tokenizers", "sqlite_vec.*", "sqlite_vec", "numpy.*", "numpy"]
 ignore_missing_imports = true
+
+# 渐进收紧的第一批（P1.5）：校验、路径、MCP 边界。旗标对齐 mypy --strict
+# 里可按模块设置的子集（warn_redundant_casts 在 mypy 2.x 不是 per-module
+# 旗标，写进 override 只会产生警告并被丢弃，故不放这里）。
+# 不要在本段写 strict = true——mypy 会把该键作用到全局 Options，等于整包 strict。
+[[tool.mypy.overrides]]
+module = [
+    "compound_memory.storage.validation",
+    "compound_memory.storage.paths",
+    "compound_memory.server",
+]
+disallow_any_generics = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+warn_unused_ignores = true
+warn_return_any = true
+implicit_reexport = false
+strict_equality = true
+extra_checks = true

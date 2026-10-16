@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- mypy checks `storage.validation`, `storage.paths`, and `server` with per-module strict flags. The rest of the package stays non-strict.
+- English slim host guide: `docs/agent-integration.en.md` (uvx install, required `COMPOUND_MEMORY_AGENT_ID`, the five MCP tools, search → feedback → write). `docs/agent-integration.md` remains the full Chinese guide.
+
 ## 0.5.7 - 2026-10-15
 
 - Lesson and avoid semantics: `lesson_role` (`lesson` or `avoid`) on an existing type, and link prefixes `avoid:`, `fixes:`, and `contradicts:`. `distill-plan` and `dream` report `negative_salience` and `contradiction_pairs`. `dream-apply` is not widened, and there is no new MCP tool or in-process LLM (#78 / #79).
