@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+# 同一 workflow + ref 只留最新一次运行。pull_request 的 ref 是 refs/pull/<n>/merge
+# （按 PR 取消），push 的 ref 是 refs/heads/main。新推送会取消仍在跑的上一次。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   privacy:
     # 隐私门禁（权威拦截）：禁串来自 PRIVACY_PATTERNS Secret，绝不写入仓库；
@@ -18,12 +24,23 @@ jobs:
 
   test:
     strategy:
-      # bring-up 期不相互取消：Windows 首上（#55），单点失败也要看全其余组合的结果
-      fail-fast: false
+      # 单格失败即取消同一次运行的其余矩阵格。Windows 首上期（#55）曾用 false，
+      # 以便一次看全组合；现在失败尽早停。
+      fail-fast: true
       matrix:
         os: [ubuntu-latest, windows-latest]
-        # requires-python 声称 >=3.11:矩阵让它成为被验证的承诺而非推断
+        # requires-python 声称 >=3.11：Ubuntu 在 PR 与 push main 上都跑 3.11 + 3.12 + 3.13。
+        # Windows 矩阵：
+        # - pull_request：只留 3.12，恰好一个 Windows job。
+        # - push main（以及任何非 pull_request 触发）：3.11 + 3.12 + 3.13，三个 Windows job。
+        # exclude 的版本只在 pull_request 上是 3.11/3.13；其它事件求值为 none，
+        # 匹配不到任何格子，因此不会缩掉 push 路径。
         python-version: ["3.11", "3.12", "3.13"]
+        exclude:
+          - os: windows-latest
+            python-version: ${{ github.event_name == 'pull_request' && '3.11' || 'none' }}
+          - os: windows-latest
+            python-version: ${{ github.event_name == 'pull_request' && '3.13' || 'none' }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +67,8 @@ jobs:
 
       - name: Wheel smoke test
         # 纯 wheel（无 dev/vec extra）必须可安装，CLI 与 server 可跑。
-        # Linux 与 Windows 都跑（#58）；脚本按 uname 选 bin/ 或 Scripts\。
+        # 钉在 ubuntu × 3.13 一格，不再铺满 OS×Python（曾是 6 格，#58）。
+        # 脚本仍按 uname 选 bin/ 或 Scripts\，Windows 路径留在脚本里，CI 不逐格重跑。
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
         shell: bash
         run: bash scripts/wheel_smoke.sh
