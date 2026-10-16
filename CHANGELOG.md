@@ -41,4 +41,4 @@
 - `__version__` follows the packaged release (it had been stuck at 0.2.0). CLI `--version` matches the tag.
 - MCP Registry `server.json` version tracks the PyPI release.
 
-Older tags (`v0.4.3` and below) are on the GitHub releases page.
+History before published GitHub Releases lives in this changelog and in git tags. Release notes from `v0.5.7` onward are on the [GitHub Releases](https://github.com/chinwe/compound-memory/releases) page.
