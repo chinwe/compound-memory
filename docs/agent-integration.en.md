@@ -32,7 +32,7 @@ Register a stdio MCP server. `uvx` takes the PyPI package name; the console scri
 }
 ```
 
-`COMPOUND_MEMORY_AGENT_ID` is **required** whenever more than one agent shares the store. The process identity wins over whatever the model claims as `source`, `reader`, or `agent`, so a forged id cannot write another host's namespace or inflate cross-host validation. Leave it unset only for a single trusted caller on a private machine. Then `stats.attestation.warning` is set and the server logs the same warning at startup. Without the env var, identity is self-reported and can be forged — do not share `_shared` in that configuration.
+`COMPOUND_MEMORY_AGENT_ID` is **required** whenever more than one agent shares the store. The process identity wins over whatever the model claims as `source`, `reader`, or `agent`, so a forged id cannot write another host's namespace or inflate cross-host validation. Unset or blank is a hard failure for shared `_shared` use: CLI `stats` and `doctor` exit 1 (the diagnosis is still printed). MCP tools keep running, and the server logs the same warning at startup. Without the env var, identity is self-reported and can be forged.
 
 Use a stable host id, and pass that same string as `source` / `agent` / `reader`:
 
@@ -44,7 +44,7 @@ Use a stable host id, and pass that same string as `source` / `agent` / `reader`
 | Cursor | `agent-cursor` |
 | DeepSeek Harness | `agent-deepseek` |
 
-**Verify:** ask the agent to call `memory_search` (any keyword). A `{"hits": [...]}` body means the server is connected. Restart the host if it loads MCP servers only at startup.
+**Verify:** ask the agent to call `memory_search` (any keyword). A `{"hits": [...]}` body means the server is connected. Or run `uvx --from compound-memory compound-memory doctor` (exit 0 when `COMPOUND_MEMORY_AGENT_ID` is set and the store is writable; exit 1 when it is unset or blank). Restart the host if it loads MCP servers only at startup.
 
 A local checkout is the developer path. Clone, `uv sync --extra dev`, then point the host at `uv` with args `["run", "--directory", "<absolute-repo-path>", "compound-memory-server"]`. Details are in the Chinese guide, §1.
 

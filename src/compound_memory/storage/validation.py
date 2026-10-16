@@ -29,10 +29,12 @@ _KEY_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 # tokens.json 与 git 历史撑爆。256 Ki 字符够一条长 episode，挡掉整文件倾倒。
 MAX_CONTENT_CHARS = 262_144
 
-# 未注入进程身份时的固定告警文案（stats / server 启动 / CLI stats 共用，勿另写一份）。
+# 未注入进程身份时的固定告警文案（stats / doctor / server 启动共用，勿另写一份）。
+# CLI 健康面以此为硬失败（退出码 1）；MCP 工具不因此中断，只打这行启动日志。
 ATTESTATION_WARNING = (
     "COMPOUND_MEMORY_AGENT_ID is unset; caller identity is self-reported and can be forged. "
-    "Set a stable agent id in the host MCP env before sharing _shared across agents."
+    "Set a stable agent id in the host MCP env before sharing _shared across agents. "
+    "CLI stats and doctor exit 1 until it is set; MCP tools keep running."
 )
 
 
@@ -47,11 +49,24 @@ def check_content_size(content: str) -> None:
         )
 
 
+def normalize_agent_id(raw: str | None) -> str | None:
+    """环境变量里的进程身份：未设置、空串、纯空白都视为未注入。
+
+    store 不读环境变量。CLI 与 MCP server 在传入 MemoryStore 之前调用，
+    与 COMPOUND_MEMORY_PROJECT 的 adapter 读法同型。"""
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    return stripped or None
+
+
 def attestation_status(agent_id: str | None) -> dict[str, str | bool | None]:
     """进程身份是否经 COMPOUND_MEMORY_AGENT_ID 注入（#57）。
 
-    未注入不拒绝读写（单机自用仍可用），但 warning 必须出现在 stats 里——
-    多 Agent 共享 _shared 时自报身份可被伪造，缺省不能静默。"""
+    未注入不拒绝库读写与 MCP 工具（单机会话仍可用），但 warning 必须出现在
+    stats 里——多 Agent 共享 _shared 时自报身份可被伪造。空白归一在 CLI / server
+    adapter（normalize_agent_id），不在这里。CLI `stats` / `doctor` 把未注入
+    翻译成退出码 1；那是健康检查，不是存储层拒绝。"""
     if agent_id:
         return {"attested": True, "agent_id": agent_id, "warning": None}
     return {"attested": False, "agent_id": None, "warning": ATTESTATION_WARNING}

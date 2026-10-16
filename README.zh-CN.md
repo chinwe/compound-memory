@@ -60,11 +60,11 @@ uvx --from compound-memory compound-memory init
 }
 ```
 
-`uvx` 的参数是包名 `compound-memory`，server 的 console script 是 `compound-memory-server`，所以必须 `--from`。`uvx` 不在 PATH 时把 `command` 写成绝对路径 `~/.local/bin/uvx`。`COMPOUND_MEMORY_AGENT_ID` **必配**（多 Agent 共享 `_shared` 时）：注入后存储层以进程身份裁决一切自报身份，模型谎报身份、伪造 source 污染跨 Agent 验证的通道一并关闭。未设置时身份可被伪造，只适合单机单调用方；`stats` 的 `attestation.warning` 与 MCP server 启动日志会标明。
+`uvx` 的参数是包名 `compound-memory`，server 的 console script 是 `compound-memory-server`，所以必须 `--from`。`uvx` 不在 PATH 时把 `command` 写成绝对路径 `~/.local/bin/uvx`。`COMPOUND_MEMORY_AGENT_ID` **必配**（多 Agent 共享 `_shared` 时）：注入后存储层以进程身份裁决一切自报身份，模型谎报身份、伪造 source 污染跨 Agent 验证的通道一并关闭。未设置或空白是共享部署的硬失败：`stats` 与 `doctor` 退出码 1（诊断仍打印）。MCP 工具不因此中断；`stats.attestation.warning` 与 MCP server 启动日志仍会标明。
 
 从仓库联调是开发路径，不是第二种默认：`uv sync --extra dev` 之后，`command` 用 `uv`，`args` 用 `["run", "--directory", "<仓库绝对路径>", "compound-memory-server"]`。
 
-**验证**：在宿主里让 Agent 调用 `memory_search`（如查询任意关键词），能返回 `{"hits": [...]}` 即接入成功；或直接跑 CLI `uvx --from compound-memory compound-memory stats`。
+**验证**：在宿主里让 Agent 调用 `memory_search`（如查询任意关键词），能返回 `{"hits": [...]}` 即接入成功；或跑 `uvx --from compound-memory compound-memory doctor`（`COMPOUND_MEMORY_AGENT_ID` 已设置且记忆库健康时退出码 0，未设置或空白时退出码 1）。
 
 #### 下一步
 
@@ -178,7 +178,7 @@ uv run compound-memory stats
 }
 ```
 
-当前 `stats` 还会带 `retrieval`（`mode` 为 `vector` 或 `lexical`，向量路关闭时带 `reason`）、`attestation`（是否注入了 `COMPOUND_MEMORY_AGENT_ID`，未注入时 `warning` 非空）和 `expired_active`（活动区里 `valid_until` 已过的条数；本快照为 0，上面的 JSON 沿用 v0.4.0 截断）。`cross_validated` 统计的是 `validated_by` 里至少有两个不同 agent 的记忆条数——上面那一次跨宿主首验把它留在 0 是对的。MCP `memory_search` 带同一份 `retrieval`；CLI `search` 仍是裸数组。
+当前 `stats` 还会带 `retrieval`（`mode` 为 `vector` 或 `lexical`，向量路关闭时带 `reason`）、`attestation`（是否注入了 `COMPOUND_MEMORY_AGENT_ID`，未注入时 `warning` 非空）和 `expired_active`（活动区里 `valid_until` 已过的条数；本快照为 0，上面的 JSON 沿用 v0.4.0 截断）。`cross_validated` 统计的是 `validated_by` 里至少有两个不同 agent 的记忆条数——上面那一次跨宿主首验把它留在 0 是对的。MCP `memory_search` 带同一份 `retrieval`；CLI `search` 仍是裸数组。CLI `stats` 在 `COMPOUND_MEMORY_AGENT_ID` 未设置或空白时退出码 1；`doctor` 是一页诊断（attestation、retrieval、写锁、git），同一身份规则，另外根目录缺失、写锁不可用、git 不可用也退出码 1。MCP 工具不因缺身份中断。
 
 三个看点：
 
@@ -261,7 +261,8 @@ uv run compound-memory distill-plan   # 蒸馏候选清单：suggested_action �
 uv run compound-memory dream --ns _shared   # 只读编排报告：distill 段 + decay_signals + 相等的 stats 快照（不写盘、无 LLM）
 uv run compound-memory dream-apply --proposals apply.json --source agent-workbuddy --dry-run  # 写盘门槛预览；去掉 --dry-run 才对入选项调用 distill-apply
 uv run compound-memory distill-apply "合并后的经验" insight agent-workbuddy --sources <id1>,<id2>  # 原子落库：产物(links 溯源, origin=distillation) + 源归档，一次 commit
-uv run compound-memory stats            # 健康度：uses/confidence 固定桶 + 活性 + 蒸馏产出量
+uv run compound-memory doctor           # 一页健康诊断；AGENT_ID 未设置、根目录缺失、写锁不可用或 git 不可用时退出码 1
+uv run compound-memory stats            # 健康度：uses/confidence 固定桶 + 活性 + 蒸馏产出量；AGENT_ID 未设置时退出码 1
 uv run compound-memory rebuild-index  # 索引可随时重建
 uv run compound-memory review-queue   # 冲突队列（CLI 唯一入口）
 uv run compound-memory git-log        # 审计轨迹

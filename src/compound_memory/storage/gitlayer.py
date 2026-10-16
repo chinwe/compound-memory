@@ -31,6 +31,31 @@ def _git_available() -> bool:
     return shutil.which("git") is not None
 
 
+def probe_repo(root: Path) -> dict[str, str | bool | None]:
+    """只读 git 状态（doctor）：是不是仓库、工作树脏不脏。不 init、不 add、不 commit。
+
+    必须在 MemoryStore 构造之前调用——构造会收编孤儿变更，事后 dirty 恒为干净。
+    脏工作树不是硬失败（ok 仍为 True，reason=dirty-worktree）：启动对账会收编。
+    git 不在 PATH、没有 .git、或 status 失败才是 ok=False。
+    """
+    if not _git_available():
+        return {"ok": False, "repo": False, "dirty": None, "reason": "git-unavailable", "skipped": False}
+    if not (root / ".git").exists():
+        return {"ok": False, "repo": False, "dirty": None, "reason": "not-a-repository", "skipped": False}
+    proc = run(root, git_env(root), ("status", "--porcelain"), check=False)
+    if proc.returncode != 0:
+        detail = (proc.stderr or "").strip() or "git-status-failed"
+        return {"ok": False, "repo": False, "dirty": None, "reason": detail, "skipped": False}
+    dirty = bool(proc.stdout.strip())
+    return {
+        "ok": True,
+        "repo": True,
+        "dirty": dirty,
+        "reason": "dirty-worktree" if dirty else None,
+        "skipped": False,
+    }
+
+
 def git_env(root: Path) -> dict[str, str]:
     """git 子进程 env（仓库发现天花板，防逃逸）。"""
     # root 的 .git 无效（损坏/被清空）时 git 会跳过它继续向上、借父链最近的
