@@ -26,7 +26,7 @@ compound-memory 是本地多 Agent 共享记忆库（存储 `~/.agents/memory`�
 |---|---|
 | 启动命令 | `uvx --from compound-memory compound-memory-server` |
 | `COMPOUND_MEMORY_ROOT` | 可省略。`~` 与 `$HOME` 前缀会展开；省略或空白即 `$HOME/.agents/memory` |
-| `COMPOUND_MEMORY_AGENT_ID` | **必配**。稳定的本宿主 id（如 `agent-claude`），不可由模型或不可信调用方改写。未设置时自报身份可被伪造，不适合共享 `_shared` 的多 Agent 部署；server 启动日志与 `stats.attestation.warning` 会标明 |
+| `COMPOUND_MEMORY_AGENT_ID` | **必配**。稳定的本宿主 id（如 `agent-claude`），不可由模型或不可信调用方改写。未设置或空白时自报身份可被伪造，不适合共享 `_shared` 的多 Agent 部署：CLI `stats` 与 `doctor` **退出码 1**（诊断仍打印）。MCP 工具调用不因此中断；server 启动日志与 `stats.attestation.warning` 仍会标明 |
 
 **运行环境（uvx）**：`uvx` 的参数是 PyPI 包名 `compound-memory`，MCP 入口的 console script 是 `compound-memory-server`，两者不同，所以必须 `--from`。不需要克隆仓库，也不要把仓库路径写进宿主配置。uv 自身输出走 stderr，不污染 MCP 的 stdio 协议。
 
@@ -36,7 +36,7 @@ compound-memory 是本地多 Agent 共享记忆库（存储 `~/.agents/memory`�
 uvx --from compound-memory compound-memory init
 ```
 
-**验证**：在宿主里让 Agent 调用 `memory_search`（如查询 "compound-memory"），能返回 `{"hits": [...]}` 即接入成功。
+**验证**：在宿主里让 Agent 调用 `memory_search`（如查询 "compound-memory"），能返回 `{"hits": [...]}` 即接入成功。安装自检跑 `uvx --from compound-memory compound-memory doctor`：`COMPOUND_MEMORY_AGENT_ID` 已设置且记忆库可写、git 可用时退出码 0；未设置或空白时退出码 1。
 
 ### 开发 / 从仓库联调
 
@@ -64,7 +64,7 @@ uv run --directory <仓库绝对路径> compound-memory init
 
 - **`source` agent id**：WorkBuddy → `agent-workbuddy`；ZCode → `agent-zcode`；Claude Code → `agent-claude`；Cursor → `agent-cursor`；DeepSeek Harness → `agent-deepseek`。id 用宿主标识而非个性化名字（如 TARS），保证稳定不随命名变化；跨 Agent 验证加分依赖 id 互不相同。这个值必须同时写进 `COMPOUND_MEMORY_AGENT_ID`。
 - **namespace**：默认写 `_shared`（全体可见）；`agent-<name>` 是私有区，仅属主可写、读/反馈/关联也须属主身份（`reader`/`agent` 填自己的 agent id，缺省即拒绝）。检索不传 `ns` 时自动并搜自有私有区（双通道）。ns 只允许字符 `[A-Za-z0-9_-]`（ns 会被直接拼进存储路径，含 `../`、`/`、`*` 等一律 ValueError，2026-10-05 审计加固）。日常任务一律用默认值即可。
-- **进程身份注入（必配）**：宿主配置的 `env` 必须设 `COMPOUND_MEMORY_AGENT_ID: <本宿主 agent id>`，值稳定且不能由不可信方随意改。注入后存储层以进程身份裁决一切自报身份（source/reader/agent）：缺省自动补真值、等价形式（`agent-x`/`x`）归一化、矛盾响亮拒绝——模型谎报身份失效，伪造 source 污染跨 Agent 验证的通道一并关闭。未注入则退回自报身份：协作边界，不是安全边界，调用方可以冒充其他 agent 的命名空间，**不要**在这种配置下共享 `_shared`。server 启动日志与 `stats.attestation` 会把未注入标成 warning。与 ns（`_shared` / `agent-*`）正交的是 `project`（适用性），身份管的是谁能写谁的 ns。
+- **进程身份注入（必配）**：宿主配置的 `env` 必须设 `COMPOUND_MEMORY_AGENT_ID: <本宿主 agent id>`，值稳定且不能由不可信方随意改。注入后存储层以进程身份裁决一切自报身份（source/reader/agent）：缺省自动补真值、等价形式（`agent-x`/`x`）归一化、矛盾响亮拒绝——模型谎报身份失效，伪造 source 污染跨 Agent 验证的通道一并关闭。未注入则退回自报身份：协作边界，不是安全边界，调用方可以冒充其他 agent 的命名空间，**不要**在这种配置下共享 `_shared`。这是共享部署的硬失败：`stats` 与 `doctor` 在未设置或空白时退出码 1（JSON 诊断仍打印到 stdout，告警在 stderr）。MCP 五个工具不因此中断，server 启动日志与 `stats.attestation` 仍把未注入标成 warning。与 ns（`_shared` / `agent-*`）正交的是 `project`（适用性），身份管的是谁能写谁的 ns。
 - **project 作用域（按需声明）**：项目专属的记忆（该项目才用的约定/配置/踩坑）写入与检索都带 `project=<slug>`（小写短横线 slug，如 `agenthub`）；跨项目通用的事实不标注。检索缺省 **fail-closed**：不传 `project` 只见全局记忆——「没声明项目 = 全局会话」，项目记忆不外溢进一般会话（ADR 0010）。CLI 侧另有 `COMPOUND_MEMORY_PROJECT` env 回退便利通道（adapter 层读，store 自身不读环境变量；MCP server 全局一份、按项目注入无处落地，显式传参是主语义）。`link` 不限 project（同 ns 即可互链）；蒸馏产物继承源的 project；蒸馏/衰减/复活/stats/review 队列保持库级不过滤。
 - **写什么**：稳定事实（用户偏好、项目约定、环境限制、踩坑结论）才写；一次性、会话内临时信息不写。任务状态类（进行时/待办）内容易腐：要么带 `valid_until`、要么改写成不含进行时态的稳定事实——过时的状态记忆比没有更糟。内容用中文，key 用稳定英文短横线标识（如 `user-tts`、`proj-xxx`）。稳态教训才标 `lesson_role`（见下方「教训」表）；借用教训语义，不搬因果引擎。
 
@@ -191,7 +191,7 @@ claude mcp add compound-memory \
 
 ## 4b. Cursor
 
-Copy-paste setup. `COMPOUND_MEMORY_AGENT_ID` is required (a stable id such as `agent-cursor`). Without it, any caller can claim another host's namespace.
+Copy-paste setup. `COMPOUND_MEMORY_AGENT_ID` is required (a stable id such as `agent-cursor`). Without it, any caller can claim another host's namespace, and `stats` / `doctor` exit 1.
 
 Project config is `.cursor/mcp.json`; user-level is `~/.cursor/mcp.json`:
 
@@ -271,11 +271,19 @@ dsh 通过 MCP client 插件 `@deepseek-ai/dsh-mcp-client` 接入，一个插件
 日常没有仓库目录，前缀是 `uvx --from compound-memory compound-memory`（已 `uv tool install compound-memory` 时可直接写 `compound-memory`）。从仓库联调时在克隆目录改回 `uv run compound-memory`（见 §1）。
 
 ```bash
+uvx --from compound-memory compound-memory doctor         # 一页健康诊断（安装/多宿主自检）：
+                                      #   attestation（AGENT_ID 是否注入）、retrieval（vector/lexical + reason）、
+                                      #   write_lock（能否加独占锁）、git（是否仓库、工作树是否脏）
+                                      #   退出码：0 健康；1 硬失败（AGENT_ID 未设置或空白、根目录缺失、
+                                      #   写锁不可用、git 仓库不可用）。词面降级与脏工作树只报告、不因此失败。
+                                      #   stdout 是 JSON，告警在 stderr。不创建缺失根目录，不 git init。
+                                      #   不新增 MCP 工具。调用方参数错误仍是退出码 2
 uvx --from compound-memory compound-memory stats          # 健康度：uses/confidence 固定桶 + 活性 + 蒸馏产出量
                                       #   + retrieval（vector/lexical）+ attestation（进程身份是否注入）
                                       #   + expired_active（活动区里 valid_until 已过）
                                       #   + cross_validated（validated_by 去重后 ≥2 的条数，
                                       #     不是「有过一次跨宿主反馈」）
+                                      #   AGENT_ID 未设置或空白时退出码 1（JSON 仍打印）；已设置时为 0
 uvx --from compound-memory compound-memory explain <id> [--reader <agent id>]  # 按 id 证据视图（#44）：证据计数
                                       #   （success/failure/contradiction、last_verified、recent 明细）、
                                       #   跨宿主验证明细（validated_by）、派生标记（蒸馏产物零证据起点）、
@@ -362,7 +370,8 @@ launchd（macOS）/ systemd user timer（Linux）/ cron 每天 09:00 自动跑�
 | 写入报 PermissionError | 命名空间越权：`agent-*` 私有区仅属主可写，日常写 `_shared` |
 | 写入/检索报 ValueError（`ns contains characters...`） | ns 含白名单外字符（`../`、`/`、`*`、空格等）：ns 是存储路径组件，只允许 `[A-Za-z0-9_-]`，私有区写 `agent-<宿主 id>` |
 | 项目记忆检索不到 / 报 `project must match` | 检索缺省 fail-closed 只见全局记忆：核对调用方 `project` 参数（或 CLI `COMPOUND_MEMORY_PROJECT`）与记忆标注一致；slug 格式与 key 相同（小写字母数字段短横线连接，禁大写/下划线/空格）；按 id `memory_get` 恒可读，可先取回核对 frontmatter |
-| `stats.attestation.warning` 或启动日志提到 `COMPOUND_MEMORY_AGENT_ID is unset` | 宿主 MCP env 没注入进程身份。多 Agent 共享库必须补上稳定的 `COMPOUND_MEMORY_AGENT_ID` 后重启 server；未注入时调用方可以冒充其他 agent |
+| `stats` / `doctor` 退出码 1，或 `stats.attestation.warning` / 启动日志提到 `COMPOUND_MEMORY_AGENT_ID is unset` | 宿主 MCP env 没注入进程身份（未设置或空白）。多 Agent 共享库必须补上稳定的 `COMPOUND_MEMORY_AGENT_ID` 后重启 server。CLI 健康检查以此为硬失败；MCP 工具调用不因此中断，但未注入时调用方可以冒充其他 agent |
+| `doctor` 报 `root` / `write_lock` / `git` | 根目录不存在先 `init`。写锁加不上：另一进程持锁，或锁文件创建失败。git 不可用：git 不在 PATH、记忆库还不是仓库、或 `git status` 失败。脏工作树只提示，启动对账会收编 |
 | 写入报 `content exceeds` | 正文超过 262144 字符，本次没有落盘。改成短事实或只存指针 |
 | 同 key 写入返回 `conflict: true` | 内容与既有版本不同，已入 `review-queue.md`。裁决后跑 `review-resolve <废置id>`：清行并自动归档废置方（索引同步、一次 commit）。不要手改 frontmatter 再搬文件——那会绕过清行与索引收口。`--all` 只清行不归档；私有 `agent-*` 行加 `--reader` |
 | 记忆被归档了 | 按 id `memory_get` 可取回；对它 `memory_feedback`（obsolete 除外）或 `revive` 即恢复可检索。`forget` 之后文件已不在，get / feedback / revive 都是 `found: false`，恢复只能走记忆库 git |

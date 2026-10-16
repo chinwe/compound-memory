@@ -16,11 +16,18 @@ from .embedding import auto_encoder
 from .extraction import extract, supported_hosts_summary_en
 from .storage import DISTILL_DUP_SIM_THRESHOLD, MEMORY_TYPES, MemoryStore, PROMOTION_USES_THRESHOLD, default_root
 from .storage.distill import SUGGESTED_ACTIONS
-from .storage.locking import WriteLockError
+from .storage.gitlayer import probe_repo
+from .storage.locking import WriteLockError, probe_write_lock
+from .storage.validation import attestation_status, normalize_agent_id
 
 
 def _emit(payload: Any) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+
+
+def _agent_id_from_env() -> str | None:
+    """进程身份只在 adapter 读环境变量（store 不读）。空白视为未设置。"""
+    return normalize_agent_id(os.environ.get("COMPOUND_MEMORY_AGENT_ID"))
 
 
 def _open_store(args: argparse.Namespace) -> MemoryStore:
@@ -29,8 +36,19 @@ def _open_store(args: argparse.Namespace) -> MemoryStore:
     return MemoryStore(
         Path(args.root),
         embedder=auto_encoder(),
-        agent_id=os.environ.get("COMPOUND_MEMORY_AGENT_ID") or None,
+        agent_id=_agent_id_from_env(),
     )
+
+
+def _note_attestation(attestation: dict[str, Any]) -> None:
+    warning = attestation.get("warning")
+    if warning:
+        print(warning, file=sys.stderr)
+
+
+def _note_retrieval(retrieval: dict[str, Any]) -> None:
+    if retrieval.get("mode") == "lexical":
+        print(f"retrieval is lexical-only ({retrieval.get('reason')})", file=sys.stderr)
 
 
 def _caller_project(args: argparse.Namespace) -> str | None:
@@ -108,16 +126,93 @@ def cmd_forget(args: argparse.Namespace) -> None:
     _emit(_open_store(args).forget(args.id, args.agent, reason=args.reason))
 
 
-def cmd_stats(args: argparse.Namespace) -> None:
+def cmd_stats(args: argparse.Namespace) -> int:
     payload = _open_store(args).stats()
     # 诊断走 stderr，stdout 保持纯 JSON。未注入身份 / 词面降级在这里响一声（#57/#60）。
-    warning = (payload.get("attestation") or {}).get("warning")
-    if warning:
-        print(warning, file=sys.stderr)
-    retrieval = payload.get("retrieval") or {}
-    if retrieval.get("mode") == "lexical":
-        print(f"retrieval is lexical-only ({retrieval.get('reason')})", file=sys.stderr)
+    # 未注入是共享部署的硬失败：JSON 照打，退出码 1。MCP 工具不走这条路径。
+    attestation = payload.get("attestation") or {}
+    _note_attestation(attestation)
+    _note_retrieval(payload.get("retrieval") or {})
     _emit(payload)
+    if not attestation.get("attested"):
+        return 1
+    return 0
+
+
+def _skip_git(reason: str) -> dict[str, Any]:
+    return {"ok": True, "repo": None, "dirty": None, "reason": reason, "skipped": True}
+
+
+def _skip_lock(detail: str) -> dict[str, Any]:
+    return {"ok": True, "status": "skipped", "detail": detail, "skipped": True}
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """一页健康诊断。硬失败退出码 1；词面降级与脏工作树只报告。
+
+    git 快照在 MemoryStore 构造之前：构造会收编孤儿变更。根目录缺失、
+    不是目录、不是 git 仓库、或写锁试加失败时不打开 store——避免 doctor
+    顺手 git init，也避免锁被占用时阻塞 flock 把健康检查挂死。
+    """
+    root = Path(args.root)
+    attestation = attestation_status(_agent_id_from_env())
+    if not root.exists():
+        root_info: dict[str, Any] = {"ok": False, "status": "missing", "path": str(root)}
+        git_info: dict[str, Any] = _skip_git("skipped: root-missing")
+        write_lock: dict[str, Any] = _skip_lock("root-missing")
+        retrieval: dict[str, Any] = {"mode": None, "reason": "skipped: root-missing"}
+    elif not root.is_dir():
+        root_info = {"ok": False, "status": "not-a-directory", "path": str(root)}
+        git_info = _skip_git("skipped: root-not-a-directory")
+        write_lock = _skip_lock("root-not-a-directory")
+        retrieval = {"mode": None, "reason": "skipped: root-not-a-directory"}
+    else:
+        root_info = {"ok": True, "status": "present", "path": str(root)}
+        git_info = probe_repo(root)
+        write_lock = probe_write_lock(root)
+        # 写锁失败时不要打开 store：recover 的阻塞 flock 会把 doctor 挂住。
+        if not git_info.get("repo"):
+            retrieval = {"mode": None, "reason": "skipped: not-a-repository"}
+        elif not write_lock.get("ok"):
+            retrieval = {"mode": None, "reason": "skipped: write-lock"}
+        else:
+            retrieval = _open_store(args).retrieval_status()
+
+    problems: list[str] = []
+    if not root_info["ok"]:
+        problems.append("root")
+    if not attestation.get("attested"):
+        problems.append("attestation")
+    if not write_lock.get("skipped") and not write_lock.get("ok"):
+        problems.append("write_lock")
+    if not git_info.get("skipped") and not git_info.get("ok"):
+        problems.append("git")
+
+    report = {
+        "ok": not problems,
+        "problems": problems,
+        "root": root_info,
+        "attestation": attestation,
+        "retrieval": retrieval,
+        "write_lock": write_lock,
+        "git": git_info,
+    }
+    _note_attestation(attestation)
+    _note_retrieval(retrieval)
+    if not root_info["ok"]:
+        print(f"store root {root_info['status']}: {root_info['path']}", file=sys.stderr)
+    if git_info.get("dirty"):
+        print("git worktree is dirty", file=sys.stderr)
+    elif not git_info.get("skipped") and not git_info.get("ok"):
+        print(f"git: {git_info.get('reason')}", file=sys.stderr)
+    if not write_lock.get("skipped") and not write_lock.get("ok"):
+        print(f"write lock: {write_lock.get('detail') or write_lock.get('status')}", file=sys.stderr)
+    if report["ok"]:
+        print("doctor: ok", file=sys.stderr)
+    else:
+        print("doctor: fail (" + ", ".join(problems) + ")", file=sys.stderr)
+    _emit(report)
+    return 0 if report["ok"] else 1
 
 
 def cmd_rebuild_index(args: argparse.Namespace) -> None:
@@ -414,7 +509,37 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ns", default="_shared"); p.add_argument("--key", default=None)
     p.add_argument("--confidence", type=float, default=None)
     p.set_defaults(func=cmd_distill_apply)
-    p = sub.add_parser("stats"); p.set_defaults(func=cmd_stats)
+    p = sub.add_parser(
+        "stats",
+        help="health counters; exit 1 when COMPOUND_MEMORY_AGENT_ID is unset or blank",
+        description="Health counters (histograms, liveness, distillation yield) plus retrieval and "
+        "attestation. JSON on stdout; attestation and lexical-only notes on stderr. "
+        "Exit 0 when COMPOUND_MEMORY_AGENT_ID is set to a non-blank id. "
+        "Exit 1 when it is unset or blank — sharing _shared without a process identity is unsafe. "
+        "The JSON is still printed. Lexical retrieval is a note, not a failure. "
+        "Caller errors stay exit 2. MCP tools are not failed by a missing agent id; use doctor "
+        "for root, write-lock, and git checks.",
+    )
+    p.set_defaults(func=cmd_stats)
+    p = sub.add_parser(
+        "doctor",
+        help="one-page health diagnosis; exit 1 on hard failures (unset AGENT_ID, missing root, broken lock, unusable git)",
+        description="One-page health diagnosis for install and multi-host checks. "
+        "JSON on stdout; warnings on stderr. "
+        "Exit 0 when no hard problem is present. "
+        "Exit 1 when COMPOUND_MEMORY_AGENT_ID is unset or blank, the store root is missing "
+        "or not a directory, the write lock cannot be acquired, or the memory root is not a "
+        "usable git repository (git missing, no .git, or git status failed). "
+        "A lexical retrieval mode and a dirty worktree are reported and do not by themselves "
+        "fail the check. "
+        "Does not create a missing root and does not git-init a directory that is not already "
+        "a repository. Git status is read before store startup, so a dirty tree is visible "
+        "before orphan recovery. "
+        "Caller errors stay exit 2. MCP tool calls keep running when the agent id is unset; "
+        "this command is the operator health check, not a mid-session gate. "
+        "stats uses the same attestation rule and also exits 1 when the agent id is unset.",
+    )
+    p.set_defaults(func=cmd_doctor)
     p = sub.add_parser("rebuild-index"); p.set_defaults(func=cmd_rebuild_index)
     p = sub.add_parser("review-queue"); p.set_defaults(func=cmd_review_queue)
     p = sub.add_parser(
@@ -479,13 +604,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.root is None:
         args.root = default_root()
     try:
-        args.func(args)
-        return 0
+        code = args.func(args)
     except (ValueError, PermissionError, WriteLockError) as exc:
         # store 接口的调用方错误统一在这里翻译成 JSON（MCP 侧由框架转 is_error）。
         # WriteLockError 是争锁失败的 fail-closed（#58），同样不该变成 traceback。
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
+    # stats / doctor 在硬失败时返回 1；其余命令返回 None，保持退出码 0。
+    return 0 if code is None else code
 
 
 if __name__ == "__main__":

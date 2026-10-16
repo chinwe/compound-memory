@@ -20,7 +20,7 @@ from mcp.server.mcpserver import MCPServer
 from .embedding import auto_encoder
 from .model import TYPE_SPEC
 from .storage import MEMORY_TYPES, MemoryStore, default_root
-from .storage.validation import ATTESTATION_WARNING, MAX_CONTENT_CHARS
+from .storage.validation import ATTESTATION_WARNING, MAX_CONTENT_CHARS, normalize_agent_id
 
 logger = logging.getLogger(__name__)
 
@@ -150,11 +150,12 @@ def memory_feedback(mem_id: str, agent: str, outcome: str = "success") -> dict[s
 
 
 def main() -> None:
-    agent_id = os.environ.get("COMPOUND_MEMORY_AGENT_ID") or None
+    agent_id = normalize_agent_id(os.environ.get("COMPOUND_MEMORY_AGENT_ID"))
     if _store is None:
-        # 生产入口自动挂向量路（vec extra + 模型就绪才生效，否则降级纯词面）；
-        # 宿主必须经 COMPOUND_MEMORY_AGENT_ID 注入进程身份。未设置仍能跑（单机自用），
-        # 但启动日志与 stats.attestation 标明身份可被伪造（#57）。
+        # 生产入口自动挂向量路（vec extra + 模型就绪才生效，否则降级纯词面）。
+        # 宿主必须经 COMPOUND_MEMORY_AGENT_ID 注入进程身份。未设置或空白仍能跑：
+        # MCP 工具不因此中断。启动日志与 stats.attestation 标明身份可被伪造（#57）。
+        # 同一事实在 CLI stats / doctor 是退出码 1（共享部署的健康检查硬失败）。
         configure(embedder=auto_encoder(), agent_id=agent_id)
     if not agent_id:
         logger.warning("%s", ATTESTATION_WARNING)

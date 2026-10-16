@@ -55,22 +55,33 @@ def _spin_until_locked(
             sleep(poll)
 
 
+def _try_lock_exclusive(fd: int) -> None:
+    """单次非阻塞独占尝试。失败抛 OSError（POSIX EAGAIN / Windows 锁占用）。
+
+    doctor 用它，避免健康检查走上 write_lock 的阻塞或 30 秒轮询。
+    """
+    if sys.platform == "win32":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
 def _lock_exclusive(fd: int) -> None:
     """fd 上的跨进程独占锁：POSIX 走 flock，Windows 走 msvcrt 字节范围锁（#55）。
 
     msvcrt.locking 锁「当前位置起的 n 字节」，故先 seek 到 0；锁定范围与解锁
     必须同 fd 同偏移同长度配对（见 _unlock_fd）。争锁超时抛 OSError，由
     write_lock 转成 WriteLockError（#58：不再降级无锁写入）。
+    POSIX 写路径保持阻塞 flock；非阻塞尝试只给 probe_write_lock。
     """
     if sys.platform == "win32":
-        import msvcrt
-
-        def attempt() -> None:
-            os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-
         _spin_until_locked(
-            attempt,
+            lambda: _try_lock_exclusive(fd),
             sleep=time.sleep,
             monotonic=time.monotonic,
             timeout=LOCK_ACQUIRE_TIMEOUT_S,
@@ -80,6 +91,38 @@ def _lock_exclusive(fd: int) -> None:
         import fcntl
 
         fcntl.flock(fd, fcntl.LOCK_EX)
+
+
+def probe_write_lock(root: Path) -> dict[str, str | bool | None]:
+    """非阻塞试加独占写锁并立即释放（doctor）。不写记忆，也不走 30 秒轮询。
+
+    status: acquired（能锁）/ contended（别人持锁或加锁失败）/ unavailable
+    （锁文件创建失败，与 write_lock 的降级同因）。skipped 恒 False——
+    调用方在根目录缺失时自己填跳过，不要为了探锁去创建目录。
+    """
+    try:
+        fd = os.open(root / ".lock", os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError as exc:
+        return {
+            "ok": False,
+            "status": "unavailable",
+            "detail": f"write lock unavailable: {exc}",
+            "skipped": False,
+        }
+    try:
+        _try_lock_exclusive(fd)
+    except OSError as exc:
+        return {
+            "ok": False,
+            "status": "contended",
+            "detail": f"write lock not acquired ({exc})",
+            "skipped": False,
+        }
+    else:
+        _unlock_fd(fd)
+        return {"ok": True, "status": "acquired", "detail": None, "skipped": False}
+    finally:
+        os.close(fd)
 
 
 def _unlock_fd(fd: int) -> None:

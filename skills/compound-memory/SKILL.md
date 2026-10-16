@@ -1,11 +1,11 @@
 ---
 name: compound-memory
-description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：接到非琐碎任务先 memory_search 查记忆；采纳记忆后 memory_feedback 强化；任务结束沉淀稳定事实（type/key/source 约定）；跑记忆库运维或蒸馏（stats/decay/revive/review-queue/distill）；检索、写入或注入异常时排查。
+description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：接到非琐碎任务先 memory_search 查记忆；采纳记忆后 memory_feedback 强化；任务结束沉淀稳定事实（type/key/source 约定）；跑记忆库运维或蒸馏（doctor/stats/decay/revive/review-queue/distill）；检索、写入或注入异常时排查。
 ---
 
 # compound-memory 使用规范
 
-本机跨 Agent 共享记忆库：MCP 服务 `compound-memory`（5 个工具是唯一读写边界），存储 `~/.agents/memory`，CLI 做运维与蒸馏。接入配置（各宿主 MCP 注册）见仓库 `docs/agent-integration.md`；英文精简版（uvx、必配 agent id、检索→反馈→写入）见 `docs/agent-integration.en.md`。宿主 env **必须**设稳定的 `COMPOUND_MEMORY_AGENT_ID`（与下面的 `source` 相同）；未设置时身份可被伪造，`stats.attestation.warning` 与 server 启动日志会标明。
+本机跨 Agent 共享记忆库：MCP 服务 `compound-memory`（5 个工具是唯一读写边界），存储 `~/.agents/memory`，CLI 做运维与蒸馏。接入配置（各宿主 MCP 注册）见仓库 `docs/agent-integration.md`；英文精简版（uvx、必配 agent id、检索→反馈→写入）见 `docs/agent-integration.en.md`。宿主 env **必须**设稳定的 `COMPOUND_MEMORY_AGENT_ID`（与下面的 `source` 相同）。未设置或空白是共享 `_shared` 的硬失败：`stats` 与 `doctor` 退出码 1，诊断仍打印；MCP 工具调用不因此中断，server 启动日志会标明。
 
 ## 三个必做动作（复利闭环）
 
@@ -50,7 +50,8 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 
 | 命令 | 何时用 |
 |---|---|
-| `stats` | 看健康度：uses/confidence 分布、活性、蒸馏产出；`retrieval.mode` 是 `vector` 还是 `lexical`；`attestation` 是否注入了进程身份；`expired_active` 是活动区里 valid_until 已过的条数；`cross_validated` 是 `validated_by` 去重后 ≥2 的条数（一次跨宿主反馈不够） |
+| `doctor` | 一页健康诊断（安装 / 多宿主自检）。stdout 是 JSON，告警在 stderr。覆盖 `attestation`（`COMPOUND_MEMORY_AGENT_ID` 是否注入）、`retrieval`（`vector` 还是 `lexical`，以及 reason）、`write_lock`（能否加独占锁）、`git`（记忆库是不是 git 仓库、工作树脏不脏）。退出码：`0` 无硬问题；`1` 硬失败（AGENT_ID 未设置或空白、根目录缺失或不是目录、写锁不可用、git 仓库不可用）。词面降级和脏工作树只报告，不因此失败。不创建缺失的根目录，也不会给还不是仓库的目录 `git init`。不新增 MCP 工具 |
+| `stats` | 看健康度：uses/confidence 分布、活性、蒸馏产出；`retrieval.mode` 是 `vector` 还是 `lexical`；`attestation` 是否注入了进程身份；`expired_active` 是活动区里 valid_until 已过的条数；`cross_validated` 是 `validated_by` 去重后 ≥2 的条数（一次跨宿主反馈不够）。`COMPOUND_MEMORY_AGENT_ID` 未设置或空白时退出码 `1`（JSON 仍打印）；已设置时退出码 `0`。调用方参数错误仍是退出码 `2` |
 | `explain <id> [--reader <agent id>]` | 按 id 看单条记忆的置信度构成（证据计数 success/failure/contradiction、last_verified、最近反馈明细、跨宿主验证明细 validated_by、派生标记、当前 conf）——排查「这条 conf 为什么这么高/低」「这条是不是蒸馏产物」时用；只读不产生提交，私有 ns 加 `--reader` |
 | `rebuild-index` | 手工编辑过记忆文件**内容**后（活性检测只覆盖新增/删除文件） |
 | `review-queue` / `review-resolve` | 处理同 key 冲突队列与 contradiction 争议（人工裁决入口）：`review-resolve <废置id>` 清行并自动归档废置方（对侧保留活动区）；contradiction 争议行裁决二选一——维持原记忆有效用 `review-resolve <争议id> --uphold`（解冻并按 failure −0.2 折算），确错则缺省路径归档；`--all` 只清空队列不归档（争议行解冻但不折算）。私有 `agent-*` ns 的行仅属主可清（加 `--reader`）——`--all` 会静默保留别人的私有行，显式点名则报错；`review-queue` 展示仍全量 |
@@ -85,6 +86,8 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | SessionStart 没注入 | hook 任何异常都静默退出；手动跑 `~/.agents/memory/hooks/session_start.py` 查输出是否为合法 `{"additionalContext": ...}` JSON |
 | 写入/读取/反馈 `PermissionError` | ns 越权：日常写读 `_shared`；私有 `agent-*` ns 的读/反馈带 `reader`/`agent`、link 带 `agent`（`agent-<名>` 或 `<名>`） |
 | 报 `contradicts attested agent` | 宿主已注入进程身份（`COMPOUND_MEMORY_AGENT_ID`），自报身份与之矛盾：`source`/`agent` 改填自己的 agent id，`reader` 可直接省略（自动补真值）；仍报错则核对宿主 env 配置 |
+| `stats` / `doctor` 退出码 1，或日志出现 `COMPOUND_MEMORY_AGENT_ID is unset` | 宿主 env 未注入进程身份（未设置或空白）。共享 `_shared` 必须补上稳定的 `COMPOUND_MEMORY_AGENT_ID` 后重启 server。这是 CLI 健康检查的硬失败；MCP 五个工具不因此中断，但未注入时调用方可以冒充其他 agent |
+| `doctor` 报 `root` / `write_lock` / `git` | 根目录不存在先 `init`；写锁加不上是另一进程持锁或锁文件创建失败；git 不可用表示没有审计仓库（git 不在 PATH、没有 `.git`、或 `git status` 失败）。脏工作树只提示 |
 | `write` 报 `key must match` | key 格式不合规（禁大写/下划线/空格/日期前缀）：改用小写字母数字段以短横线连接（`proj-xxx`）；key 是同 key 更新的锚点，日期化会让事实更新退化成不断新增 |
 | 写入返回 `conflict: true` | 内容与既有版本不同，已入冲突队列；裁决后 `review-resolve <废置id>` 清行并自动归档废置方（索引同步、自动 commit）。不要手改 frontmatter 再搬文件。`--all` 只清行不归档（无裁决信息） |
 | 项目记忆检索不到 | 先核对调用方 `project` 参数（或 CLI `COMPOUND_MEMORY_PROJECT`）与记忆标注一致；检索缺省 fail-closed 只见全局记忆（ADR 0010），声明对应项目才见 全局 ∪ 该项目；按 id 的 `memory_get` 不受 project 限制，可先取回核对 frontmatter |

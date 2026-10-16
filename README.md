@@ -75,11 +75,11 @@ This lets your everyday agents read/write the shared store automatically. No rep
 }
 ```
 
-`uvx` takes the package name; the server console script is `compound-memory-server`, so `--from` is required. If `uvx` is not on `PATH`, set `command` to the absolute path `~/.local/bin/uvx`. `COMPOUND_MEMORY_AGENT_ID` is **required** for any multi-agent store: the process identity wins over whatever the model claims, so a forged `source` cannot write another host's namespace or inflate cross-host validation. Leave it unset only for a single trusted caller on a private machine — `stats` then reports `attestation.warning`, and the MCP server logs the same warning at startup. Without it, identity is self-reported and can be forged.
+`uvx` takes the package name; the server console script is `compound-memory-server`, so `--from` is required. If `uvx` is not on `PATH`, set `command` to the absolute path `~/.local/bin/uvx`. `COMPOUND_MEMORY_AGENT_ID` is **required** for any multi-agent store: the process identity wins over whatever the model claims, so a forged `source` cannot write another host's namespace or inflate cross-host validation. Unset or blank is a hard failure for shared `_shared` use: `stats` and `doctor` exit 1 (the diagnosis is still printed). MCP tools keep running, and the server logs the same warning at startup. Without the id, identity is self-reported and can be forged.
 
 A local checkout is the developer path, not a second default: `command` `uv`, `args` `["run", "--directory", "<absolute-repo-path>", "compound-memory-server"]` after `uv sync --extra dev`.
 
-**Verify**: ask your agent to call `memory_search` (any keyword) — a `{"hits": [...]}` response means you're connected. Or run `uvx --from compound-memory compound-memory stats` from the CLI.
+**Verify**: ask your agent to call `memory_search` (any keyword) — a `{"hits": [...]}` response means you're connected. Or run `uvx --from compound-memory compound-memory doctor` (exit 0 when `COMPOUND_MEMORY_AGENT_ID` is set and the store is writable; exit 1 when it is unset or blank).
 
 #### 4. Next step
 
@@ -193,7 +193,7 @@ uv run compound-memory stats
 }
 ```
 
-Current `stats` also includes `retrieval` (`mode`: `vector` or `lexical`, plus `reason` when the vector channel is off), `attestation` (`attested`, plus a `warning` when `COMPOUND_MEMORY_AGENT_ID` is unset), and `expired_active` (active-area memories whose `valid_until` has passed; 0 in this snapshot). `cross_validated` counts memories whose `validated_by` lists at least two distinct agents — the single cross-host validation above correctly leaves it at 0. `memory_search` carries the same `retrieval` object. CLI `search` stays a bare array.
+Current `stats` also includes `retrieval` (`mode`: `vector` or `lexical`, plus `reason` when the vector channel is off), `attestation` (`attested`, plus a `warning` when `COMPOUND_MEMORY_AGENT_ID` is unset), and `expired_active` (active-area memories whose `valid_until` has passed; 0 in this snapshot). `cross_validated` counts memories whose `validated_by` lists at least two distinct agents — the single cross-host validation above correctly leaves it at 0. `memory_search` carries the same `retrieval` object. CLI `search` stays a bare array. CLI `stats` exits 1 when `COMPOUND_MEMORY_AGENT_ID` is unset or blank; `doctor` is the one-page check (attestation, retrieval, write lock, git) and uses the same rule, plus root / lock / git failures. MCP tools do not stop for a missing agent id.
 
 Three things to notice:
 
@@ -241,7 +241,8 @@ uv run compound-memory distill-plan   # distillation candidates: suggested_actio
 uv run compound-memory dream --ns _shared   # read-only report: distill-plan section (including the negative sections) + decay_signals + equal stats snapshots (no writes, no LLM)
 uv run compound-memory dream-apply --proposals apply.json --source agent-workbuddy --dry-run  # gated apply preview; drop --dry-run to run distill-apply on admitted rows
 uv run compound-memory distill-apply "the merged insight" insight agent-workbuddy --sources <id1>,<id2>  # atomic: product (links, origin=distillation) + source archival, one commit
-uv run compound-memory stats            # health: uses/confidence buckets + liveness + distillation yield
+uv run compound-memory doctor           # one-page health check; exit 1 if AGENT_ID is unset, root is missing, the lock is broken, or git is unusable
+uv run compound-memory stats            # health: uses/confidence buckets + liveness + distillation yield; exit 1 if AGENT_ID is unset
 uv run compound-memory rebuild-index  # rebuild the search cache anytime
 uv run compound-memory review-queue   # conflict queue (CLI-only entry)
 uv run compound-memory git-log        # audit trail

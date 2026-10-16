@@ -156,14 +156,16 @@
   包装只在 MCP 层——契约变更 #60：词面降级必须出现在 search 信封，hit 形状与 CLI 裸数组不动）、
   `structured_output=False` 单份序列化、异常 → `is_error` 翻译
   （`tests/contracts/test_mcp_surface.py`）；语义不重测；
-- **CLI 层**：只钉 20 个子命令名与关键 flags（含 D1/D2 的 `link --agent`、
+- **CLI 层**：只钉 21 个子命令名与关键 flags（含 D1/D2 的 `link --agent`、
   `review-resolve --reader`、ADR-0009 的 `forget --agent/--reason`、#44 的
   `explain --reader` 与 `search --explain`——17→18 契约变更；#69 的 `dream`
   `--ns`/`--reader`——18→19 契约变更；#72 的 `dream-apply`
-  `--proposals`/`--source`/`--dry-run`——19→20 契约变更，MCP 仍为 5）
+  `--proposals`/`--source`/`--dry-run`——19→20 契约变更；`doctor`——20→21
+  契约变更，CLI 健康检查，MCP 仍为 5）
   （`tests/contracts/test_cli_surface.py`，
   argparse 结构断言）；行为不重测（CLI 是薄 adapter；调用方错误统一翻译为
-  stderr JSON + exit 2）；
+  stderr JSON + exit 2；`stats` / `doctor` 的健康失败是 exit 1，见
+  `tests/test_cli_health.py`）；
 - **Tier 2 薄钉**（形状 + 错误）：`find` / `decay_sweep` / `review_queue` /
   `rebuild_index` / `stats` / `git_log` / `lexical_candidates`
   （`tests/contracts/test_ops_tier2.py`）。stats 键集契约变更 #57/#60：在既有计数键之外
