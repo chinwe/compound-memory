@@ -17,7 +17,7 @@ jobs:
     # fork PR 拿不到 Secret，检查脚本缺 patterns 时警告放行（见 docs/agents/privacy-gate.md）
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - env:
           PRIVACY_PATTERNS: ${{ secrets.PRIVACY_PATTERNS }}
         run: bash scripts/check-privacy.sh
@@ -43,7 +43,7 @@ jobs:
             python-version: ${{ github.event_name == 'pull_request' && '3.13' || 'none' }}
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: astral-sh/setup-uv@v5
         with:
