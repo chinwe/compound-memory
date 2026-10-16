@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
 
       - name: Verify tag matches version
         # PyPI 版本不可重传:tag 与 pyproject 版本不一致必须在这里响亮失败
