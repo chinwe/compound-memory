@@ -13,9 +13,9 @@
           - '--from'
           - compound-memory
           - compound-memory-server
-        # 启动 dsh 的进程里已设置的变量优先；未设置时用本仓库既有宿主 id。
+        # 启动 dsh 的进程里已设置的变量优先；未设置时用插件默认宿主 id。
         # 值是字符串。ROOT 的 $HOME 由 compound-memory 展开，不经 shell。
         env:
           COMPOUND_MEMORY_ROOT: !!js "process.env.COMPOUND_MEMORY_ROOT || '$HOME/.agents/memory'"
-          COMPOUND_MEMORY_AGENT_ID: !!js "process.env.COMPOUND_MEMORY_AGENT_ID || 'agent-deepseek'"
+          COMPOUND_MEMORY_AGENT_ID: !!js "process.env.COMPOUND_MEMORY_AGENT_ID || 'agent-dsh'"
         failOnStartupError: true

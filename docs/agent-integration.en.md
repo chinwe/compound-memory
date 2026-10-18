@@ -42,7 +42,7 @@ Use a stable host id, and pass that same string as `source` / `agent` / `reader`
 | ZCode | `agent-zcode` |
 | Claude Code | `agent-claude` |
 | Cursor | `agent-cursor` |
-| DeepSeek Harness | `agent-deepseek` |
+| DeepSeek Harness | `agent-dsh` |
 
 **Verify:** ask the agent to call `memory_search` (any keyword). A `{"hits": [...]}` body means the server is connected. Or run `uvx --from compound-memory compound-memory doctor` (JSON on stdout, warnings on stderr). Restart the host if it loads MCP servers only at startup.
 
@@ -76,13 +76,13 @@ Type choice, `project` slugs, private `agent-*` namespaces, and lesson / avoid m
 
 ## DeepSeek Harness
 
-The installable bundle is [`integrations/dsh`](../integrations/dsh) (npm name `dsh-compound-memory`). It inserts one in-box `@deepseek-ai/dsh-mcp-client` row that runs `uvx --from compound-memory compound-memory-server`. The server still exposes the same five tools; DSH names them `mcp__compound-memory__memory_search` and the matching get / write / link / feedback tools.
+The installable bundle is [`integrations/dsh`](../integrations/dsh) (npm name `dsh-compound-memory`). That directory is laid out as the root of the future public repo `chinwe/compound-memory-dsh` (not created from this repository): root `package.json` declares `dsh.bundle`, and `skills/compound-memory/SKILL.md` ships with the package. The patch inserts one in-box `@deepseek-ai/dsh-mcp-client` row that runs `uvx --from compound-memory compound-memory-server`. There are no install or lifecycle scripts. The server still exposes the same five tools; DSH names them `mcp__compound-memory__memory_search` and the matching get / write / link / feedback tools.
 
 ```bash
 dsh plugin --profile web add /absolute/path/to/compound-memory/integrations/dsh
 ```
 
-`COMPOUND_MEMORY_AGENT_ID` defaults to `agent-deepseek` when the launching environment does not set it. `uvx` must be on the `PATH` that starts `dsh`. Per-host notes and the hand-written patch are in the Chinese guide §5.
+`COMPOUND_MEMORY_AGENT_ID` defaults to `agent-dsh` when the launching environment does not set it. `uvx` must be on the `PATH` that starts `dsh`. DSH does not scan skills inside an npm package; copy or symlink `integrations/dsh/skills/compound-memory` to `~/.dsh/skills/compound-memory` if the skill tool should load it. Per-host notes and the hand-written patch are in the Chinese guide §5.
 
 ## Next
 

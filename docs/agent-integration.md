@@ -62,7 +62,7 @@ uv run --directory <仓库绝对路径> compound-memory init
 
 ### 统一约定（各宿主必须一致）
 
-- **`source` agent id**：WorkBuddy → `agent-workbuddy`；ZCode → `agent-zcode`；Claude Code → `agent-claude`；Cursor → `agent-cursor`；DeepSeek Harness → `agent-deepseek`。id 用宿主标识而非个性化名字（如 TARS），保证稳定不随命名变化；跨 Agent 验证加分依赖 id 互不相同。这个值必须同时写进 `COMPOUND_MEMORY_AGENT_ID`。
+- **`source` agent id**：WorkBuddy → `agent-workbuddy`；ZCode → `agent-zcode`；Claude Code → `agent-claude`；Cursor → `agent-cursor`；DeepSeek Harness → `agent-dsh`。id 用宿主标识而非个性化名字（如 TARS），保证稳定不随命名变化；跨 Agent 验证加分依赖 id 互不相同。这个值必须同时写进 `COMPOUND_MEMORY_AGENT_ID`。
 - **namespace**：默认写 `_shared`（全体可见）；`agent-<name>` 是私有区，仅属主可写、读/反馈/关联也须属主身份（`reader`/`agent` 填自己的 agent id，缺省即拒绝）。检索不传 `ns` 时自动并搜自有私有区（双通道）。ns 只允许字符 `[A-Za-z0-9_-]`（ns 会被直接拼进存储路径，含 `../`、`/`、`*` 等一律 ValueError，2026-10-05 审计加固）。日常任务一律用默认值即可。
 - **进程身份注入（必配）**：宿主配置的 `env` 必须设 `COMPOUND_MEMORY_AGENT_ID: <本宿主 agent id>`，值稳定且不能由不可信方随意改。注入后存储层以进程身份裁决一切自报身份（source/reader/agent）：缺省自动补真值、等价形式（`agent-x`/`x`）归一化、矛盾响亮拒绝——模型谎报身份失效，伪造 source 污染跨 Agent 验证的通道一并关闭。未注入则退回自报身份：协作边界，不是安全边界，调用方可以冒充其他 agent 的命名空间，**不要**在这种配置下共享 `_shared`。这是共享部署的硬失败：`stats` 与 `doctor` 在未设置或空白时退出码 1（JSON 诊断仍打印到 stdout，告警在 stderr）。MCP 五个工具不因此中断，server 启动日志与 `stats.attestation` 仍把未注入标成 warning。与 ns（`_shared` / `agent-*`）正交的是 `project`（适用性），身份管的是谁能写谁的 ns。
 - **project 作用域（按需声明）**：项目专属的记忆（该项目才用的约定/配置/踩坑）写入与检索都带 `project=<slug>`（小写短横线 slug，如 `agenthub`）；跨项目通用的事实不标注。检索缺省 **fail-closed**：不传 `project` 只见全局记忆——「没声明项目 = 全局会话」，项目记忆不外溢进一般会话（ADR 0010）。CLI 侧另有 `COMPOUND_MEMORY_PROJECT` env 回退便利通道（adapter 层读，store 自身不读环境变量；MCP server 全局一份、按项目注入无处落地，显式传参是主语义）。`link` 不限 project（同 ns 即可互链）；蒸馏产物继承源的 project；蒸馏/衰减/复活/stats/review 队列保持库级不过滤。
@@ -223,10 +223,18 @@ Three protocol rules (same as §6; point a Cursor rule at `skills/compound-memor
 
 DSH 接入外部记忆的官方路径是宿主自带的 `@deepseek-ai/dsh-mcp-client`（stdio 或 Streamable HTTP）。官方的第三方记忆示例也是同一行配置，没有另给一个能直接挂上这条 PyPI server 的 memory-provider 插槽。在 JS 里再注册一套记忆工具等于重做存储。所以这里用配置层 bundle 插入一行 stdio，server 仍是 `uvx --from compound-memory compound-memory-server`，MCP tool 仍是那 5 个。模型侧名字带宿主前缀：`mcp__compound-memory__memory_search`（以及 get / write / link / feedback）。
 
-**安装 bundle**（`integrations/dsh`，npm 包名 `dsh-compound-memory`）：
+`integrations/dsh` 按未来公开仓库 `chinwe/compound-memory-dsh` 的**根**来铺（该仓库尚未创建，不在本仓库里建）：根上的 `package.json` 声明 `dsh.bundle.patch` = `./cordis.patch.yml`，同目录有 `skills/compound-memory/SKILL.md` 与 README。可以整目录原样复制成那个仓库的根。npm 包名 `dsh-compound-memory`。bundle 只插入一行 MCP client，并带上 skill 文件；没有 install / lifecycle `scripts`。
+
+**安装 bundle**：
 
 ```bash
 dsh plugin --profile web add <仓库绝对路径>/integrations/dsh
+```
+
+公开仓库建好并把该目录作为根推上去之后（没有 `#path`，也不需要 `prepare` / `allowBuilds`）：
+
+```bash
+dsh plugin --profile web add github:chinwe/compound-memory-dsh
 ```
 
 npm 发布之后（发布是手工步骤，本仓库不自动做）：
@@ -235,9 +243,9 @@ npm 发布之后（发布是手工步骤，本仓库不自动做）：
 dsh plugin --profile web add dsh-compound-memory
 ```
 
-`dsh plugin` 把该包写入 profile 的 `dsh.profile.bundles`。bundle 只有 `cordis.patch.yml`，没有自己的插件模块。
+`dsh plugin` 把该包写入 profile 的 `dsh.profile.bundles`。bundle 没有自己的插件模块。
 
-在**启动 dsh 的进程**里设置环境变量。patch 用 `!!js process.env...` 读取；未设置或空白时 `COMPOUND_MEMORY_ROOT` 默认为 `$HOME/.agents/memory`（Python 展开 `$HOME`），`COMPOUND_MEMORY_AGENT_ID` 默认为 `agent-deepseek`（与 §1 的宿主 id 相同）。不要在 patch 里写密钥。
+在**启动 dsh 的进程**里设置环境变量。patch 用 `!!js process.env...` 读取；未设置或空白时 `COMPOUND_MEMORY_ROOT` 默认为 `$HOME/.agents/memory`（Python 展开 `$HOME`），`COMPOUND_MEMORY_AGENT_ID` 默认为 `agent-dsh`（与 §1 的宿主 id 相同）。不要在 patch 里写密钥。
 
 `uvx` 必须在 dsh 的 `PATH` 上。后一层 patch 按 id **整行替换** `config`，不是深合并。要改成绝对路径时，在 `~/.dsh/profiles/web/cordis.patch.yml` 重写 `mcp-compound-memory` 这一行的全部字段，`command` 写成 `uvx` 的绝对路径。
 
@@ -256,7 +264,7 @@ dsh plugin --profile web add dsh-compound-memory
         args: ['--from', 'compound-memory', 'compound-memory-server']
         env:
           COMPOUND_MEMORY_ROOT: !!js "process.env.COMPOUND_MEMORY_ROOT || '$HOME/.agents/memory'"
-          COMPOUND_MEMORY_AGENT_ID: !!js "process.env.COMPOUND_MEMORY_AGENT_ID || 'agent-deepseek'"
+          COMPOUND_MEMORY_AGENT_ID: !!js "process.env.COMPOUND_MEMORY_AGENT_ID || 'agent-dsh'"
         failOnStartupError: true
 ```
 
@@ -266,7 +274,7 @@ dsh plugin --profile web add dsh-compound-memory
 - `failOnStartupError: true` 让这一行在 `uvx` 或 server 起不来时拒绝激活（调试期保持开着）；
 - 工具调用默认超时 60s（`toolCallTimeoutMs` 可调），本 server 全部为本地文件操作，不会触及。
 
-**使用规则注入**：dsh 的模型层与工具层解耦，规则写在对应 preset/系统提示的 agent 指令文件里（Standard preset 的 system prompt 位置随版本变化，以 `~/.dsh/profiles/` 下实际 preset 为准），内容同样引用 §6。`source` / `agent` 填 `agent-deepseek`，除非 `COMPOUND_MEMORY_AGENT_ID` 被覆盖成别的 id。英文安装步骤见 `integrations/dsh/README.md`。
+**使用规则注入**：随包 skill 在 `integrations/dsh/skills/compound-memory/SKILL.md`（正文与仓库 `skills/compound-memory/SKILL.md` 同一套规范，开头多一段 DSH 安装说明）。DSH 不扫描 npm 包内的 `skills/`，只扫描 skill 根的直接子项（`~/.dsh/skills/<name>/SKILL.md`、项目 `.dsh/skills`、`~/.agents/skills`、项目 `.agents/skills`）。本包没有安装脚本，不会在安装时复制。要让 skill 工具加载它，把 `skills/compound-memory` 复制或软链到其中一个根。规则也可以写进对应 preset 的 agent 指令文件（Standard preset 的 system prompt 位置随版本变化，以 `~/.dsh/profiles/` 下实际 preset 为准），内容引用 §6。`source` / `agent` 填 `agent-dsh`，除非 `COMPOUND_MEMORY_AGENT_ID` 被覆盖成别的 id。英文安装步骤见 `integrations/dsh/README.md`。
 
 ---
 

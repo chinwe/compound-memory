@@ -12,7 +12,8 @@
   ],
   "files": [
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "skills"
   ],
   "engines": {
     "dsh": ">=0.2.0-rc.1 <0.3.0-0"
@@ -24,11 +25,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/chinwe/compound-memory.git",
-    "directory": "integrations/dsh"
+    "url": "git+https://github.com/chinwe/compound-memory-dsh.git"
   },
-  "homepage": "https://github.com/chinwe/compound-memory/tree/main/integrations/dsh#readme",
+  "homepage": "https://github.com/chinwe/compound-memory-dsh#readme",
   "bugs": {
-    "url": "https://github.com/chinwe/compound-memory/issues"
+    "url": "https://github.com/chinwe/compound-memory-dsh/issues"
   }
 }
