@@ -17,6 +17,8 @@ Thin Claude Code wrapper around the published PyPI server (`uvx --from compound-
 
 `COMPOUND_MEMORY_AGENT_ID` defaults to `agent-claude` (this plugin's `.mcp.json`). The host may override it. Pass that same id as `source` / `agent`.
 
+A SessionStart hook may inject a few hard rules on a new session. This skill is the on-demand source for when and how.
+
 `uv` and `uvx` must be on `PATH`.
 
 Deep rules (types, keys, namespaces, project scope, feedback outcomes): [docs/agent-integration.en.md](https://github.com/chinwe/compound-memory/blob/main/docs/agent-integration.en.md) and the canonical skill [skills/compound-memory/SKILL.md](https://github.com/chinwe/compound-memory/blob/main/skills/compound-memory/SKILL.md). When they disagree, the canonical skill wins.

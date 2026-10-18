@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Claude Code marketplace plugin under `integrations/claude` (not shipped in the PyPI sdist or wheel).
+- Claude Code plugin SessionStart hook (`startup`) injects a short hard-rule reminder. Still outside the PyPI sdist and wheel.
 
 ## 0.5.8 - 2026-10-16
 

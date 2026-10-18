@@ -75,7 +75,7 @@ claude plugin marketplace add chinwe/compound-memory
 claude plugin install compound-memory@compound-memory
 ```
 
-安装的是 [`integrations/claude`](integrations/claude/README.md)：用 `uvx --from compound-memory compound-memory-server` 拉起，默认 `COMPOUND_MEMORY_AGENT_ID=agent-claude`（宿主可覆盖）。这些市场与插件文件不进 PyPI sdist / wheel：`MANIFEST.in` 会 prune，`scripts/wheel_smoke.sh` 检查构建产物。
+安装的是 [`integrations/claude`](integrations/claude/README.md)：用 `uvx --from compound-memory compound-memory-server` 拉起，默认 `COMPOUND_MEMORY_AGENT_ID=agent-claude`（宿主可覆盖）。新会话的 SessionStart hook 会注入一条很短的使用提醒；如何确认、如何关闭见插件 README。这些市场与插件文件不进 PyPI sdist / wheel：`MANIFEST.in` 会 prune，`scripts/wheel_smoke.sh` 检查构建产物。
 
 #### 下一步
 
