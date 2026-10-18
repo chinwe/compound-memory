@@ -27,8 +27,8 @@ _Avoid_: scope、tag、label
 _Avoid_: 数据不出机（字面绝对化会连 search 动线一起禁掉）
 
 **Confidence（置信度）**：
-0~1 的数值，表示一条记忆的证据正确性：由带 outcome 的反馈事件折算——success 与跨 Agent 验证提高它，failure 降低它（地板 0.05），contradiction 冻结待队列裁决；usefulness 不在其中，由 uses 单独承载。
-_Avoid_: score、weight（weight 专指类型权重）
+0~1 的数值，表示一条记忆的证据正确性：由带 outcome 的反馈事件折算——success 与跨 Agent 验证提高它，failure 降低它（地板 0.05），contradiction 冻结待队列裁决；usefulness 不在其中，由 uses 单独承载。同宿主的 success base 增益累计封顶 0.3（证据块 host_bumps 记配额，gross 口径不重挣）：到顶后该宿主的 success 照记账不再抬数值，单宿主天花板 0.8，以上只能靠跨宿主验证；跨宿主首验加成与 failure 折算不占配额。
+_Avoid_: score、weight（weight 专指类型权重）、饱和衰减/去通胀（被否决的曲线形态与提案措辞，规范说法是「同宿主累计封顶」）
 
 **Validity window（有效期）**：
 事实的生效区间标注：`valid_from` 是生效日期标注，不参与检索可见性（检索无 as-of 语义，未来才生效的事实照常可召回）；`valid_until` 当日仍有效、次日起退出检索与邻居召回（get 恒可读，不等于归档）。事实更替仍走 review 队列裁决——valid_until 只管检索可见性，不做自动失效改写。
