@@ -7,7 +7,7 @@
       "name": "compound-memory",
       "source": "./integrations/claude",
       "description": "Local multi-agent shared memory MCP (5 tools) via uvx from PyPI",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "category": "productivity",
       "tags": ["mcp", "memory", "local-first"]
     }

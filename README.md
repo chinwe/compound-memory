@@ -90,7 +90,7 @@ claude plugin marketplace add chinwe/compound-memory
 claude plugin install compound-memory@compound-memory
 ```
 
-That installs [`integrations/claude`](integrations/claude/README.md), which launches `uvx --from compound-memory compound-memory-server` with `COMPOUND_MEMORY_AGENT_ID=agent-claude` (override that env var in the host if you need a different id). Those marketplace and plugin files are not in the PyPI sdist or wheel: `MANIFEST.in` prunes them, and `scripts/wheel_smoke.sh` checks the built artifacts.
+That installs [`integrations/claude`](integrations/claude/README.md), which launches `uvx --from compound-memory compound-memory-server` with `COMPOUND_MEMORY_AGENT_ID=agent-claude` (override that env var in the host if you need a different id). A SessionStart hook adds a short reminder on new sessions; verify and disable steps are in the plugin README. Those marketplace and plugin files are not in the PyPI sdist or wheel: `MANIFEST.in` prunes them, and `scripts/wheel_smoke.sh` checks the built artifacts.
 
 #### 4. Next step
 
