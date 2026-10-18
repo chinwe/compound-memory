@@ -61,7 +61,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 | `revive <id>` | 复活归档记忆（私有 ns 记忆加 `--reader`） |
 | `forget <id> --agent <agent id> [--reason <动机短语>]` | 终态遗忘（ADR-0009）：文件物理移出（活动/归档区皆可）+ 单条 forget 提交留痕，内容仅存 git 历史。不可复活：对被遗忘记忆 feedback/revive 返回 `found: false`，恢复 = 带外 git 运维（checkout/revert）。私有 `agent-*` ns 仅属主可遗忘（`--agent` 与 feedback 同规）；幂等（不存在/已遗忘返回 `found: false`）。`--reason` 是动机短语（单行、限 80 字符），不贴记忆正文。隐私边界：forget 解决「活动库不再携带」，不解决「历史不再包含」——git 历史清理是另行决策的破坏性运维 |
 | `git-log` | 审计轨迹（每次写入自动 commit）；消费端降噪：`--grep PATTERN`（可多次，OR）只留消息匹配的提交、`--exclude PATTERN`（可多次）剔除匹配的提交，PATTERN 为正则作用于消息段（剥 hash），如 `git-log --exclude feedback` |
-| `extract <transcript\|dir>` | 会话抽取清单（P0）：确定性扫描，候选写 `extract/last-candidates.json`（一次性快照，下次扫描覆盖）。transcript 按内容自动判别四种形态：WorkBuddy session log、ZCode 会话库（`~/.zcode/cli/db/db.sqlite`，全量历史，直接指库文件）、Claude Code session log、DeepSeek Harness session（zstd 压缩，需系统 zstd CLI）。jsonl/zstd 传目录则批量扫（WorkBuddy 与 Claude 同为 `<项目>/<会话>.jsonl`，dsh 为 `<项目>/<会话>/session*.jsonl.zstd`）。`~/.workbuddy/traces/` 与 ZCode rollout/model-io 快照不接入——都只剩部分轮次，接进来是假阴性（理由见下） |
+| `health-snapshot` / `health-trend --days N` | 健康时序（#100，CLI-only）：`health-snapshot` 追加一行（date + stats 全量原样）到库根 `health/health.jsonl`——显式运维动词（人工或 launchd/cron 定时），单写者不持写锁，同日多行、去重归读面；指标单一来源是 stats，不另算；`health/` 不入 git（与 index/ 同型工件）。`health-trend` 读最近 N 天按 date 取每日最后一条，现算总量 / 归档率 / 平均置信度 / review 队列长度 / 蒸馏产出 / 跨宿主覆盖率 / recent_feedback_7d + 首尾 delta；纯文件读不开 store，空态退出码 0。两命令退出码恒 0（身份状态在行内 attestation，定时任务不误报），不是 MCP 工具 |
 
 ### 抽取清单确认（P0：扫描只发现候选，写库仍走协议）
 

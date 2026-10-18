@@ -297,6 +297,18 @@ uvx --from compound-memory compound-memory stats          # 健康度：uses/con
                                       #   + cross_validated（validated_by 去重后 ≥2 的条数，
                                       #     不是「有过一次跨宿主反馈」）
                                       #   AGENT_ID 未设置或空白时退出码 1（JSON 仍打印）；已设置时为 0
+uvx --from compound-memory compound-memory health-snapshot
+                                      #   健康时序（#100）：追加一行（date + stats 全量原样）到库根
+                                      #   health/health.jsonl，给「复利还是熵增」留常驻时序。
+                                      #   显式运维动词（人工或 launchd/cron 定时），单写者不持写锁；
+                                      #   同日多次调用即多行，去重归 health-trend 读面。
+                                      #   指标单一来源是 stats，不另算；health/ 不入 git（与 index/ 同型）。
+                                      #   退出码恒 0（身份状态记录在行内 attestation，定时任务不误报）
+uvx --from compound-memory compound-memory health-trend --days 7
+                                      #   读最近 N 天趋势（读面现算）：按 date 取每日最后一条，
+                                      #   输出总量 / 归档率 / 平均置信度 / review 队列长度 / 蒸馏产出 /
+                                      #   跨宿主覆盖率 / recent_feedback_7d + 首尾 delta。
+                                      #   纯文件读不开 store；文件缺失或窗口内无数据输出空态、退出码 0
 uvx --from compound-memory compound-memory explain <id> [--reader <agent id>]  # 按 id 证据视图（#44）：证据计数
                                       #   （success/failure/contradiction、last_verified、recent 明细）、
                                       #   跨宿主验证明细（validated_by）、派生标记（蒸馏产物零证据起点）、

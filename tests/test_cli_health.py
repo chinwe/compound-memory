@@ -4,6 +4,10 @@
 契约钉在 tests/contracts/test_mcp_surface.py；存储层 stats() 不因身份缺失抛错。
 词面降级与脏工作树只报告，不因此失败。其它硬失败（根目录缺失、写锁、git）
 在 AGENT_ID 已设置时仍可让 doctor 退出 1。
+
+另钉 health-snapshot / health-trend（#100 健康时序）：snapshot 追加
+date + stats 原样行（不持锁、同日多行、health/ 不入 git）；trend 读面
+现算每日末条与首尾 delta，空态退出码 0。两动词均不进 MCP 面。
 """
 
 from __future__ import annotations
@@ -222,6 +226,194 @@ class TestDoctor:
         assert "Exit 0" in text
         assert "COMPOUND_MEMORY_AGENT_ID" in text
         assert "dirty worktree" in text
+
+
+def _write_health_lines(root: Path, records: list[dict[str, Any]]) -> None:
+    """手写 health.jsonl（trend 读面测试播种；行 = date + stats dict 原样）。"""
+    out_dir = root / "health"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "health.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in records), encoding="utf-8"
+    )
+
+
+def _stats_line(date: str, **overrides: Any) -> dict[str, Any]:
+    """最小 stats 行：trend 直读键全给默认，测试里按需覆盖。"""
+    base: dict[str, Any] = {
+        "total": 3,
+        "archived": 1,
+        "avg_confidence": 0.5,
+        "review_queue_entries": 1,
+        "distilled_recent_7d": 0,
+        "cross_validated": 1,
+        "recent_feedback_7d": 1,
+    }
+    base.update(overrides)
+    return {"date": date, "stats": base}
+
+
+class TestHealthSnapshot:
+    """health-snapshot：追加一行 date + stats 原样；单写者不持锁；不入 git。"""
+
+    def test_appends_one_line_with_date_and_verbatim_stats(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        root = _init_store(tmp_path)
+        monkeypatch.setenv("COMPOUND_MEMORY_AGENT_ID", "agent-cursor")
+        rc, payload, _err = _run(
+            monkeypatch, capsys, "--root", str(root), "health-snapshot", "--now", "2026-10-01"
+        )
+        assert rc == 0
+        assert payload["ok"] is True
+        lines = (root / "health" / "health.jsonl").read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        # 行 = date + stats dict 原样（指标单一来源是 stats 动词，不另算）
+        assert record["date"] == "2026-10-01"
+        assert record["stats"]["total"] == 0
+        assert "uses_histogram" in record["stats"]
+        assert record["stats"] == payload["snapshot"]
+
+    def test_repeated_calls_append_multiple_lines_no_write_side_dedup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        root = _init_store(tmp_path)
+        monkeypatch.setenv("COMPOUND_MEMORY_AGENT_ID", "agent-cursor")
+        for _ in range(3):
+            rc, _payload, _err = _run(
+                monkeypatch, capsys, "--root", str(root), "health-snapshot", "--now", "2026-10-01"
+            )
+            assert rc == 0
+        lines = (root / "health" / "health.jsonl").read_text(encoding="utf-8").splitlines()
+        # 同日多次调用即多行——去重归读面，写侧不做
+        assert len(lines) == 3
+
+    def test_health_history_is_gitignored_not_swallowed_by_git(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        root = _init_store(tmp_path)
+        monkeypatch.setenv("COMPOUND_MEMORY_AGENT_ID", "agent-cursor")
+        rc, _payload, _err = _run(
+            monkeypatch, capsys, "--root", str(root), "health-snapshot", "--now", "2026-10-01"
+        )
+        assert rc == 0
+        # 布局初始化把 health/ 收进 .gitignore 清单（与 index/、extract/ 同型工件）
+        gitignore = (root / ".gitignore").read_text(encoding="utf-8")
+        assert "health/" in gitignore.splitlines()
+        # 健康历史不被 git 提交吞走：工作树对 health/ 不可见
+        status = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert "health/" not in status
+
+
+class TestHealthTrend:
+    """health-trend：读面现算——每日末条、首尾 delta、空态退出码 0。"""
+
+    def test_missing_file_is_explicit_empty_state_exit_zero(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        root = _init_store(tmp_path)
+        rc, report, err = _run(
+            monkeypatch, capsys, "--root", str(root), "health-trend", "--days", "7",
+            "--now", "2026-10-01",
+        )
+        assert rc == 0
+        assert report["status"] == "empty"
+        assert report["reason"] == "missing-file"
+        assert report["rows"] == []
+        assert report["delta"] is None
+        assert "health-trend" in err
+
+    def test_window_without_data_is_empty_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        root = _init_store(tmp_path)
+        _write_health_lines(root, [_stats_line("2026-01-01", total=9)])
+        rc, report, _err = _run(
+            monkeypatch, capsys, "--root", str(root), "health-trend", "--days", "7",
+            "--now", "2026-10-01",
+        )
+        assert rc == 0
+        assert report["status"] == "empty"
+        assert report["reason"] == "no-snapshots-in-window"
+
+    def test_daily_last_row_and_first_last_delta(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        root = _init_store(tmp_path)
+        _write_health_lines(
+            root,
+            [
+                _stats_line("2026-09-28", total=3, avg_confidence=0.4, review_queue_entries=2),
+                # 窗口外旧行不得出现
+                _stats_line("2026-09-20", total=99),
+                # 同日两行：读面取每日最后一条（文件序即追加序）
+                _stats_line("2026-10-01", total=4),
+                _stats_line("2026-10-01", total=5, avg_confidence=0.6, review_queue_entries=1),
+            ],
+        )
+        rc, report, _err = _run(
+            monkeypatch, capsys, "--root", str(root), "health-trend", "--days", "7",
+            "--now", "2026-10-01",
+        )
+        assert rc == 0
+        assert report["status"] == "ok"
+        assert [row["date"] for row in report["rows"]] == ["2026-09-28", "2026-10-01"]
+        assert report["rows"][-1]["total"] == 5  # 当日末条而非首条
+        assert report["count"] == 2
+        delta = report["delta"]
+        assert delta["from"] == "2026-09-28"
+        assert delta["to"] == "2026-10-01"
+        assert delta["total"] == 2  # 5 - 3
+        assert delta["avg_confidence"] == pytest.approx(0.2)
+        assert delta["review_queue_entries"] == -1  # 1 - 2
+
+    def test_rates_computed_at_read_time(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        root = _init_store(tmp_path)
+        # archived 1/4 与 cross_validated 2/4：比率读时现算，不落盘派生值
+        _write_health_lines(root, [_stats_line("2026-10-01", total=4, archived=1, cross_validated=2)])
+        rc, report, _err = _run(
+            monkeypatch, capsys, "--root", str(root), "health-trend", "--days", "7",
+            "--now", "2026-10-01",
+        )
+        assert rc == 0
+        row = report["rows"][0]
+        assert row["archive_rate"] == 0.25
+        assert row["cross_validated_rate"] == 0.5
+
+    def test_malformed_lines_are_skipped_and_counted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        root = _init_store(tmp_path)
+        _write_health_lines(root, [_stats_line("2026-10-01", total=7)])
+        with (root / "health" / "health.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write("not-json {{{\n")
+            fh.write(json.dumps({"date": "2026-10-01"}) + "\n")  # 缺 stats 键
+        rc, report, _err = _run(
+            monkeypatch, capsys, "--root", str(root), "health-trend", "--days", "7",
+            "--now", "2026-10-01",
+        )
+        assert rc == 0
+        assert report["status"] == "ok"
+        assert report["count"] == 1
+        assert report["rows"][0]["total"] == 7
+        assert report["skipped_lines"] == 2
+
+    def test_days_below_one_is_caller_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        root = _init_store(tmp_path)
+        rc, payload, err = _run(monkeypatch, capsys, "--root", str(root), "health-trend", "--days", "0")
+        assert rc == 2
+        # 调用方错误统一翻译成 stderr JSON（stdout 保持空）
+        assert payload is None
+        assert "days" in json.loads(err)["error"]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock holder; Windows lock path is msvcrt")

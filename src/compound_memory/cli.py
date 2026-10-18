@@ -14,6 +14,7 @@ from typing import Any
 from . import __version__
 from .embedding import auto_encoder
 from .extraction import extract, supported_hosts_summary_en
+from .health import append_snapshot, trend
 from .index import atomic_write_text
 from .storage import DISTILL_DUP_SIM_THRESHOLD, MEMORY_TYPES, MemoryStore, PROMOTION_USES_THRESHOLD, default_root
 from .storage.dream import dream_proposals_path
@@ -355,6 +356,28 @@ def cmd_git_log(args: argparse.Namespace) -> None:
     _emit(_filter_log_lines(lines, args.grep or [], args.exclude or []))
 
 
+def cmd_health_snapshot(args: argparse.Namespace) -> None:
+    # --now 钉住 store clock（decay 同型）：行内 date 与 stats 窗口同一基准。
+    if args.now:
+        store = MemoryStore(Path(args.root), clock=lambda: dt.date.fromisoformat(args.now))
+    else:
+        store = _open_store(args)
+    # date 走注入 clock 的公开出口 today()（extraction 同型），CLI 不另算今天。
+    _emit(append_snapshot(Path(args.root), store.stats(), store.today()))
+
+
+def cmd_health_trend(args: argparse.Namespace) -> int:
+    # 读面纯文件读：不开 store（无 git/锁/索引副作用）；空态是显式结果而非失败。
+    # 锚定日因此与 snapshot 的 store.today() 是两源——不开 store 是读面的设计决策，
+    # 跨午夜调用时窗口锚可能差一天，属可接受边界（--now 可显式钉住）。
+    today = dt.date.fromisoformat(args.now) if args.now else dt.date.today()
+    report = trend(Path(args.root), args.days, today)
+    if report["status"] == "empty":
+        print(f"health-trend: empty ({report['reason']})", file=sys.stderr)
+    _emit(report)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="compound-memory", description="local multi-agent shared memory")
     parser.add_argument("--version", action="version", version=__version__)
@@ -620,6 +643,38 @@ def build_parser() -> argparse.ArgumentParser:
         "a DeepSeek Harness session file (.jsonl.zstd), or a directory of session logs",
     )
     p.set_defaults(func=cmd_extract)
+    p = sub.add_parser(
+        "health-snapshot",
+        help="append today's stats snapshot to health/health.jsonl (ops/timer verb)",
+        description="Append one timestamped line to <root>/health/health.jsonl: the line is the "
+        "ISO date plus the stats() payload verbatim — stats stays the single source of metrics, "
+        "nothing is recomputed here. Explicit ops action for a human or a launchd/cron timer. "
+        "Single-writer assumption: the append does not take the write lock — run one timer or "
+        "one manual call at a time. Multiple calls on the same day append multiple lines; daily "
+        "dedup belongs to health-trend (last row per day wins). health/ is a runtime artifact "
+        "directory (gitignored like index/ and extract/): health history is not part of the git "
+        "audit trail. Not an MCP tool. --now pins both the store clock and the appended date "
+        "(testing).",
+    )
+    p.add_argument("--now", default=None, help="ISO date override (testing)")
+    p.set_defaults(func=cmd_health_snapshot)
+    p = sub.add_parser(
+        "health-trend",
+        help="summarize the last N days of health snapshots (per-day last row + first/last delta)",
+        description="Read <root>/health/health.jsonl and summarize the window: one row per day "
+        "(the LAST line of that day — same-day repeats are deduped here, not on write) with "
+        "total, archive rate (archived/total), avg confidence, review-queue length, "
+        "distillation yield (distilled_recent_7d), cross-host coverage (cross_validated/total), "
+        "and recent_feedback_7d, plus a first-vs-last delta over the window. Rates and deltas "
+        "are computed at read time — no derived values are stored. Malformed lines are skipped "
+        "and counted (skipped_lines). A missing file or no data in the window prints an "
+        "explicit empty state on stdout and stderr and exits 0. Read-only: opens no store, "
+        "takes no lock, writes nothing. Not an MCP tool. --days defaults to 7. --now pins the "
+        "window anchor date (testing).",
+    )
+    p.add_argument("--days", type=int, default=7, help="window in days ending today (inclusive)")
+    p.add_argument("--now", default=None, help="ISO date override (testing)")
+    p.set_defaults(func=cmd_health_trend)
     return parser
 
 

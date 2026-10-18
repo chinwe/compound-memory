@@ -55,11 +55,11 @@ def ensure_layout(root: Path) -> None:
         (shared / t).mkdir(parents=True, exist_ok=True)
     archive_root(root).mkdir(parents=True, exist_ok=True)
     # 运行时工件目录清单归这里一处所有（index/ 缓存、distill/ 蒸馏产物、
-    # extract/ 抽取清单、.lock 写锁——均不入审计史）——
+    # extract/ 抽取清单、health/ 健康时序、.lock 写锁——均不入审计史）——
     # scripts/distill-prepare.sh 不再自行补写；已存在的旧库缺行时补齐
     gitignore = root / ".gitignore"
     existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
-    missing = [line for line in ("index/\n", "distill/\n", "extract/\n", ".lock\n") if line not in existing]
+    missing = [line for line in ("index/\n", "distill/\n", "extract/\n", "health/\n", ".lock\n") if line not in existing]
     if missing and existing and not existing.endswith("\n"):
         missing[0] = "\n" + missing[0]  # 手编文件缺尾换行时先补，避免拼接坏行
     if missing:
