@@ -8,6 +8,50 @@ cd "$root"
 
 rm -rf dist .smoke-venv .smoke-root
 uv build
+
+# sdist/wheel 成员名不得包含 Claude Code 市场与插件（不扫文件正文）。
+uv run python - <<'PY'
+import sys
+import tarfile
+import zipfile
+from pathlib import Path
+
+banned = {".claude-plugin", "integrations", ".mcp.json"}
+dist = Path("dist")
+archives = sorted(
+    p for p in dist.iterdir() if p.name.endswith(".tar.gz") or p.suffix == ".whl"
+)
+if len(archives) < 2:
+    print(f"expected sdist and wheel in {dist}, found {archives}", file=sys.stderr)
+    sys.exit(1)
+
+
+def members(path: Path) -> list[str]:
+    if path.suffix == ".whl":
+        with zipfile.ZipFile(path) as zf:
+            return zf.namelist()
+    with tarfile.open(path) as tf:
+        return tf.getnames()
+
+
+failed = False
+for path in archives:
+    names = members(path)
+    bad = [name for name in names if set(Path(name).parts) & banned]
+    if bad:
+        failed = True
+        print(f"{path.name} contains excluded paths:", file=sys.stderr)
+        for name in bad:
+            print(f"  {name}", file=sys.stderr)
+    else:
+        print(
+            f"{path.name}: {len(names)} members, "
+            "claude marketplace/plugin paths absent"
+        )
+if failed:
+    sys.exit(1)
+PY
+
 uv venv .smoke-venv
 
 case "$(uname -s)" in

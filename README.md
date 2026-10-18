@@ -81,6 +81,17 @@ A local checkout is the developer path, not a second default: `command` `uv`, `a
 
 **Verify**: ask your agent to call `memory_search` (any keyword) — a `{"hits": [...]}` response means you're connected. Or run `uvx --from compound-memory compound-memory doctor` (exit 0 when `COMPOUND_MEMORY_AGENT_ID` is set and the store is writable; exit 1 when it is unset or blank).
 
+#### Claude Code plugin
+
+Requires Claude Code and `uv` (`uvx` on `PATH`). This repository hosts a self-hosted marketplace. Submitting the plugin to Anthropic's official Directory is out of scope.
+
+```bash
+claude plugin marketplace add chinwe/compound-memory
+claude plugin install compound-memory@compound-memory
+```
+
+That installs [`integrations/claude`](integrations/claude/README.md), which launches `uvx --from compound-memory compound-memory-server` with `COMPOUND_MEMORY_AGENT_ID=agent-claude` (override that env var in the host if you need a different id). Those marketplace and plugin files are not in the PyPI sdist or wheel: `MANIFEST.in` prunes them, and `scripts/wheel_smoke.sh` checks the built artifacts.
+
 #### 4. Next step
 
 Inject the usage protocol from [`skills/compound-memory/SKILL.md`](skills/compound-memory/SKILL.md) into your host (the search → feedback → write loop). The short English version is [`docs/agent-integration.en.md`](docs/agent-integration.en.md); the full protocol is `docs/agent-integration.md` §6.

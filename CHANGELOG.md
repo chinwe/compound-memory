@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Claude Code marketplace plugin under `integrations/claude` (not shipped in the PyPI sdist or wheel).
+
 ## 0.5.8 - 2026-10-16
 
 - CLI `stats` and `doctor` exit 1 when `COMPOUND_MEMORY_AGENT_ID` is unset or blank (the diagnosis is still printed). `doctor` reports attestation, retrieval mode, write lock, and git. MCP tools are unchanged and do not fail a session for a missing agent id (#84).
