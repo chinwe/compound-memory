@@ -23,8 +23,15 @@ DEFAULT_OUT = REPO / "docs" / "eval" / "results"
 
 
 def cli_argv(explicit: str | None) -> list[str]:
-    """解析 compound-memory 可执行文件。显式路径优先，其次 PATH，最后 uv run。"""
+    """解析 compound-memory 可执行文件。显式路径优先，其次 PATH，最后 uv run。
+
+    显式路径若是 ``.py``，用当前解释器启动。Windows 的 CreateProcess 不能直接
+    执行 ``#!/bin/sh`` 或无扩展名脚本（WinError 193）；POSIX 上也不把 shebang
+    当成测试替身的前提。真实的 compound-memory 入口是控制台可执行文件，不走这条。
+    """
     if explicit:
+        if Path(explicit).suffix.lower() == ".py":
+            return [sys.executable, explicit]
         return [explicit]
     found = shutil.which("compound-memory")
     if found:
