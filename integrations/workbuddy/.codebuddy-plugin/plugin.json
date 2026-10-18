@@ -1,6 +1,6 @@
 {
   "name": "compound-memory",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Shared local memory for WorkBuddy and CodeBuddy: search, write, get, link, feedback over MCP stdio.",
   "author": { "name": "chinwe", "url": "https://github.com/chinwe" },
   "homepage": "https://github.com/chinwe/compound-memory",

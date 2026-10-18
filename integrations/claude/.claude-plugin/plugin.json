@@ -1,7 +1,7 @@
 {
   "name": "compound-memory",
   "displayName": "Compound Memory",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Shared local memory for multi-agent workflows: search, write, get, link, feedback over MCP stdio.",
   "author": { "name": "chinwe", "url": "https://github.com/chinwe" },
   "homepage": "https://github.com/chinwe/compound-memory",
