@@ -7,7 +7,7 @@
       "name": "compound-memory",
       "source": "./integrations/claude",
       "description": "Local multi-agent shared memory MCP (5 tools) via uvx from PyPI",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "category": "productivity",
       "tags": ["mcp", "memory", "local-first"]
     },
@@ -15,7 +15,7 @@
       "name": "compound-memory-zcode",
       "source": "./integrations/zcode",
       "description": "Local multi-agent shared memory MCP (5 tools) via uvx from PyPI (ZCode)",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "category": "productivity",
       "tags": ["mcp", "memory", "local-first"],
       "displayName": "Compound Memory (ZCode)",

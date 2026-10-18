@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.5.9 - 2026-10-18
+
+- CLI `dream --propose` writes `<root>/distill/dream-proposals.json` in the existing `dream-apply` JSON-list shape (`content`, `type`, `source_ids`, `key`). Plain `dream` stays read-only with the same stdout and no proposals file. The gate is ADR-0011: same type and key, at least 3 memories, pairwise content token coverage at least 0.5, evidence total at least 3, and no pending contradiction. When nothing qualifies, the report still prints and the file is `[]`. Schedulers keep calling `dream` without `--propose`. No new MCP tool (#98 / #97).
+- Same-host success confidence bumps are capped at +0.3 for a given host via the evidence `host_bumps` quota (ADR-0011 same-host success cap). The ADR is recorded and the Confidence glossary entry is synced (#99).
+- CLI `health-snapshot` appends today's `stats` payload to `<root>/health/health.jsonl`. CLI `health-trend` summarizes the window (last row per day, plus a first-vs-last delta). Both are CLI-only. No new MCP tool (#100).
 - Docs: `docs/eval/` is a checklist for reproducible A/B notes. "Can run" is `doctor` exit 0, one call to each of the five MCP tools, and host install smoke pointers (Claude, WorkBuddy, DeepSeek Harness). "Is effective" is a fixed 8-prompt set plus a result template. `uses`, `cross_validated`, and `recent_feedback_7d` are documented as health, not proof; `failure` and `contradiction` have to be recorded. `scripts/eval_stats_snapshot.py` saves CLI `stats` JSON. No new MCP tool, no in-process LLM, and no claim that effectiveness is already measured.
 - `scripts/validate_plugins.py` (CI, ubuntu × 3.13): mechanical checks for the marketplace/plugin files that no test covered — catalog ↔ manifest name/version agreement (the #92 drift), source directories, component paths inside the plugin root, hook command placeholder plus referenced script existence and executable bit, and no repo-root `.mcp.json`.
 - Host plugin integration guide `docs/agents/host-plugin-integration.md`: which catalog file each host's loader reads (ZCode checks `.claude-plugin/marketplace.json` before a root-level one) and the sync checklist for adding a host plugin.
@@ -9,6 +14,7 @@
 - WorkBuddy / CodeBuddy marketplace plugin under `integrations/workbuddy` (`COMPOUND_MEMORY_AGENT_ID=agent-workbuddy`). Not shipped in the PyPI sdist or wheel.
 - Claude Code marketplace plugin under `integrations/claude` (not shipped in the PyPI sdist or wheel).
 - Claude Code plugin SessionStart hook (`startup`) injects a short hard-rule reminder. Still outside the PyPI sdist and wheel.
+- Host plugin package versions bumped (Claude 0.1.2, WorkBuddy 0.1.1, ZCode 0.1.1). They remain outside the PyPI sdist and wheel.
 
 ## 0.5.8 - 2026-10-16
 
