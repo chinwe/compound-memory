@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""校验 integrations/dsh 这份 DSH bundle，并做一次 npm pack --dry-run。
+"""校验 integrations/dsh 这份暂存树，并做一次 npm pack --dry-run。
 
+可安装单元是这个目录，不是 compound-memory 仓库根。
 该目录按未来公开仓库 chinwe/compound-memory-dsh 的根来铺：
 根上的 package.json 声明 dsh.bundle，patch 只插入一行宿主自带的
 MCP client，stdio 命令固定为
