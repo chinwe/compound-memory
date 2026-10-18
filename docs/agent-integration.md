@@ -341,6 +341,9 @@ uvx --from compound-memory compound-memory dream --ns _shared   # 只读编排�
                                       #   负向段与矛盾对只报告，不放宽 dream-apply；
                                       #   decay_signals（expired_count / archived_count / low_activity_count）；
                                       #   stats_before 与 stats_after 空跑相等。不归档、不 distill-apply、不 forget
+uvx --from compound-memory compound-memory dream --ns _shared --propose
+                                      # 系统提议，人工 dream-apply：合格簇写入
+                                      # <root>/distill/dream-proposals.json（无合格簇写 []）。默认不带 flag
 uvx --from compound-memory compound-memory distill-plan   # 只要候选清单时：信号 + suggested_action
                                       #   + negative_salience + contradiction_pairs
 # Agent 读报告：merge（同 key 簇，source_ids 已列出；跨 key 综合也叫 merge，不叫 synthesize）

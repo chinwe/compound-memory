@@ -287,6 +287,7 @@ uv run compound-memory decay          # cron 定时跑
 uv run compound-memory revive <id>    # 复活归档记忆（CLI 唯一入口）
 uv run compound-memory distill-plan   # 蒸馏候选清单：suggested_action 只有 merge / promote / review（同 key 簇带 source_ids；弱相似标 review）
 uv run compound-memory dream --ns _shared   # 只读编排报告：distill 段 + decay_signals + 相等的 stats 快照（不写盘、无 LLM）
+uv run compound-memory dream --ns _shared --propose  # 系统提议，人工 dream-apply：合格簇写入 <root>/distill/dream-proposals.json（默认关；无合格簇写 []）
 uv run compound-memory dream-apply --proposals apply.json --source agent-workbuddy --dry-run  # 写盘门槛预览；去掉 --dry-run 才对入选项调用 distill-apply
 uv run compound-memory distill-apply "合并后的经验" insight agent-workbuddy --sources <id1>,<id2>  # 原子落库：产物(links 溯源, origin=distillation) + 源归档，一次 commit
 uv run compound-memory doctor           # 一页健康诊断；AGENT_ID 未设置、根目录缺失、写锁不可用或 git 不可用时退出码 1

@@ -370,6 +370,18 @@ class MemoryStore:
         """
         return dream_mod.dream(self, window_days, min_uses, min_confidence, ns, reader)
 
+    def dream_proposals(
+        self,
+        ns: str = "_shared",
+        reader: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """候选合并包（#97）。只计算 dream-apply 动作列表，不写文件、不落库。
+
+        CLI `dream --propose` 才把返回值写到 distill/dream-proposals.json。
+        默认 dream() 不调用这里。
+        """
+        return dream_mod.dream_proposals(self, ns, reader)
+
     def dream_apply(
         self,
         actions: list[Any],

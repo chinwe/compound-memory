@@ -5,6 +5,10 @@ ADR-0001：确定性准备，判断段留在调用方 Agent。dream 只编排既
 一律经 store.distill_apply（origin 仍是 distillation，没有 origin=dream）。
 无 LLM，不进 MCP（恰好 5 tool）。
 
+候选合并包（#97，ADR-0011）是独立函数 dream_proposals：默认 dream() 不调用。
+它只返回 dream-apply 已有的动作列表（可为空），不写文件、不落库。CLI
+`--propose` 才把这份列表写到 `<root>/distill/dream-proposals.json`。
+
 写盘门槛不另算分数。入选只认 distill_plan 已经标出的强信号（见
 APPLY_SIGNALS）：merge_with / key_duplicates 在调用方给出正文后可进；
 promotion_candidate 还须该条动作显式 promote。possible_dup_of 永远不进
@@ -26,14 +30,33 @@ import datetime as dt
 from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol, overload
 
-from ..model import MEMORY_TYPES, Memory
-from ..scoring import is_expired
+from ..model import (
+    EVIDENCE_CONTRADICTION_COUNT,
+    EVIDENCE_FAILURE_COUNT,
+    EVIDENCE_SUCCESS_COUNT,
+    MEMORY_TYPES,
+    Memory,
+    evidence_view,
+)
+from ..review_queue import ReviewQueue
+from ..scoring import is_expired, recency_age, tokenize
 from .lifecycle import is_decay_candidate
 from .validation import check_content_size, check_key
 
 # v1 可进 apply 包的信号（#72 单一定义点）。判定顺序即优先级。
 # possible_dup_of 故意不在表内：相似度再高也只报告。
 APPLY_SIGNALS = ("merge_with", "key_duplicates", "promotion_candidate")
+
+# 候选合并包门槛（#97 / ADR-0011 单一定义点）。
+# N：同 key 至少 3 条。key_duplicates 的下限是 2，这里更严，没有现成常量可复用。
+# M：簇内证据三计数之和至少 3，与 N 同值（平均至少一条证据事件）。
+# 词面：token 覆盖率 0.5。不用封闭簇上的 BM25——理由见 ADR-0011。
+PROPOSE_MIN_MEMBERS = 3
+PROPOSE_MIN_EVIDENCE = 3
+PROPOSE_MIN_TOKEN_COVERAGE = 0.5
+
+# 候选包文件名。目录是 gitignore 的 distill/，与 last-plan.json 同级。
+DREAM_PROPOSALS_FILENAME = "dream-proposals.json"
 
 REASON_POSSIBLE_DUP = "possible_dup_of is report-only"
 REASON_PROMOTION_OPT_IN = "promotion_candidate requires explicit opt-in"
@@ -66,6 +89,28 @@ class DreamDeps(Protocol):
         ns: str = "_shared",
         reader: str | None = None,
     ) -> dict[str, Any]: ...
+
+    @overload
+    def _resolve_identity(self, value: str, role: str) -> str: ...
+    @overload
+    def _resolve_identity(self, value: None, role: str) -> str | None: ...
+    def _resolve_identity(self, value: str | None, role: str) -> str | None: ...
+
+
+class ProposeDeps(Protocol):
+    """dream_proposals 实际触碰的 store 面。没有写动词，也不写 proposals 文件。
+
+    _review_queue 用 ReviewQueue 本体而不是更窄的 Protocol：mypy 对可变属性
+    做不变检查，窄协议对不上 facade 上的具体类型。
+    """
+
+    ns_root: Path
+    _clock: Callable[[], dt.date]
+    _review_queue: ReviewQueue
+
+    def _check_ns(self, ns: str) -> None: ...
+    def _check_ns_owner(self, ns: str, identity: str | None, role: str = "reader") -> None: ...
+    def _scan_parsed(self, base: Path) -> Iterator[tuple[Memory, Path]]: ...
 
     @overload
     def _resolve_identity(self, value: str, role: str) -> str: ...
@@ -190,6 +235,107 @@ def dream(
         "stats_before": stats_before,
         "stats_after": stats_after,
     }
+
+
+def dream_proposals_path(root: Path) -> Path:
+    """候选包的唯一落点。CLI `--propose` 写这里；dream 报告不携带这份列表。"""
+    return root / "distill" / DREAM_PROPOSALS_FILENAME
+
+
+def _evidence_total(mem: Memory) -> int:
+    """ADR-0007 三计数之和。无块旧记忆经 evidence_view：总量等于 uses。"""
+    view = evidence_view(mem)
+    return (
+        int(view[EVIDENCE_SUCCESS_COUNT])
+        + int(view[EVIDENCE_FAILURE_COUNT])
+        + int(view[EVIDENCE_CONTRADICTION_COUNT])
+    )
+
+
+def _token_coverage(left: str, right: str) -> float:
+    """left 的 token 集合被 right 覆盖的比例。空集合为 0。
+
+    tokenize 是 scoring.tokenize（小写拉丁整词 + CJK bigram）。比较的是
+    正文，不是 doc_text：key 已经用来分簇，再算进去会让短正文靠共享 key 过线。
+    """
+    query = set(tokenize(left))
+    if not query:
+        return 0.0
+    return len(query & set(tokenize(right))) / len(query)
+
+
+def _cluster_coverage_ok(members: list[Memory]) -> bool:
+    """全部有序对的覆盖率都 ≥ PROPOSE_MIN_TOKEN_COVERAGE。不够则整簇放弃。"""
+    contents = [mem.content for mem in members]
+    size = len(contents)
+    for left in range(size):
+        for right in range(size):
+            if left == right:
+                continue
+            if _token_coverage(contents[left], contents[right]) < PROPOSE_MIN_TOKEN_COVERAGE:
+                return False
+    return True
+
+
+def _canonical_member(members: list[Memory]) -> Memory:
+    """提议正文取哪一条：证据总量最高，并列比 confidence、较新 created、较小 id。"""
+
+    def rank(mem: Memory) -> tuple[int, float, str]:
+        return (_evidence_total(mem), mem.confidence, mem.created)
+
+    best_rank = max(rank(mem) for mem in members)
+    tied = [mem for mem in members if rank(mem) == best_rank]
+    return min(tied, key=lambda mem: mem.id)
+
+
+def _proposal_action(mtype: str, key: str, members: list[Memory]) -> dict[str, Any]:
+    """一条 dream-apply 动作。只含 content/type/source_ids/key，不带 promote。"""
+    canonical = _canonical_member(members)
+    source_ids = [mem.id for mem in sorted(members, key=lambda mem: (mem.created, mem.id))]
+    return {
+        "content": canonical.content,
+        "type": mtype,
+        "source_ids": source_ids,
+        "key": key,
+    }
+
+
+def dream_proposals(
+    store: ProposeDeps,
+    ns: str = "_shared",
+    reader: str | None = None,
+) -> list[dict[str, Any]]:
+    """显式候选合并包（#97）。默认 dream() 不调用本函数。
+
+    返回值就是 dream-apply `--proposals` 要的 JSON 列表，没有合格簇时为 []。
+    不写文件、不 distill_apply、不 commit。人口与 key_duplicates 相同（活动区，
+    跳过 valid_until 已过与坏日期），再排除 review 队列里未裁决的 contradiction，
+    然后要求同 type 同 key、人数 ≥ N、证据总量 ≥ M、两两 token 覆盖率过线。
+    不吃 dream 的窗口与活性门。possible_dup_of 与 promotion 不进这份列表。
+    私有 ns 须属主（列表带正文）。
+    """
+    store._check_ns(ns)
+    reader = store._resolve_identity(reader, "reader")
+    store._check_ns_owner(ns, reader)
+    pending = store._review_queue.pending_contradictions()
+    now = store._clock()
+    groups: dict[tuple[str, str], list[Memory]] = {}
+    for mem, _path in store._scan_parsed(store.ns_root / ns):
+        if is_expired(mem, now) or recency_age(mem, now) is None:
+            continue
+        if not mem.key or mem.id in pending:
+            continue
+        groups.setdefault((mem.type, mem.key), []).append(mem)
+    actions: list[dict[str, Any]] = []
+    for (mtype, key), members in sorted(groups.items()):
+        if len(members) < PROPOSE_MIN_MEMBERS:
+            continue
+        if sum(_evidence_total(mem) for mem in members) < PROPOSE_MIN_EVIDENCE:
+            continue
+        if not _cluster_coverage_ok(members):
+            continue
+        actions.append(_proposal_action(mtype, key, members))
+    return actions
 
 
 def _normalize_actions(actions: Any) -> list[dict[str, Any]]:

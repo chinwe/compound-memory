@@ -20,7 +20,8 @@ from compound_memory.cli import build_parser
 # #69 契约变更：18→19 加 dream——CLI-only 只读编排，MCP 仍为 5；
 # #72 契约变更：19→20 加 dream-apply——显式半自动落库，dream 仍只读，MCP 仍为 5；
 # 契约变更：20→21 加 doctor——CLI 健康检查，MCP 仍为 5。
-# 不加入 git-revert / dream --apply）
+# 不加入 git-revert / dream --apply / dream --auto。
+# #97 契约变更：dream 增加 --propose（默认关，写候选包，不 apply）。）
 EXPECTED_COMMANDS = {
     "init", "write", "search", "get", "explain", "link", "feedback", "decay", "revive", "forget",
     "distill-plan", "distill-apply", "dream", "dream-apply", "stats", "doctor", "rebuild-index",
@@ -67,6 +68,8 @@ class TestKeyFlags:
             # dream 只读编排（#69 契约变更）：--ns / --reader 与 distill-plan 同门
             ("dream-reader", ["dream", "--ns", "agent-zcode", "--reader", "zcode"]),
             ("dream-window", ["dream", "--window", "7", "--min-uses", "0", "--min-confidence", "0.2"]),
+            # #97：显式候选包。不是 --auto，也不是 --apply
+            ("dream-propose", ["dream", "--propose"]),
             # dream-apply 显式落库（#72 契约变更）：产物包 + 写者身份 + dry-run；无 --apply / --include-forget
             ("dream-apply-dry-run", ["dream-apply", "--proposals", "p.json", "--source", "agent-a", "--dry-run"]),
             (
@@ -106,8 +109,9 @@ class TestKeyFlags:
         assert not _flag_consumed(build_parser(), ["link", "a", "b", "--bogus", "x"])
 
     def test_dream_stays_free_of_apply_switches(self):
-        """#72：dream 不挂 --apply；dream-apply 不挂 --include-forget；无 git-revert 子命令。"""
+        """#72：dream 不挂 --apply；#97：不挂 --auto。dream-apply 不挂 --include-forget；无 git-revert。"""
         assert not _flag_consumed(build_parser(), ["dream", "--ns", "_shared", "--apply"])
+        assert not _flag_consumed(build_parser(), ["dream", "--auto"])
         assert not _flag_consumed(
             build_parser(),
             ["dream-apply", "--proposals", "p.json", "--source", "agent-a", "--include-forget"],
