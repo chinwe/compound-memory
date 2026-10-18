@@ -103,6 +103,12 @@ Requires WorkBuddy or CodeBuddy and `uv` (`uvx` on `PATH`). This repository host
 
 That installs [`integrations/workbuddy`](integrations/workbuddy/README.md), which launches the same PyPI server with `COMPOUND_MEMORY_AGENT_ID=agent-workbuddy`. A SessionStart hook prints a short hard-rule reminder on new sessions and does not read the store. The Claude marketplace file is unchanged.
 
+#### ZCode plugin
+
+Requires the ZCode desktop app and `uv` (`uvx` on `PATH`). ZCode reads this repository's `.claude-plugin/marketplace.json` as its marketplace catalog, so no separate marketplace file is needed.
+
+Clone the repository, then in ZCode: **Plugin Marketplace → Add → Add Plugin Marketplace**, paste the clone path (the directory containing `.claude-plugin/`), and install **Compound Memory (ZCode)** under **Personal → compound-memory**. That installs [`integrations/zcode`](integrations/zcode/README.md), which launches the same PyPI server with `COMPOUND_MEMORY_AGENT_ID=agent-zcode`, plus a SessionStart hard-rule reminder and the short skill. The plugin's MCP server is named `compound-memory`; if `~/.zcode/cli/config.json` already registers a server with that name (the hand-written path, §3 of [`docs/agent-integration.md`](docs/agent-integration.md)), keep only one of the two.
+
 #### 4. Next step
 
 Inject the usage protocol from [`skills/compound-memory/SKILL.md`](skills/compound-memory/SKILL.md) into your host (the search → feedback → write loop). The short English version is [`docs/agent-integration.en.md`](docs/agent-integration.en.md); the full protocol is `docs/agent-integration.md` §6.

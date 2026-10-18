@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- ZCode marketplace plugin under `integrations/zcode` (`COMPOUND_MEMORY_AGENT_ID=agent-zcode`). ZCode reads the repository-root `.claude-plugin/marketplace.json` as its marketplace catalog, so the `compound-memory-zcode` entry is added there. Not shipped in the PyPI sdist or wheel.
 - WorkBuddy / CodeBuddy marketplace plugin under `integrations/workbuddy` (`COMPOUND_MEMORY_AGENT_ID=agent-workbuddy`). Not shipped in the PyPI sdist or wheel.
 - Claude Code marketplace plugin under `integrations/claude` (not shipped in the PyPI sdist or wheel).
 - Claude Code plugin SessionStart hook (`startup`) injects a short hard-rule reminder. Still outside the PyPI sdist and wheel.

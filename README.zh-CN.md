@@ -88,6 +88,12 @@ claude plugin install compound-memory@compound-memory
 
 安装的是 [`integrations/workbuddy`](integrations/workbuddy/README.md)：同一条 `uvx` 命令，默认 `COMPOUND_MEMORY_AGENT_ID=agent-workbuddy`。新会话的 SessionStart hook 只打印几条硬规则，不读记忆库。Claude 的 `.claude-plugin/marketplace.json` 不动。
 
+#### ZCode 插件
+
+需要已安装 ZCode 桌面端，且 `uv` / `uvx` 在 `PATH` 上。ZCode 直接把本仓库 `.claude-plugin/marketplace.json` 当市场目录读取（加载顺序：先 `.claude-plugin/marketplace.json`、再仓库根级 `marketplace.json`），无需单独的市场文件。
+
+克隆本仓库后，在 ZCode 里：**插件市场 → 添加 → 添加插件市场**，粘贴克隆路径（含 `.claude-plugin/` 的目录），在 **个人 → compound-memory** 里安装 **Compound Memory (ZCode)**。装的是 [`integrations/zcode`](integrations/zcode/README.md)：同一条 `uvx` 命令，默认 `COMPOUND_MEMORY_AGENT_ID=agent-zcode`，外加 SessionStart 硬规则提醒与短技能。插件的 MCP server 名叫 `compound-memory`；若 `~/.zcode/cli/config.json` 已手写同名 server（见 [`docs/agent-integration.md`](docs/agent-integration.md) §3），二选一即可。
+
 #### 下一步
 
 把 `skills/compound-memory/SKILL.md` 的使用规范注入宿主（检索 → 反馈 → 沉淀的复利闭环），详见 `docs/agent-integration.md` §6。

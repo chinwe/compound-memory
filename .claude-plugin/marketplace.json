@@ -1,6 +1,6 @@
 {
   "name": "compound-memory",
-  "description": "Claude Code plugins for compound-memory",
+  "description": "Claude Code and ZCode plugins for compound-memory",
   "owner": { "name": "chinwe", "url": "https://github.com/chinwe" },
   "plugins": [
     {
@@ -10,6 +10,17 @@
       "version": "0.1.1",
       "category": "productivity",
       "tags": ["mcp", "memory", "local-first"]
+    },
+    {
+      "name": "compound-memory-zcode",
+      "source": "./integrations/zcode",
+      "description": "Local multi-agent shared memory MCP (5 tools) via uvx from PyPI (ZCode)",
+      "version": "0.1.0",
+      "category": "productivity",
+      "tags": ["mcp", "memory", "local-first"],
+      "displayName": "Compound Memory (ZCode)",
+      "displayName_i18n": { "zh-CN": "Compound Memory（ZCode 版）" },
+      "description_i18n": { "zh-CN": "本地多 Agent 共享记忆 MCP（5 个工具），经 uvx 从 PyPI 拉起。" }
     }
   ]
 }

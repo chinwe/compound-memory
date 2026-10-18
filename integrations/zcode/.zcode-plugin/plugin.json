@@ -1,0 +1,21 @@
+{
+  "name": "compound-memory-zcode",
+  "displayName": "Compound Memory (ZCode)",
+  "version": "0.1.0",
+  "description": "Shared local memory for ZCode: search, write, get, link, feedback over MCP stdio.",
+  "author": { "name": "chinwe", "url": "https://github.com/chinwe" },
+  "homepage": "https://github.com/chinwe/compound-memory",
+  "repository": "https://github.com/chinwe/compound-memory",
+  "license": "MIT",
+  "skills": "skills",
+  "hooks": "hooks/hooks.json",
+  "mcpServers": {
+    "compound-memory": {
+      "command": "uvx",
+      "args": ["--from", "compound-memory", "compound-memory-server"],
+      "env": {
+        "COMPOUND_MEMORY_AGENT_ID": "agent-zcode"
+      }
+    }
+  }
+}

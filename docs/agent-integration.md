@@ -11,7 +11,7 @@ compound-memory 是本地多 Agent 共享记忆库（存储 `~/.agents/memory`�
 | 宿主 | 状态 | MCP 配置位置 | 使用规则注入方式 |
 |---|---|---|---|
 | WorkBuddy | ✅ 已接入 | `~/.workbuddy/mcp.json`，或插件 [`integrations/workbuddy`](../integrations/workbuddy/README.md) | `~/.workbuddy/MEMORY.md`（用户级记忆，每会话自动注入）；插件另有 SessionStart 硬规则 |
-| ZCode | ✅ 已接入 | `~/.zcode/cli/config.json` | SessionStart hook 自动注入 + `~/.zcode/AGENTS.md` |
+| ZCode | ✅ 已接入 | `~/.zcode/cli/config.json`，或插件 [`integrations/zcode`](../integrations/zcode/README.md) | SessionStart hook 自动注入 + `~/.zcode/AGENTS.md`；插件另有硬规则提醒 |
 | Claude Code | ✅ 已接入 | `~/.claude.json`（用户级） | `~/.claude/CLAUDE.md` + 分发 skill |
 | Cursor | ✅ 可接入 | 项目 `.cursor/mcp.json` 或用户 `~/.cursor/mcp.json` | 项目规则指向 `skills/compound-memory/SKILL.md` |
 | DeepSeek Harness (dsh) | ⬜ 待接入 | `~/.dsh/profiles/web/cordis.patch.yml` | agent 指令文件 |
@@ -160,6 +160,8 @@ uv run --directory <仓库绝对路径> compound-memory init
 ```
 
 hook 只做**召回**；**写入与 feedback** 仍靠 Agent 主动调用工具，行为规则写在 `~/.zcode/AGENTS.md`（「compound-memory 记忆使用规则」一节）。有 SessionStart 注入后，任务开始前的 `memory_search` 可酌情省略——注入内容已覆盖大部分高频记忆，但精确查询仍应 search。
+
+**插件市场（可选）**：ZCode 直接读本仓库 `.claude-plugin/marketplace.json` 当市场目录（其加载顺序：先 `.claude-plugin/marketplace.json`、再仓库根级 `marketplace.json`）。克隆本仓库后，在桌面端 **插件市场 → 添加 → 添加插件市场** 粘贴克隆路径，在 **个人 → compound-memory** 里安装 **Compound Memory (ZCode)**——装的是 [`integrations/zcode`](../integrations/zcode/README.md)，`COMPOUND_MEMORY_AGENT_ID=agent-zcode`。插件的 MCP server 名也叫 `compound-memory`，与手写路径**二选一**，避免重复注册；插件的 SessionStart 只打印硬规则，不带手写路径的召回注入（`session_start.py`），任务开始仍应 `memory_search`。
 
 ## 4. Claude Code ✅
 
