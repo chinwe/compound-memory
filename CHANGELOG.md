@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Docs: `docs/eval/` is a checklist for reproducible A/B notes. "Can run" is `doctor` exit 0, one call to each of the five MCP tools, and host install smoke pointers (Claude, WorkBuddy, DeepSeek Harness). "Is effective" is a fixed 8-prompt set plus a result template. `uses`, `cross_validated`, and `recent_feedback_7d` are documented as health, not proof; `failure` and `contradiction` have to be recorded. `scripts/eval_stats_snapshot.py` saves CLI `stats` JSON. No new MCP tool, no in-process LLM, and no claim that effectiveness is already measured.
 - `scripts/validate_plugins.py` (CI, ubuntu × 3.13): mechanical checks for the marketplace/plugin files that no test covered — catalog ↔ manifest name/version agreement (the #92 drift), source directories, component paths inside the plugin root, hook command placeholder plus referenced script existence and executable bit, and no repo-root `.mcp.json`.
 - Host plugin integration guide `docs/agents/host-plugin-integration.md`: which catalog file each host's loader reads (ZCode checks `.claude-plugin/marketplace.json` before a root-level one) and the sync checklist for adding a host plugin.
 - ZCode marketplace plugin under `integrations/zcode` (`COMPOUND_MEMORY_AGENT_ID=agent-zcode`). ZCode reads the repository-root `.claude-plugin/marketplace.json` as its marketplace catalog, so the `compound-memory-zcode` entry is added there. Not shipped in the PyPI sdist or wheel.

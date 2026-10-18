@@ -345,6 +345,8 @@ uv run mypy src/compound_memory/   # 全包非 strict；validation / paths / ser
 
 测试缝：MCP tool 边界（`mcp.Client(server)` 内存直连，无子进程）+ 核心模块单测（scoring / index / store 运维面）。CI 在 Linux 与 Windows 的 Python 3.11/3.12/3.13 矩阵上跑测试、类型检查与纯 wheel 安装冒烟。变更记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
+怎么核对「能跑」和「同一道题有没有因记忆少踩坑」：[`docs/eval/README.md`](docs/eval/README.md)。那是清单和固定题，不是已经测完的有效性结论。
+
 ## 发布
 
 PyPI 版本不可重传，tag 必须与 `pyproject.toml` 的 `version` 一致（release workflow 有校验，不一致响亮失败）。发布走 GitHub Actions + PyPI Trusted Publisher（OIDC，免 token）：

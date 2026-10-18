@@ -281,6 +281,8 @@ dsh 通过 MCP client 插件 `@deepseek-ai/dsh-mcp-client` 接入，一个插件
 
 日常没有仓库目录，前缀是 `uvx --from compound-memory compound-memory`（已 `uv tool install compound-memory` 时可直接写 `compound-memory`）。从仓库联调时在克隆目录改回 `uv run compound-memory`（见 §1）。
 
+能跑（`doctor`、五个 tool、宿主安装）和有效（同一题空库对照、`failure` / `contradiction` 要记下来）分开记，见 [`docs/eval/README.md`](eval/README.md)。`stats` 的 `uses`、`cross_validated`、`recent_feedback_7d` 是健康度，不是有效性证明。
+
 ```bash
 uvx --from compound-memory compound-memory doctor         # 一页健康诊断（安装/多宿主自检）：
                                       #   attestation（AGENT_ID 是否注入）、retrieval（vector/lexical + reason）、
