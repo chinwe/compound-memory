@@ -1,0 +1,15 @@
+{
+  "name": "compound-memory",
+  "description": "Claude Code plugins for compound-memory",
+  "owner": { "name": "chinwe", "url": "https://github.com/chinwe" },
+  "plugins": [
+    {
+      "name": "compound-memory",
+      "source": "./integrations/claude",
+      "description": "Local multi-agent shared memory MCP (5 tools) via uvx from PyPI",
+      "version": "0.1.0",
+      "category": "productivity",
+      "tags": ["mcp", "memory", "local-first"]
+    }
+  ]
+}

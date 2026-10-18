@@ -1,0 +1,12 @@
+# Claude Code 市场与插件不进 PyPI sdist。
+# 先 graft 再 prune：源码树构建时剔除是一次实际命中。
+# 只写 prune 时，目录本就不在默认清单里，setuptools 会警告
+# no previously-included directories，看起来像没剔到。
+# uv build 随后用这份已剔除的 sdist 打 wheel，那时目录已不在包内，
+# graft/prune 会各警告一次；产物成员名仍不含这些路径。
+# wheel 只打包 src/（pyproject.toml 的 packages.find）。
+# 仓库根不得有 .mcp.json；成员名检查在 scripts/wheel_smoke.sh。
+graft integrations
+prune integrations
+graft .claude-plugin
+prune .claude-plugin

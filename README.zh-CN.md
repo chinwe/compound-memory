@@ -66,6 +66,17 @@ uvx --from compound-memory compound-memory init
 
 **验证**：在宿主里让 Agent 调用 `memory_search`（如查询任意关键词），能返回 `{"hits": [...]}` 即接入成功；或跑 `uvx --from compound-memory compound-memory doctor`（`COMPOUND_MEMORY_AGENT_ID` 已设置且记忆库健康时退出码 0，未设置或空白时退出码 1）。
 
+#### Claude Code 插件
+
+需要已安装 Claude Code，且 `uv` / `uvx` 在 `PATH` 上。本仓库自带插件市场；不提交 Anthropic 官方 Directory。
+
+```bash
+claude plugin marketplace add chinwe/compound-memory
+claude plugin install compound-memory@compound-memory
+```
+
+安装的是 [`integrations/claude`](integrations/claude/README.md)：用 `uvx --from compound-memory compound-memory-server` 拉起，默认 `COMPOUND_MEMORY_AGENT_ID=agent-claude`（宿主可覆盖）。这些市场与插件文件不进 PyPI sdist / wheel：`MANIFEST.in` 会 prune，`scripts/wheel_smoke.sh` 检查构建产物。
+
 #### 下一步
 
 把 `skills/compound-memory/SKILL.md` 的使用规范注入宿主（检索 → 反馈 → 沉淀的复利闭环），详见 `docs/agent-integration.md` §6。
