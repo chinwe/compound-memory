@@ -303,6 +303,7 @@ Per ADR 0001, the deterministic prep runs on a schedule while judgment (summariz
 - [`docs/specs/0001-compound-memory-spec.md`](docs/specs/0001-compound-memory-spec.md) — design spec
 - [`docs/agent-integration.en.md`](docs/agent-integration.en.md) — short English setup (uvx, required agent id, 5 tools, search → feedback → write)
 - [`docs/agent-integration.md`](docs/agent-integration.md) — per-host MCP configs + the unified usage protocol (Chinese; full guide)
+- [`docs/eval/README.md`](docs/eval/README.md) — how to record "can run" versus "did the same task change with memory". A checklist and a small fixed prompt set, not a measured effectiveness claim
 - [`docs/adr/`](docs/adr/) — architecture decision records
 - [`CONTEXT.md`](CONTEXT.md) — glossary (Chinese)
 - [`skills/compound-memory/SKILL.md`](skills/compound-memory/SKILL.md) — usage rules for hosts (Chinese)

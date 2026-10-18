@@ -81,6 +81,7 @@ Type choice, `project` slugs, private `agent-*` namespaces, and lesson / avoid m
 
 ## Next
 
+- How to record whether the install runs, and whether the same task changes once memory is populated: [`eval/README.md`](eval/README.md). Checklist only — not a measured effectiveness claim.
 - Full per-host configs (WorkBuddy, ZCode, Claude Code, Cursor, DeepSeek Harness), CLI operations, and troubleshooting: [`agent-integration.md`](agent-integration.md)
 - WorkBuddy / CodeBuddy plugin: [`integrations/workbuddy/README.md`](../integrations/workbuddy/README.md)
 - Usage rules to inject: [`skills/compound-memory/SKILL.md`](../skills/compound-memory/SKILL.md)

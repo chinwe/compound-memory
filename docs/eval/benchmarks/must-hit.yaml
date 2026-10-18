@@ -1,0 +1,183 @@
+# 固定必踩题。人按 docs/eval/README.md 的 A/B 协议跑，本文件不是可执行套件。
+# 每题单独一个新的 COMPOUND_MEMORY_ROOT。条件 A 不种 seed。
+# pass_a 是空库基线的观察标准，踩坑可以是预期。pass_b 才看记忆有没有改变做法。
+# uses 上升或只回 success，不满足 pass_b。
+items:
+  - id: pref-concise-tables
+    kind: preference
+    prompt: >
+      用一段说明 compound-memory 的五个 MCP tool 各做什么。
+    seed:
+      type: fact
+      key: user-reply-style
+      source: agent-claude
+      content: >
+        用户偏好简短回复：能用表格就不用长段落，先给结论。
+    expected_key: user-reply-style
+    expected_fact: >
+      回复应短，并且用表格列出五个 tool，而不是长段落。
+    feedback_outcome: success
+    pass_a: >
+      空库下作答完成。记录回复是否是长段落、没有表格。
+      写成长段落是这条基线的预期观察，不是产品失败。
+    pass_b: >
+      作答前 search 命中 user-reply-style。回复是短表，五个 tool 各一行。
+      采纳后 feedback outcome=success。explain 的 success_count 至少 1。
+      只有 uses 增加、回复仍是长段落，本条失败。
+
+  - id: fact-serverless-10s
+    kind: fact
+    prompt: >
+      给这个平台写一个会依次调用三个下游的 serverless 处理函数，并写明超时预算。
+      不要假设你记得平台文档。
+    seed:
+      type: fact
+      key: serverless-timeout
+      source: agent-claude
+      content: >
+        这个平台的 serverless 函数 10 秒超时，处理函数必须停在这个预算内。
+    expected_key: serverless-timeout
+    expected_fact: >
+      超时预算是 10 秒。
+    feedback_outcome: success
+    pass_a: >
+      空库下记录方案里写下的超时秒数。没写超时，或写了不是 10 秒，记为踩坑。
+    pass_b: >
+      search 命中 serverless-timeout，方案把预算写成 10 秒，随后 feedback
+      outcome=success。没有 search 却写成 10 秒，本条的 B 不算过。
+
+  - id: convention-uv
+    kind: convention
+    prompt: >
+      给新同事写三条在本仓库跑测试的命令。
+    seed:
+      type: decision
+      key: toolchain-uv
+      source: agent-claude
+      content: >
+        本仓库用 uv 管理依赖。日常命令是 uv run，不要改成 pip install 或 poetry。
+    expected_key: toolchain-uv
+    expected_fact: >
+      三条命令都使用 uv run，不出现 pip 或 poetry。
+    feedback_outcome: success
+    pass_a: >
+      空库下记录命令原文。出现 pip 或 poetry，或三条里没有 uv run，记为踩坑。
+    pass_b: >
+      search 命中 toolchain-uv，三条命令都是 uv run，feedback outcome=success。
+
+  - id: convention-no-tmp-path
+    kind: convention
+    prompt: >
+      给本仓库加一个会写临时目录的 pytest，并给出夹具写法。只写测试代码草稿。
+    seed:
+      type: decision
+      key: pytest-fixture
+      source: agent-claude
+      content: >
+        本仓库测试禁用 pytest 内置 tmp_path。新测试用 conftest 里落到
+        .test-tmp/ 的现成 fixture。
+    expected_key: pytest-fixture
+    expected_fact: >
+      草稿不使用 tmp_path，并指向仓库现成 fixture。
+    feedback_outcome: success
+    pass_a: >
+      空库下记录草稿是否把 tmp_path 当作夹具。使用了就记为踩坑。
+    pass_b: >
+      search 命中 pytest-fixture，草稿不使用 tmp_path，feedback outcome=success。
+
+  - id: pitfall-search-top-k
+    kind: pitfall
+    prompt: >
+      写一段核对步骤：刚写入的 8 条记忆是否都能被 search 看见。
+    seed:
+      type: insight
+      key: search-top-k
+      source: agent-claude
+      content: >
+        search 默认 top_k=5。核对可见性或全量可检时必须显式加大 top_k，
+        或断言候选集合。只看默认五条会把截断误当成丢更新。
+    expected_key: search-top-k
+    expected_fact: >
+      步骤里 top_k 至少为 8，或改为断言候选集合，而不是默认的 5。
+    feedback_outcome: success
+    pass_a: >
+      空库下记录步骤是否依赖默认 top_k 就下结论。依赖默认五条，记为踩坑。
+    pass_b: >
+      search 命中 search-top-k，步骤写出 top_k 至少 8 或改为断言候选集合，
+      feedback outcome=success。
+
+  - id: cross-agent-test-clock
+    kind: cross-agent
+    prompt: >
+      写一条会断言日期的测试草稿，日期从哪来写清楚。
+    seed:
+      type: fact
+      key: test-clock
+      source: agent-claude
+      content: >
+        测试断言日期用 conftest 的 CLOCK_DATE，不要贴真实墙钟。
+    reader_agent: agent-workbuddy
+    expected_key: test-clock
+    expected_fact: >
+      草稿使用 CLOCK_DATE。写入方是 agent-claude，读取和反馈方是 agent-workbuddy。
+    feedback_outcome: success
+    pass_a: >
+      空库、身份 agent-workbuddy。记录草稿里的日期来源。写成当天墙钟或
+      字面量今天，记为踩坑。
+    pass_b: >
+      agent-claude 种入之后，agent-workbuddy 在同一 COMPOUND_MEMORY_ROOT 上
+      search 并读到 test-clock，草稿使用 CLOCK_DATE，再以 agent-workbuddy
+      feedback outcome=success。explain 的 validated_by 含 agent-workbuddy。
+      此时 stats.cross_validated 仍可以是 0（验证宿主只有一个）。
+      把计数仍为 0 当成「没读到」，本条记错。没有第二个宿主的 search，本条失败。
+
+  - id: negative-timeout-60s
+    kind: failure
+    prompt: >
+      按你检索到的平台超时，写 serverless 处理函数的超时预算。
+      写完之后核对者会告诉你：这个平台真实超时是 10 秒，60 秒是错的。
+      核对之后必须按实际结果反馈。
+    seed:
+      type: fact
+      key: serverless-timeout-wrong
+      source: agent-claude
+      content: >
+        这个平台的 serverless 函数 60 秒超时，处理函数按 60 秒预算写。
+    expected_key: serverless-timeout-wrong
+    expected_fact: >
+      种入的事实是错的。最终预算应以核对者给出的 10 秒为准，并且这条记忆收到
+      failure 而不是 success。
+    feedback_outcome: failure
+    pass_a: >
+      空库、题面在核对前没有给出秒数。记录模型自己写了多少秒，或是否追问。
+      基线完整即可，不要求它猜中 10 秒。
+    pass_b: >
+      search 命中 serverless-timeout-wrong。核对者指出真实超时是 10 秒之后，
+      最终预算写成 10 秒，并且 feedback outcome=failure。explain 的
+      failure_count 至少 1，confidence 低于 0.5（单次失败且未触地板时为 0.3）。
+      回了 success，或 uses 增加但 failure_count 仍是 0，本条失败。
+
+  - id: negative-poetry
+    kind: contradiction
+    prompt: >
+      你要给本仓库加一个开发依赖。先检索记忆再决定命令。
+      核对者随后确认：仓库由 uv 管理，没有 poetry.lock。
+      请按这个事实处理你检索到的记忆。
+    seed:
+      type: decision
+      key: toolchain-poetry-wrong
+      source: agent-claude
+      content: >
+        本仓库的依赖管理是 poetry，新增依赖用 poetry add。
+    expected_key: toolchain-poetry-wrong
+    expected_fact: >
+      这条决策与仓库不符，应收到 contradiction，并在 review-queue 留下争议行。
+    feedback_outcome: contradiction
+    pass_a: >
+      空库下记录建议的命令。没有错误记忆可反驳。基线完整即可。
+    pass_b: >
+      search 命中 toolchain-poetry-wrong。核对之后 feedback
+      outcome=contradiction，不是 success。explain 的 contradiction_count
+      至少 1，confidence 仍为 0.5（冻结，不升）。review-queue 含一行
+      contradiction 且带上该 id。git-log --limit 20 --grep outcome=contradiction
+      能看到该 id。只回 success，本条失败。
