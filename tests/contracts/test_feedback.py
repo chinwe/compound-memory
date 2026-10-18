@@ -1,7 +1,8 @@
 """feedback 动词契约（store 层五要素 characterization）。
 
 契约出处：#26 P1（置信度精确公式）/ P2（side effects 含归档自动复活）；
-#31（feedback 每次一 commit，消息模板）。复利闭环是一等公民——公式漂移在此必红。
+#31（feedback 每次一 commit，消息模板）；#99/ADR-0011（同宿主 success base
+增益累计封顶 0.3）。复利闭环是一等公民——公式漂移在此必红。
 """
 
 from __future__ import annotations
@@ -54,9 +55,13 @@ class TestConfidenceFormula:
         assert out["validated_by"] == ["agent-b", "agent-a"]
 
     def test_confidence_capped_at_one(self, store: MemoryStore):
+        """契约变更（ADR-0011/#99，显式调整）：同宿主累计封顶后不再无条件奔 1.0——
+        单宿主 10 次停在 0.8；1.0 仍可达，但只能靠跨宿主首验补足。"""
         mem = _shared_mem(store, source="agent-a")
         for _ in range(10):
             store.feedback(mem["id"], "agent-a")
+        assert store.get(mem["id"])["confidence"] == 0.8
+        store.feedback(mem["id"], "agent-b")  # 跨宿主首验 +0.25 → 封顶 1.0
         assert store.get(mem["id"])["confidence"] == 1.0
 
     def test_confidence_rounded_to_three_decimals(self, store: MemoryStore):
@@ -66,6 +71,81 @@ class TestConfidenceFormula:
         store.feedback(mem["id"], "agent-a")
         out = store.feedback(mem["id"], "agent-a")
         assert out["confidence"] == 0.8
+
+
+class TestSameHostCap:
+    """ADR-0011（#99）：同宿主 success base 增益按「宿主×记忆」累计封顶 0.3——
+    单宿主天花板 0.8，以上只能靠跨宿主验证；gross 口径（failure 不归还配额）；
+    跨宿主首验 +0.15 不占配额；冻结期不折算故不耗配额；存量块无 host_bumps
+    键读空配额（惰性，与证据块自身迁移同型）。"""
+
+    def test_same_host_success_saturates_at_zero_eight(self, store: MemoryStore):
+        mem = _shared_mem(store, source="agent-a")
+        for _ in range(5):
+            out = store.feedback(mem["id"], "agent-a")
+        assert out["confidence"] == 0.8  # 3× +0.1 到配额，后 2 次只记账
+        assert out["uses"] == 5
+        assert out["evidence"]["success_count"] == 5  # 记账照走（ADR-0011：到顶只停数值）
+        assert out["evidence"]["host_bumps"] == {"agent-a": 0.3}
+
+    def test_post_cap_success_still_records_without_bump(self, store: MemoryStore):
+        mem = _shared_mem(store, source="agent-a")
+        for _ in range(3):
+            store.feedback(mem["id"], "agent-a")
+        out = store.feedback(mem["id"], "agent-a")
+        assert out["confidence"] == 0.8
+        assert out["uses"] == 4 and out["evidence"]["success_count"] == 4
+        assert out["evidence"]["host_bumps"] == {"agent-a": 0.3}
+
+    def test_cross_bonus_not_charged_to_quota(self, store: MemoryStore):
+        """+0.15 是独立性奖励，不占发放宿主的 base 配额（天然受宿主数约束）。"""
+        mem = _shared_mem(store, source="agent-a")
+        out = store.feedback(mem["id"], "agent-b")
+        assert out["confidence"] == 0.75
+        assert out["evidence"]["host_bumps"] == {"agent-b": 0.1}
+
+    def test_new_validator_unblocked_by_others_quota(self, store: MemoryStore):
+        """配额按宿主独立：a 用尽不影响 b 首验拿满 base+bonus。"""
+        mem = _shared_mem(store, source="agent-a")
+        for _ in range(3):
+            store.feedback(mem["id"], "agent-a")  # 0.8
+        out = store.feedback(mem["id"], "agent-b")  # 0.8+0.25 → 封顶 1.0
+        assert out["confidence"] == 1.0
+        assert out["evidence"]["host_bumps"] == {"agent-a": 0.3, "agent-b": 0.1}
+
+    def test_legacy_block_without_field_starts_empty(self, store: MemoryStore):
+        """惰性迁移：本变更前落盘的块没有 host_bumps 键，读作空配额、从现在起记。"""
+        mem = _shared_mem(store, source="agent-a")
+        store.feedback(mem["id"], "agent-a")  # 落块（旧形状）
+        legacy = store.find(mem["id"])
+        assert legacy is not None
+        del legacy.evidence["host_bumps"]  # 模拟变更前的块形状
+        store._save(legacy)
+        for _ in range(2):
+            store.feedback(mem["id"], "agent-a")
+        got = store.get(mem["id"])
+        assert got["confidence"] == 0.8  # 空配额起算：删键后 2× +0.1
+        assert got["evidence"]["host_bumps"] == {"agent-a": 0.2}
+
+    def test_failure_does_not_restore_quota(self, store: MemoryStore):
+        """gross 口径：配额用尽后 failure 罚下数值，success 也不重挣 base。"""
+        mem = _shared_mem(store, source="agent-a")
+        for _ in range(3):
+            store.feedback(mem["id"], "agent-a")  # 0.8
+        store.feedback(mem["id"], "agent-a", outcome="failure")  # 0.6
+        store.feedback(mem["id"], "agent-a", outcome="failure")  # 0.4
+        out = store.feedback(mem["id"], "agent-a")
+        assert out["confidence"] == 0.4
+
+    def test_frozen_success_does_not_consume_quota(self, store: MemoryStore):
+        """冻结期不折算故不耗配额：解冻后该宿主仍有整份配额。"""
+        mem = _shared_mem(store, source="agent-a")
+        store.feedback(mem["id"], "agent-b", outcome="contradiction")  # 冻结
+        store.feedback(mem["id"], "agent-c")  # 冻结期：记账、数值原地、配额不动
+        store.review_resolve(all=True)  # 解冻不折算
+        out = store.feedback(mem["id"], "agent-c")
+        assert out["confidence"] == 0.6
+        assert out["evidence"]["host_bumps"] == {"agent-c": 0.1}
 
 
 class TestOutcomeFolding:

@@ -41,7 +41,7 @@ LESSON_ROLES = ("lesson", "avoid")
 # 明细封顶防 yaml 膨胀；老明细语义化进计数不丢失，全史审计走 commit 消息（混合三层②）。
 EVIDENCE_RECENT_CAP = 10
 
-# 证据块键名单点（ADR-0007/0008）：frontmatter 形态是钉死的 dict（不引入
+# 证据块键名单点（ADR-0007/0008/0011）：frontmatter 形态是钉死的 dict（不引入
 # dataclass 改形状），此处只收口键名字面量——model 折算/视图、lifecycle 写侧、
 # search 展示投影一律引常量，键名变更只动这里。注意展示面（evidence_summary/
 # explain 返回 dict 的字段名）是 ADR-0008 的另一层契约，保持字面量以示区分。
@@ -50,6 +50,9 @@ EVIDENCE_FAILURE_COUNT = "failure_count"
 EVIDENCE_CONTRADICTION_COUNT = "contradiction_count"
 EVIDENCE_LAST_VERIFIED = "last_verified"
 EVIDENCE_RECENT = "recent"
+# 同宿主 base 增益配额（ADR-0011）：agent → 该宿主累计已授予的 base 增益。
+# 键缺失读空配额（惰性，与证据块自身迁移同型）；不进任何展示投影。
+EVIDENCE_HOST_BUMPS = "host_bumps"
 
 
 def zero_evidence() -> dict[str, Any]:

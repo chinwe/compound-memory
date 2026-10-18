@@ -10,7 +10,7 @@ description: 本机跨 Agent 共享记忆库 compound-memory 的使用规范：�
 ## 三个必做动作（复利闭环）
 
 1. **任务开始先检索**：接到非琐碎任务，先 `memory_search` 按任务关键词查相关记忆（用户偏好、项目背景、环境坑）。缺省 `top_k=5`，要看覆盖面就显式放大。默认检索即双通道：`_shared` + 本宿主私有 ns（身份已知时自动并入，私有条目无需单独补搜）；显式传 `ns` 则只搜该 ns（精确语义）。**project 作用域（ADR 0010）**：检索缺省 fail-closed——不传 `project` 只见全局（未标注）记忆；宿主使用规则声明了工作区项目时，检索与写入都带上该 `project=<slug>`，即可见 全局 ∪ 该项目。
-2. **采纳即反馈**：命中且**实际采纳**后必须调 `memory_feedback`（`agent` 填本宿主 source id）——复利闭环的核心动作，漏掉它记忆库就不增值。归档记忆被 feedback 自动复活。反馈带 outcome（缺省 `success`）：记忆**用对了**保持缺省；**误导了你**报 `failure`（置信度 −0.2，可降到地板 0.05，重复累计）；**内容有争议**报 `contradiction`（数值冻结、登记冲突队列待裁决）；**已被取代**报 `obsolete`（立即归档）；说不清就报 `unknown`（uses 与 last_used 仍推进，置信度不动）。每个 outcome 都推进 uses 与 last_used。置信度是证据正确性、可升可降：success 与跨宿主首验升它，failure 降它。
+2. **采纳即反馈**：命中且**实际采纳**后必须调 `memory_feedback`（`agent` 填本宿主 source id）——复利闭环的核心动作，漏掉它记忆库就不增值。归档记忆被 feedback 自动复活。反馈带 outcome（缺省 `success`）：记忆**用对了**保持缺省；**误导了你**报 `failure`（置信度 −0.2，可降到地板 0.05，重复累计）；**内容有争议**报 `contradiction`（数值冻结、登记冲突队列待裁决）；**已被取代**报 `obsolete`（立即归档）；说不清就报 `unknown`（uses 与 last_used 仍推进，置信度不动）。每个 outcome 都推进 uses 与 last_used。置信度是证据正确性、可升可降：success 与跨宿主首验升它，failure 降它；同宿主的 success 增益累计封顶 0.3——单宿主天花板 0.8，以上只能靠跨宿主验证（ADR 0011；到顶后 feedback 照记账，数值不再升）。
 3. **任务结束沉淀**：会话确认的稳定事实（用户偏好、项目约定、环境限制、踩坑结论）用 `memory_write` 写入，判据见下表；一次性、会话内临时信息只存在于会话。
 
 新记忆与已有记忆有因果/派生关系时用 `memory_link` 双向连上，检索时自动带出邻居（两条记忆必须同 ns，跨 ns 链被拒绝；私有 `agent-*` ns 的两条记忆须带 `agent`＝本宿主 source id，仅属主可连）。邻居是线索不是结论：采纳以 hit 本身为准。
