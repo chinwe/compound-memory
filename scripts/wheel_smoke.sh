@@ -9,14 +9,14 @@ cd "$root"
 rm -rf dist .smoke-venv .smoke-root
 uv build
 
-# sdist/wheel 成员名不得包含 Claude Code 市场与插件（不扫文件正文）。
+# sdist/wheel 成员名不得包含 Claude / WorkBuddy 市场与插件（不扫文件正文）。
 uv run python - <<'PY'
 import sys
 import tarfile
 import zipfile
 from pathlib import Path
 
-banned = {".claude-plugin", "integrations", ".mcp.json"}
+banned = {".claude-plugin", ".codebuddy-plugin", "integrations", ".mcp.json"}
 dist = Path("dist")
 archives = sorted(
     p for p in dist.iterdir() if p.name.endswith(".tar.gz") or p.suffix == ".whl"
@@ -46,7 +46,7 @@ for path in archives:
     else:
         print(
             f"{path.name}: {len(names)} members, "
-            "claude marketplace/plugin paths absent"
+            "marketplace/plugin paths absent"
         )
 if failed:
     sys.exit(1)

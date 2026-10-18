@@ -44,6 +44,8 @@ Use a stable host id, and pass that same string as `source` / `agent` / `reader`
 | Cursor | `agent-cursor` |
 | DeepSeek Harness | `agent-deepseek` |
 
+WorkBuddy and CodeBuddy can install the plugin from this repository instead of pasting MCP JSON: `/plugin marketplace add chinwe/compound-memory`, then `/plugin install compound-memory@compound-memory`. That sets `COMPOUND_MEMORY_AGENT_ID=agent-workbuddy`. Install notes: [`integrations/workbuddy/README.md`](../integrations/workbuddy/README.md).
+
 **Verify:** ask the agent to call `memory_search` (any keyword). A `{"hits": [...]}` body means the server is connected. Or run `uvx --from compound-memory compound-memory doctor` (JSON on stdout, warnings on stderr). Restart the host if it loads MCP servers only at startup.
 
 `doctor` exits 0 when no hard problem is present, and exits 1 when `COMPOUND_MEMORY_AGENT_ID` is unset or blank, the store root is missing or not a directory, the write lock cannot be acquired, or the memory root is not a usable git repository (git missing, no `.git`, or `git status` failed). A lexical retrieval mode and a dirty worktree are reported and do not by themselves fail the check. A `write_lock` hard failure is that probe, including when the lock file cannot be created; on the write path, a lock file that cannot be created still warns and may write unlocked.
@@ -77,5 +79,6 @@ Type choice, `project` slugs, private `agent-*` namespaces, and lesson / avoid m
 ## Next
 
 - Full per-host configs (WorkBuddy, ZCode, Claude Code, Cursor, DeepSeek Harness), CLI operations, and troubleshooting: [`agent-integration.md`](agent-integration.md)
+- WorkBuddy / CodeBuddy plugin: [`integrations/workbuddy/README.md`](../integrations/workbuddy/README.md)
 - Usage rules to inject: [`skills/compound-memory/SKILL.md`](../skills/compound-memory/SKILL.md)
 - Product overview: [`README.md`](../README.md)

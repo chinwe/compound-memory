@@ -38,7 +38,8 @@ vec = ["onnxruntime==1.31.0", "tokenizers>=0.20", "numpy>=1.26", "sqlite-vec>=0.
 
 [tool.setuptools.packages.find]
 where = ["src"]
-# Claude Code 市场/插件（仓库根 .claude-plugin/、integrations/）不是 Python 包。
+# Claude Code 与 WorkBuddy/CodeBuddy 市场/插件
+# （仓库根 .claude-plugin/、.codebuddy-plugin/、integrations/）不是 Python 包。
 # sdist 由 MANIFEST.in graft 后再 prune 剔除；scripts/wheel_smoke.sh 检查产物成员名。
 
 [tool.pytest.ini_options]
