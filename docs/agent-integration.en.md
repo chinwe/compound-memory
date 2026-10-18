@@ -39,6 +39,7 @@ Use a stable host id, and pass that same string as `source` / `agent` / `reader`
 | Host | `COMPOUND_MEMORY_AGENT_ID` |
 |---|---|
 | WorkBuddy | `agent-workbuddy` |
+| CodeBuddy | `agent-workbuddy` |
 | ZCode | `agent-zcode` |
 | Claude Code | `agent-claude` |
 | Cursor | `agent-cursor` |
