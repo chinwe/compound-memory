@@ -68,9 +68,9 @@ class TestBuildNote:
 
 class TestMainEndToEnd:
     def test_generated_note_is_sanitized(self, tmp_path: Path):
-        fake = tmp_path / "fakecm"
-        fake.write_text('#!/bin/sh\necho \'{"ok": true}\'\n')
-        fake.chmod(0o755)
+        # .py + 当前解释器：Windows CreateProcess 执行 #!/bin/sh 会 WinError 193。
+        fake = tmp_path / "fakecm.py"
+        fake.write_text('print(\'{"ok": true}\')\n', encoding="utf-8")
         outdir = tmp_path / "out"
         root = tmp_path / "eval-root"
         rc = mod.main(["--cli", str(fake), "--root", str(root), "--out-dir", str(outdir)])
