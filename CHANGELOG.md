@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `scripts/validate_plugins.py` (CI, ubuntu × 3.13): mechanical checks for the marketplace/plugin files that no test covered — catalog ↔ manifest name/version agreement (the #92 drift), source directories, component paths inside the plugin root, hook command placeholder plus referenced script existence and executable bit, and no repo-root `.mcp.json`.
+- Host plugin integration guide `docs/agents/host-plugin-integration.md`: which catalog file each host's loader reads (ZCode checks `.claude-plugin/marketplace.json` before a root-level one) and the sync checklist for adding a host plugin.
 - ZCode marketplace plugin under `integrations/zcode` (`COMPOUND_MEMORY_AGENT_ID=agent-zcode`). ZCode reads the repository-root `.claude-plugin/marketplace.json` as its marketplace catalog, so the `compound-memory-zcode` entry is added there. Not shipped in the PyPI sdist or wheel.
 - WorkBuddy / CodeBuddy marketplace plugin under `integrations/workbuddy` (`COMPOUND_MEMORY_AGENT_ID=agent-workbuddy`). Not shipped in the PyPI sdist or wheel.
 - Claude Code marketplace plugin under `integrations/claude` (not shipped in the PyPI sdist or wheel).

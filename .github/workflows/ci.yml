@@ -67,6 +67,12 @@ jobs:
         if: matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest'
         run: uv run python scripts/check_git_calls.py
 
+      - name: Marketplace plugin check
+        # 市场与插件文件无测试覆盖：catalog↔manifest 一致性、组件路径、hook 引用
+        # 全是机械断言（scripts/validate_plugins.py，版本漂移坑见 #92）。
+        if: matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest'
+        run: uv run python scripts/validate_plugins.py
+
       - name: Wheel smoke test
         # 纯 wheel（无 dev/vec extra）必须可安装，CLI 与 server 可跑。
         # 钉在 ubuntu × 3.13 一格，不再铺满 OS×Python（曾是 6 格，#58）。
