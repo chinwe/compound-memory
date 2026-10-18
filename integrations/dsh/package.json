@@ -25,10 +25,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/chinwe/compound-memory-dsh.git"
+    "url": "git+https://github.com/chinwe/dsh-compound-memory.git"
   },
-  "homepage": "https://github.com/chinwe/compound-memory-dsh#readme",
+  "homepage": "https://github.com/chinwe/dsh-compound-memory#readme",
   "bugs": {
-    "url": "https://github.com/chinwe/compound-memory-dsh/issues"
+    "url": "https://github.com/chinwe/dsh-compound-memory/issues"
   }
 }

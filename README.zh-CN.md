@@ -232,7 +232,7 @@ Agent (MCP 客户端 / CLI)
 }
 ```
 
-`uvx` 不在 PATH 时，`command` 写成 `~/.local/bin/uvx` 的绝对路径（宿主不展开 `~`）。从仓库联调才改用 `uv` + `["run", "--directory", "<仓库绝对路径>", "compound-memory-server"]`，见上文，那不是第二种默认。DeepSeek Harness 的暂存树（安装那个目录，不是本仓库）：[`integrations/dsh`](integrations/dsh)。`COMPOUND_MEMORY_AGENT_ID` 必配，见上文。向量召回路为可选（`uv sync --extra vec`）：未装 extra 或 HF 缓存缺模型时自动降级纯词面，`stats.retrieval.mode` 为 `lexical`。`memory_write` 的 `content` 超过 262144 字符会拒绝且不落盘。embedding 模型与维度可经 `COMPOUND_MEMORY_EMBEDDING_MODEL`（默认 `Xenova/bge-small-zh-v1.5`）与 `COMPOUND_MEMORY_EMBEDDING_DIM`（默认 512）覆盖——换模型属运维动作，改后需显式 `rebuild-index`。
+`uvx` 不在 PATH 时，`command` 写成 `~/.local/bin/uvx` 的绝对路径（宿主不展开 `~`）。从仓库联调才改用 `uv` + `["run", "--directory", "<仓库绝对路径>", "compound-memory-server"]`，见上文，那不是第二种默认。DeepSeek Harness 的暂存树，对应将来的 `chinwe/dsh-compound-memory`（安装那个目录，不是本仓库）：[`integrations/dsh`](integrations/dsh)。`COMPOUND_MEMORY_AGENT_ID` 必配，见上文。向量召回路为可选（`uv sync --extra vec`）：未装 extra 或 HF 缓存缺模型时自动降级纯词面，`stats.retrieval.mode` 为 `lexical`。`memory_write` 的 `content` 超过 262144 字符会拒绝且不落盘。embedding 模型与维度可经 `COMPOUND_MEMORY_EMBEDDING_MODEL`（默认 `Xenova/bge-small-zh-v1.5`）与 `COMPOUND_MEMORY_EMBEDDING_DIM`（默认 512）覆盖——换模型属运维动作，改后需显式 `rebuild-index`。
 
 ## 平台支持
 

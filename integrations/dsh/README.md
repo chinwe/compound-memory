@@ -4,9 +4,9 @@ English | [中文](#中文)
 
 DeepSeek Harness bundle that launches the existing [compound-memory](https://pypi.org/project/compound-memory/) MCP server. It does not reimplement memory in JavaScript, it does not add a sixth MCP tool, and it has no install or lifecycle scripts.
 
-This directory is the installable unit. Its own `package.json` declares `dsh.bundle`. While it is staged inside [chinwe/compound-memory](https://github.com/chinwe/compound-memory) at `integrations/dsh/`, that parent repository is not the plugin: `dsh plugin --profile web add github:chinwe/compound-memory` installs the Python repo root, which has no `dsh.bundle`. Copy this directory verbatim to the root of `chinwe/compound-memory-dsh` when that public repo exists (it is not created from here). `cordis.patch.yml` is the layer `dsh.bundle` points at. `skills/compound-memory/SKILL.md` is the usage spec shipped with the package.
+This directory is the installable unit. Its own `package.json` declares `dsh.bundle`. While it is staged inside [chinwe/compound-memory](https://github.com/chinwe/compound-memory) at `integrations/dsh/`, that parent repository is not the plugin: `dsh plugin --profile web add github:chinwe/compound-memory` installs the Python repo root, which has no `dsh.bundle`. Copy this directory verbatim to the root of `chinwe/dsh-compound-memory` when that public repo exists (it is not created from here). `cordis.patch.yml` is the layer `dsh.bundle` points at. `skills/compound-memory/SKILL.md` is the usage spec shipped with the package.
 
-The awesome-dsh-plugin gate builds the install command from the entry URL. An entry that points at a repository root is rejected when that root `package.json` has no `dsh.bundle`, even if a subdirectory has one, because `dsh plugin --profile web add github:owner/repo` would install nothing ([check-submission.mjs](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/scripts/check-submission.mjs), `hasBundle`). The same check tells authors they may instead point the entry at the subdirectory ([contributing.md](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md) still documents monorepo subpackages). This bundle is staged as its own future root so the catalog URL, the `dsh-plugin` topic (a repository topic, requested in that contributing guide), and `dsh plugin add github:chinwe/compound-memory-dsh` all name the same root.
+The awesome-dsh-plugin gate builds the install command from the entry URL. An entry that points at a repository root is rejected when that root `package.json` has no `dsh.bundle`, even if a subdirectory has one, because `dsh plugin --profile web add github:owner/repo` would install nothing ([check-submission.mjs](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/scripts/check-submission.mjs), `hasBundle`). The same check tells authors they may instead point the entry at the subdirectory ([contributing.md](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md) still documents monorepo subpackages). This bundle is staged as its own future root so the catalog URL, the `dsh-plugin` topic (a repository topic, requested in that contributing guide), and `dsh plugin add github:chinwe/dsh-compound-memory` all name the same root.
 
 ## What a bundle is
 
@@ -55,7 +55,7 @@ dsh plugin --profile web add /absolute/path/to/integrations/dsh
 After the owner creates the public repo and pushes this directory as its root (no `#path`, and no `prepare` / `allowBuilds` step, because this package has no scripts):
 
 ```bash
-dsh plugin --profile web add github:chinwe/compound-memory-dsh
+dsh plugin --profile web add github:chinwe/dsh-compound-memory
 ```
 
 After an npm publish from that repo root (not done from here):
@@ -105,9 +105,9 @@ DSH does not load that file just because it is inside the npm package. The files
 
 这是 DeepSeek Harness 的配置层 bundle，用来拉起 PyPI 上已有的 compound-memory MCP server。不在 JS 里重写记忆，不增加第 6 个 MCP tool，也没有 install / lifecycle 脚本。
 
-本目录才是可安装单元，它自己的 `package.json` 声明了 `dsh.bundle`。它目前暂存在 [chinwe/compound-memory](https://github.com/chinwe/compound-memory) 的 `integrations/dsh/` 里，那个父仓库不是插件：`dsh plugin --profile web add github:chinwe/compound-memory` 装的是 Python 仓库根，根上没有 `dsh.bundle`。公开仓库 `chinwe/compound-memory-dsh` 建好之后，把本目录原样复制成它的根（不在这里创建该仓库）。`cordis.patch.yml` 是 `dsh.bundle` 指向的层，`skills/compound-memory/SKILL.md` 是随包使用规范。
+本目录才是可安装单元，它自己的 `package.json` 声明了 `dsh.bundle`。它目前暂存在 [chinwe/compound-memory](https://github.com/chinwe/compound-memory) 的 `integrations/dsh/` 里，那个父仓库不是插件：`dsh plugin --profile web add github:chinwe/compound-memory` 装的是 Python 仓库根，根上没有 `dsh.bundle`。公开仓库 `chinwe/dsh-compound-memory` 建好之后，把本目录原样复制成它的根（不在这里创建该仓库）。`cordis.patch.yml` 是 `dsh.bundle` 指向的层，`skills/compound-memory/SKILL.md` 是随包使用规范。
 
-awesome-dsh-plugin 的门禁按条目 URL 生成安装命令。条目指向仓库根、而根上的 `package.json` 没有 `dsh.bundle` 时，即使子目录里有，也会被拒绝，因为 `dsh plugin --profile web add github:owner/repo` 什么都装不上（[check-submission.mjs](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/scripts/check-submission.mjs) 的 `hasBundle`）。同一段检查会建议改指子目录（[contributing.md](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md) 仍允许 monorepo 子包）。本 bundle 按独立仓库的根来暂存，是为了让目录 URL、`dsh-plugin` topic（仓库级 topic，贡献指南要求加上）和 `dsh plugin add github:chinwe/compound-memory-dsh` 指的是同一个根。
+awesome-dsh-plugin 的门禁按条目 URL 生成安装命令。条目指向仓库根、而根上的 `package.json` 没有 `dsh.bundle` 时，即使子目录里有，也会被拒绝，因为 `dsh plugin --profile web add github:owner/repo` 什么都装不上（[check-submission.mjs](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/scripts/check-submission.mjs) 的 `hasBundle`）。同一段检查会建议改指子目录（[contributing.md](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md) 仍允许 monorepo 子包）。本 bundle 按独立仓库的根来暂存，是为了让目录 URL、`dsh-plugin` topic（仓库级 topic，贡献指南要求加上）和 `dsh plugin add github:chinwe/dsh-compound-memory` 指的是同一个根。
 
 官方形状见 [Package and install a plugin](https://deepseek-harness.github.io/deepseek-harness/en/develop/basic/publish)：`dsh.bundle.patch` 指向一份 YAML 数组（或按顺序应用的多份文件）。本包只有一次 `insert`，插入宿主自带的 `@deepseek-ai/dsh-mcp-client`。stdio 的 `config` 字段见 [mcp-client README](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md)。后一层按 id 整行替换 `config`，不是深合并。本包不 import `@deepseek-ai/*`，也没有 `peerDependencies`；盒子里的包名从正在运行的 DSH 安装解析。
 
@@ -128,7 +128,7 @@ dsh plugin --profile web add /integrations/dsh 的绝对路径
 所有者创建公开仓库并把本目录作为根推上去之后（没有 `#path`；没有 `prepare`，也不需要 `allowBuilds`，因为没有 scripts）：
 
 ```bash
-dsh plugin --profile web add github:chinwe/compound-memory-dsh
+dsh plugin --profile web add github:chinwe/dsh-compound-memory
 ```
 
 从该仓库根 `npm publish` 之后（这里不发布）：

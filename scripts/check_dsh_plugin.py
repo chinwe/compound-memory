@@ -2,7 +2,7 @@
 """校验 integrations/dsh 这份暂存树，并做一次 npm pack --dry-run。
 
 可安装单元是这个目录，不是 compound-memory 仓库根。
-该目录按未来公开仓库 chinwe/compound-memory-dsh 的根来铺：
+该目录按未来公开仓库 chinwe/dsh-compound-memory 的根来铺：
 根上的 package.json 声明 dsh.bundle，patch 只插入一行宿主自带的
 MCP client，stdio 命令固定为
 ``uvx --from compound-memory compound-memory-server``，
@@ -21,10 +21,10 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "integrations" / "dsh"
-ENTRY_TARGET = "data/plugins/chinwe__compound-memory-dsh.yml"
-LISTING_URL = "https://github.com/chinwe/compound-memory-dsh"
-LISTING_NAME = "chinwe/compound-memory-dsh"
-REPO_URL = "git+https://github.com/chinwe/compound-memory-dsh.git"
+ENTRY_TARGET = "data/plugins/chinwe__dsh-compound-memory.yml"
+LISTING_URL = "https://github.com/chinwe/dsh-compound-memory"
+LISTING_NAME = "chinwe/dsh-compound-memory"
+REPO_URL = "git+https://github.com/chinwe/dsh-compound-memory.git"
 SKILL_REL = "skills/compound-memory/SKILL.md"
 PACK_OK = {"package.json", "cordis.patch.yml", "README.md", SKILL_REL}
 LAUNCH_ARGS = ["--from", "compound-memory", "compound-memory-server"]
@@ -104,7 +104,7 @@ def check_package(pkg: dict[str, object]) -> None:
         fail('files must include "cordis.patch.yml", "README.md", and "skills"')
     repo = pkg.get("repository")
     if not isinstance(repo, dict):
-        fail("repository must be an object pointing at chinwe/compound-memory-dsh")
+        fail("repository must be an object pointing at chinwe/dsh-compound-memory")
     if repo.get("url") != REPO_URL:
         fail(f"repository.url must be {REPO_URL}")
     if "directory" in repo:

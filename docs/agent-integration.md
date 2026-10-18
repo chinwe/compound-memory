@@ -223,7 +223,7 @@ Three protocol rules (same as §6; point a Cursor rule at `skills/compound-memor
 
 DSH 接入外部记忆的官方路径是宿主自带的 `@deepseek-ai/dsh-mcp-client`（stdio 或 Streamable HTTP）。官方的第三方记忆示例也是同一行配置，没有另给一个能直接挂上这条 PyPI server 的 memory-provider 插槽。在 JS 里再注册一套记忆工具等于重做存储。所以这里用配置层 bundle 插入一行 stdio，server 仍是 `uvx --from compound-memory compound-memory-server`，MCP tool 仍是那 5 个。模型侧名字带宿主前缀：`mcp__compound-memory__memory_search`（以及 get / write / link / feedback）。
 
-可安装单元是暂存目录 `integrations/dsh`，不是 `chinwe/compound-memory` 的仓库根。`dsh plugin add github:chinwe/compound-memory` 装的是这个 Python 仓库，根上的 `package.json` 没有 `dsh.bundle`，不会启用本插件。该目录按未来公开仓库 `chinwe/compound-memory-dsh` 的根来铺（仓库尚未创建，不在这里建），整目录原样复制过去即可。npm 包名 `dsh-compound-memory`。bundle 只插入一行 MCP client，并带上 skill 文件；没有 install / lifecycle `scripts`。安装步骤的英文全文在 `integrations/dsh/README.md`。
+可安装单元是暂存目录 `integrations/dsh`，不是 `chinwe/compound-memory` 的仓库根。`dsh plugin add github:chinwe/compound-memory` 装的是这个 Python 仓库，根上的 `package.json` 没有 `dsh.bundle`，不会启用本插件。该目录按未来公开仓库 `chinwe/dsh-compound-memory` 的根来铺（仓库尚未创建，不在这里建），整目录原样复制过去即可。npm 包名 `dsh-compound-memory`。bundle 只插入一行 MCP client，并带上 skill 文件；没有 install / lifecycle `scripts`。安装步骤的英文全文在 `integrations/dsh/README.md`。
 
 **安装暂存树**（把路径指到该目录，不要指到本仓库根）：
 
@@ -234,7 +234,7 @@ dsh plugin --profile web add <仓库绝对路径>/integrations/dsh
 公开仓库建好并把该目录作为根推上去之后（没有 `#path`，也不需要 `prepare` / `allowBuilds`）：
 
 ```bash
-dsh plugin --profile web add github:chinwe/compound-memory-dsh
+dsh plugin --profile web add github:chinwe/dsh-compound-memory
 ```
 
 npm 发布之后（发布是手工步骤，本仓库不自动做）：
