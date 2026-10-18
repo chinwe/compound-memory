@@ -74,6 +74,16 @@ When a new memory is caused by or derived from an existing one, `memory_link` th
 
 Type choice, `project` slugs, private `agent-*` namespaces, and lesson / avoid marks are in the Chinese guide §6 and in the skill.
 
+## DeepSeek Harness
+
+The installable bundle is [`integrations/dsh`](../integrations/dsh) (npm name `dsh-compound-memory`). It inserts one in-box `@deepseek-ai/dsh-mcp-client` row that runs `uvx --from compound-memory compound-memory-server`. The server still exposes the same five tools; DSH names them `mcp__compound-memory__memory_search` and the matching get / write / link / feedback tools.
+
+```bash
+dsh plugin --profile web add /absolute/path/to/compound-memory/integrations/dsh
+```
+
+`COMPOUND_MEMORY_AGENT_ID` defaults to `agent-deepseek` when the launching environment does not set it. `uvx` must be on the `PATH` that starts `dsh`. Per-host notes and the hand-written patch are in the Chinese guide §5.
+
 ## Next
 
 - Full per-host configs (WorkBuddy, ZCode, Claude Code, Cursor, DeepSeek Harness), CLI operations, and troubleshooting: [`agent-integration.md`](agent-integration.md)

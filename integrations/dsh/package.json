@@ -1,0 +1,34 @@
+{
+  "name": "dsh-compound-memory",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness bundle that launches the compound-memory stdio MCP server.",
+  "license": "MIT",
+  "author": "chinwe",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "mcp",
+    "memory"
+  ],
+  "files": [
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "dsh": ">=0.2.0-rc.1 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chinwe/compound-memory.git",
+    "directory": "integrations/dsh"
+  },
+  "homepage": "https://github.com/chinwe/compound-memory/tree/main/integrations/dsh#readme",
+  "bugs": {
+    "url": "https://github.com/chinwe/compound-memory/issues"
+  }
+}

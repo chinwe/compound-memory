@@ -67,6 +67,12 @@ jobs:
         if: matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest'
         run: uv run python scripts/check_git_calls.py
 
+      - name: DSH plugin manifest
+        # integrations/dsh 是配置层 bundle。校验 dsh.bundle、stdio 启动行，
+        # 以及 npm pack --dry-run 的文件清单。不碰 Python 包版本。
+        if: matrix.python-version == '3.13' && matrix.os == 'ubuntu-latest'
+        run: uv run python scripts/check_dsh_plugin.py
+
       - name: Wheel smoke test
         # 纯 wheel（无 dev/vec extra）必须可安装，CLI 与 server 可跑。
         # 钉在 ubuntu × 3.13 一格，不再铺满 OS×Python（曾是 6 格，#58）。

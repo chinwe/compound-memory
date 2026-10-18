@@ -14,7 +14,7 @@ compound-memory 是本地多 Agent 共享记忆库（存储 `~/.agents/memory`�
 | ZCode | ✅ 已接入 | `~/.zcode/cli/config.json` | SessionStart hook 自动注入 + `~/.zcode/AGENTS.md` |
 | Claude Code | ✅ 已接入 | `~/.claude.json`（用户级） | `~/.claude/CLAUDE.md` + 分发 skill |
 | Cursor | ✅ 可接入 | 项目 `.cursor/mcp.json` 或用户 `~/.cursor/mcp.json` | 项目规则指向 `skills/compound-memory/SKILL.md` |
-| DeepSeek Harness (dsh) | ⬜ 待接入 | `~/.dsh/profiles/web/cordis.patch.yml` | agent 指令文件 |
+| DeepSeek Harness (dsh) | ✅ 可接入 | `integrations/dsh` bundle，或手写 `~/.dsh/profiles/web/cordis.patch.yml` | agent 指令文件 |
 
 ---
 
@@ -219,33 +219,54 @@ Three protocol rules (same as §6; point a Cursor rule at `skills/compound-memor
 2. After actually using a hit, `memory_feedback` with your agent id (`success` when it helped, `failure` / `contradiction` / `obsolete` / `unknown` when it did not).
 3. At the end of the session, `memory_write` only stable facts (preferences, conventions, environment constraints, pitfalls) — not scratch notes. `content` over 262144 characters is rejected.
 
-## 5. DeepSeek Harness (dsh) ⬜
+## 5. DeepSeek Harness (dsh) ✅
 
-dsh 通过 MCP client 插件 `@deepseek-ai/dsh-mcp-client` 接入，一个插件实例对应一个 server。本地 server 用 stdio，配置写在 profile patch 文件 `~/.dsh/profiles/web/cordis.patch.yml`：
+DSH 接入外部记忆的官方路径是宿主自带的 `@deepseek-ai/dsh-mcp-client`（stdio 或 Streamable HTTP）。官方的第三方记忆示例也是同一行配置，没有另给一个能直接挂上这条 PyPI server 的 memory-provider 插槽。在 JS 里再注册一套记忆工具等于重做存储。所以这里用配置层 bundle 插入一行 stdio，server 仍是 `uvx --from compound-memory compound-memory-server`，MCP tool 仍是那 5 个。模型侧名字带宿主前缀：`mcp__compound-memory__memory_search`（以及 get / write / link / feedback）。
+
+**安装 bundle**（`integrations/dsh`，npm 包名 `dsh-compound-memory`）：
+
+```bash
+dsh plugin --profile web add <仓库绝对路径>/integrations/dsh
+```
+
+npm 发布之后（发布是手工步骤，本仓库不自动做）：
+
+```bash
+dsh plugin --profile web add dsh-compound-memory
+```
+
+`dsh plugin` 把该包写入 profile 的 `dsh.profile.bundles`。bundle 只有 `cordis.patch.yml`，没有自己的插件模块。
+
+在**启动 dsh 的进程**里设置环境变量。patch 用 `!!js process.env...` 读取；未设置或空白时 `COMPOUND_MEMORY_ROOT` 默认为 `$HOME/.agents/memory`（Python 展开 `$HOME`），`COMPOUND_MEMORY_AGENT_ID` 默认为 `agent-deepseek`（与 §1 的宿主 id 相同）。不要在 patch 里写密钥。
+
+`uvx` 必须在 dsh 的 `PATH` 上。后一层 patch 按 id **整行替换** `config`，不是深合并。要改成绝对路径时，在 `~/.dsh/profiles/web/cordis.patch.yml` 重写 `mcp-compound-memory` 这一行的全部字段，`command` 写成 `uvx` 的绝对路径。
+
+验证：`dsh --profile web --dump-config` 里有 `# == dsh-compound-memory` 层。启动后五个工具注册为 `mcp__compound-memory__memory_*`。`memory_search` 的返回体含 `{"hits": [...]}`。
+
+**不装 bundle、手写同一行**时，写进 `~/.dsh/profiles/web/cordis.patch.yml`。生成文件里的 `[]` 要换成下面这块，不要在 `[]` 下面再追加（那样 YAML 非法，dsh 起不来）：
 
 ```yaml
 - insert:
-  - id: mcp-compound-memory
-    name: '@deepseek-ai/dsh-mcp-client'
-    config:
-      serverName: compound-memory
-      transport: stdio
-      command: uvx
-      args: ['--from', 'compound-memory', 'compound-memory-server']
-      env:
-        COMPOUND_MEMORY_ROOT: "$HOME/.agents/memory"
-        COMPOUND_MEMORY_AGENT_ID: agent-deepseek
-      failOnStartupError: true
+    - id: mcp-compound-memory
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: compound-memory
+        transport: stdio
+        command: uvx
+        args: ['--from', 'compound-memory', 'compound-memory-server']
+        env:
+          COMPOUND_MEMORY_ROOT: !!js "process.env.COMPOUND_MEMORY_ROOT || '$HOME/.agents/memory'"
+          COMPOUND_MEMORY_AGENT_ID: !!js "process.env.COMPOUND_MEMORY_AGENT_ID || 'agent-deepseek'"
+        failOnStartupError: true
 ```
 
 要点：
 
-- `serverName` 是工具命名空间（`mcp__compound-memory__memory_search`），`[A-Za-z0-9_-]{1,32}` 且实例间唯一；
-- `failOnStartupError: true` 让启动失败响亮暴露（调试期建议开着，稳定后可关）；
-- 工具调用默认超时 60s（`toolCallTimeoutMs` 可调），本 server 全部为本地文件操作，不会触及；
-- 重启 `dsh` 后验证：`dsh web --dump-config | grep -A3 mcp`，并确认工具已注册（`memory_write/search/get/link/feedback` 五个）。
+- `serverName` 是工具命名空间（`mcp__compound-memory__memory_search`），`[A-Za-z0-9_-]{1,32}` 且同一注册域内唯一；
+- `failOnStartupError: true` 让这一行在 `uvx` 或 server 起不来时拒绝激活（调试期保持开着）；
+- 工具调用默认超时 60s（`toolCallTimeoutMs` 可调），本 server 全部为本地文件操作，不会触及。
 
-**使用规则注入**：dsh 的模型层与工具层解耦，规则写在对应 preset/系统提示的 agent 指令文件里（Standard preset 的 system prompt 位置随版本变化，以 `~/.dsh/profiles/` 下实际 preset 为准），内容同样引用 §6。
+**使用规则注入**：dsh 的模型层与工具层解耦，规则写在对应 preset/系统提示的 agent 指令文件里（Standard preset 的 system prompt 位置随版本变化，以 `~/.dsh/profiles/` 下实际 preset 为准），内容同样引用 §6。`source` / `agent` 填 `agent-deepseek`，除非 `COMPOUND_MEMORY_AGENT_ID` 被覆盖成别的 id。英文安装步骤见 `integrations/dsh/README.md`。
 
 ---
 

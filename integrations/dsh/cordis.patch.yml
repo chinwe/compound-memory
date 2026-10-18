@@ -1,0 +1,21 @@
+# 配置层 bundle：插入宿主自带的 MCP client，stdio 拉起 PyPI 上的
+# compound-memory-server。本包没有自己的插件模块，也不新增 MCP tool。
+# 后层（profile / 家目录的 cordis.patch.yml）按 id 整行替换 config，
+# 不是深合并——要改 command 或 agent id，重写这一行的全部字段。
+- insert:
+    - id: mcp-compound-memory
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: compound-memory
+        transport: stdio
+        command: uvx
+        args:
+          - '--from'
+          - compound-memory
+          - compound-memory-server
+        # 启动 dsh 的进程里已设置的变量优先；未设置时用本仓库既有宿主 id。
+        # 值是字符串。ROOT 的 $HOME 由 compound-memory 展开，不经 shell。
+        env:
+          COMPOUND_MEMORY_ROOT: !!js "process.env.COMPOUND_MEMORY_ROOT || '$HOME/.agents/memory'"
+          COMPOUND_MEMORY_AGENT_ID: !!js "process.env.COMPOUND_MEMORY_AGENT_ID || 'agent-deepseek'"
+        failOnStartupError: true

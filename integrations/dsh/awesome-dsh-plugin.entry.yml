@@ -1,0 +1,10 @@
+# Copy this document into awesome-dsh-plugin as
+# data/plugins/chinwe__compound-memory--integrations-dsh.yml
+# then run `node scripts/generate-readme.mjs` in that repo.
+# Do not add an npm: key; the site links the package from registry metadata.
+url: https://github.com/chinwe/compound-memory/tree/main/integrations/dsh
+name: chinwe/compound-memory#dsh
+category: memory
+description:
+  en: Launches the compound-memory PyPI MCP server over stdio and registers memory_search, memory_get, memory_write, memory_link, and memory_feedback.
+  zh: 以 stdio 启动 PyPI 上的 compound-memory MCP server，并注册 memory_search、memory_get、memory_write、memory_link 与 memory_feedback。

@@ -79,6 +79,8 @@ This lets your everyday agents read/write the shared store automatically. No rep
 
 A local checkout is the developer path, not a second default: `command` `uv`, `args` `["run", "--directory", "<absolute-repo-path>", "compound-memory-server"]` after `uv sync --extra dev`.
 
+DeepSeek Harness installs that same PyPI server as a bundle: [`integrations/dsh`](integrations/dsh) (`dsh plugin --profile web add` the local path, or `dsh-compound-memory` after it is published). The five tools show up as `mcp__compound-memory__memory_*`.
+
 **Verify**: ask your agent to call `memory_search` (any keyword) — a `{"hits": [...]}` response means you're connected. Or run `uvx --from compound-memory compound-memory doctor` (exit 0 when `COMPOUND_MEMORY_AGENT_ID` is set and the store is writable; exit 1 when it is unset or blank).
 
 #### 4. Next step
