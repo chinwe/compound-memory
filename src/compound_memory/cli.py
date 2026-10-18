@@ -14,7 +14,9 @@ from typing import Any
 from . import __version__
 from .embedding import auto_encoder
 from .extraction import extract, supported_hosts_summary_en
+from .index import atomic_write_text
 from .storage import DISTILL_DUP_SIM_THRESHOLD, MEMORY_TYPES, MemoryStore, PROMOTION_USES_THRESHOLD, default_root
+from .storage.dream import dream_proposals_path
 from .storage.distill import SUGGESTED_ACTIONS
 from .storage.gitlayer import probe_repo
 from .storage.locking import WriteLockError, probe_write_lock
@@ -244,7 +246,9 @@ def cmd_distill_plan(args: argparse.Namespace) -> None:
 def cmd_dream(args: argparse.Namespace) -> None:
     # 空跑：stdout 是报告 JSON，一行摘要走 stderr（与 stats 的诊断分流同型），
     # 定时脚本重定向 stdout 时不会把摘要写进报告文件。
-    report = _open_store(args).dream(
+    # --propose 另写 gitignore 的候选包文件，不改变 stdout 的报告形状，也不 apply。
+    store = _open_store(args)
+    report = store.dream(
         window_days=args.window,
         min_uses=args.min_uses,
         min_confidence=args.min_confidence,
@@ -252,6 +256,15 @@ def cmd_dream(args: argparse.Namespace) -> None:
         reader=args.reader,
     )
     print(report["summary"], file=sys.stderr)
+    if args.propose:
+        pack = store.dream_proposals(ns=args.ns, reader=args.reader)
+        path = dream_proposals_path(store.root)
+        atomic_write_text(path, json.dumps(pack, ensure_ascii=False, indent=2) + "\n")
+        empty = " empty" if not pack else ""
+        print(
+            f"dream proposals ns={report['ns']}: count={len(pack)}{empty} path={path}",
+            file=sys.stderr,
+        )
     _emit(report)
 
 
@@ -458,7 +471,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_distill_plan)
     p = sub.add_parser(
         "dream",
-        help="read-only offline consolidation report for one namespace (no writes)",
+        help="read-only offline consolidation report (optional --propose writes a proposals file)",
         description="Offline consolidation prep for one namespace (ADR-0001: deterministic prep, "
         "judgment stays with the calling agent; no in-process LLM). Read-only dry-run. "
         "The distill section is the distill-plan result (merge_with / possible_dup_of / "
@@ -471,13 +484,24 @@ def build_parser() -> argparse.ArgumentParser:
         "stats_before and stats_after are two stats() snapshots and are equal on this path. "
         "Does not archive, distill-apply, forget, or write feedback. Not an MCP tool. "
         "The explicit gated write command is dream-apply; this command has no apply switch. "
-        "JSON on stdout; a one-line summary on stderr.",
+        "Optional --propose (ADR-0011, default off) writes "
+        "<root>/distill/dream-proposals.json: a JSON list shaped for dream-apply "
+        "(content, type, source_ids, key). The system proposes; a human runs dream-apply. "
+        "No qualifying cluster writes an empty list. Stdout stays the read-only report. "
+        "JSON on stdout; a one-line summary on stderr. With --propose, stderr adds a line "
+        "naming the proposals file.",
     )
     p.add_argument("--window", type=int, default=30, help="recency window in days, passed through to distill-plan")
     p.add_argument("--min-uses", type=int, default=1, help="activity gate passed through to distill-plan")
     p.add_argument("--min-confidence", type=float, default=0.5, help="activity gate passed through to distill-plan")
     p.add_argument("--ns", default="_shared")
     p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
+    p.add_argument(
+        "--propose",
+        action="store_true",
+        help="write <root>/distill/dream-proposals.json (dream-apply JSON list; "
+        "empty list when nothing qualifies). Does not apply. Default off.",
+    )
     p.set_defaults(func=cmd_dream)
     p = sub.add_parser(
         "dream-apply",

@@ -267,6 +267,7 @@ uv run compound-memory decay          # run from cron
 uv run compound-memory revive <id>    # revive an archived memory
 uv run compound-memory distill-plan   # distillation candidates: suggested_action is merge / promote / review; also report-only negative_salience and contradiction_pairs
 uv run compound-memory dream --ns _shared   # read-only report: distill-plan section (including the negative sections) + decay_signals + equal stats snapshots (no writes, no LLM)
+uv run compound-memory dream --ns _shared --propose  # system proposes: qualifying clusters go to <root>/distill/dream-proposals.json; a human runs dream-apply. Default off; empty pack is []
 uv run compound-memory dream-apply --proposals apply.json --source agent-workbuddy --dry-run  # gated apply preview; drop --dry-run to run distill-apply on admitted rows
 uv run compound-memory distill-apply "the merged insight" insight agent-workbuddy --sources <id1>,<id2>  # atomic: product (links, origin=distillation) + source archival, one commit
 uv run compound-memory doctor           # one-page health check; exit 1 if AGENT_ID is unset, root is missing, the lock is broken, or git is unusable

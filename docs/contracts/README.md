@@ -114,6 +114,10 @@
   `stats()` 两次快照，空跑相等。`dry_run` 恒 true。不归档、不 distill_apply、
   不 forget、不写 feedback；不进 MCP。扫私有 ns 须属主。**不产生提交**。
   写盘不在本动词上（#72：独立 `dream_apply`）。
+  契约变更 #97（ADR-0011）：CLI `dream --propose`（默认关，无 `--auto`）另写
+  `<root>/distill/dream-proposals.json`，内容是 dream-apply 的 JSON 列表；
+  无合格簇写 `[]`。`dream()` 返回形状与空跑不变量不变，不调用 dream_apply，
+  不产生提交。
 - **dream_apply**（#72 契约变更，CLI-only）：显式半自动。调用方给出产物
   （`content` + `type` + `source_ids`）后，只对 `merge_with` /
   `key_duplicates` / 显式 `promote` 的 `promotion_candidate` 逐条调用既有
