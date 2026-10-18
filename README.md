@@ -92,6 +92,17 @@ claude plugin install compound-memory@compound-memory
 
 That installs [`integrations/claude`](integrations/claude/README.md), which launches `uvx --from compound-memory compound-memory-server` with `COMPOUND_MEMORY_AGENT_ID=agent-claude` (override that env var in the host if you need a different id). A SessionStart hook adds a short reminder on new sessions; verify and disable steps are in the plugin README. Those marketplace and plugin files are not in the PyPI sdist or wheel: `MANIFEST.in` prunes them, and `scripts/wheel_smoke.sh` checks the built artifacts.
 
+#### WorkBuddy / CodeBuddy plugin
+
+Requires WorkBuddy or CodeBuddy and `uv` (`uvx` on `PATH`). This repository hosts a self-hosted marketplace at `.codebuddy-plugin/marketplace.json`.
+
+```text
+/plugin marketplace add chinwe/compound-memory
+/plugin install compound-memory@compound-memory
+```
+
+That installs [`integrations/workbuddy`](integrations/workbuddy/README.md), which launches the same PyPI server with `COMPOUND_MEMORY_AGENT_ID=agent-workbuddy`. A SessionStart hook prints a short hard-rule reminder on new sessions and does not read the store. The Claude marketplace file is unchanged.
+
 #### 4. Next step
 
 Inject the usage protocol from [`skills/compound-memory/SKILL.md`](skills/compound-memory/SKILL.md) into your host (the search → feedback → write loop). The short English version is [`docs/agent-integration.en.md`](docs/agent-integration.en.md); the full protocol is `docs/agent-integration.md` §6.

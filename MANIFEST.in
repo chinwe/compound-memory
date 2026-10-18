@@ -1,4 +1,4 @@
-# Claude Code 市场与插件不进 PyPI sdist。
+# Claude Code 与 WorkBuddy/CodeBuddy 市场与插件不进 PyPI sdist。
 # 先 graft 再 prune：源码树构建时剔除是一次实际命中。
 # 只写 prune 时，目录本就不在默认清单里，setuptools 会警告
 # no previously-included directories，看起来像没剔到。
@@ -10,3 +10,5 @@ graft integrations
 prune integrations
 graft .claude-plugin
 prune .claude-plugin
+graft .codebuddy-plugin
+prune .codebuddy-plugin

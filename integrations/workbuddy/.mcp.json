@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "compound-memory": {
+      "command": "uvx",
+      "args": ["--from", "compound-memory", "compound-memory-server"],
+      "env": {
+        "COMPOUND_MEMORY_AGENT_ID": "agent-workbuddy"
+      }
+    }
+  }
+}

@@ -39,10 +39,13 @@ Use a stable host id, and pass that same string as `source` / `agent` / `reader`
 | Host | `COMPOUND_MEMORY_AGENT_ID` |
 |---|---|
 | WorkBuddy | `agent-workbuddy` |
+| CodeBuddy | `agent-workbuddy` |
 | ZCode | `agent-zcode` |
 | Claude Code | `agent-claude` |
 | Cursor | `agent-cursor` |
 | DeepSeek Harness | `agent-deepseek` |
+
+WorkBuddy and CodeBuddy can install the plugin from this repository instead of pasting MCP JSON: `/plugin marketplace add chinwe/compound-memory`, then `/plugin install compound-memory@compound-memory`. That sets `COMPOUND_MEMORY_AGENT_ID=agent-workbuddy`. Install notes: [`integrations/workbuddy/README.md`](../integrations/workbuddy/README.md).
 
 **Verify:** ask the agent to call `memory_search` (any keyword). A `{"hits": [...]}` body means the server is connected. Or run `uvx --from compound-memory compound-memory doctor` (JSON on stdout, warnings on stderr). Restart the host if it loads MCP servers only at startup.
 
@@ -77,5 +80,6 @@ Type choice, `project` slugs, private `agent-*` namespaces, and lesson / avoid m
 ## Next
 
 - Full per-host configs (WorkBuddy, ZCode, Claude Code, Cursor, DeepSeek Harness), CLI operations, and troubleshooting: [`agent-integration.md`](agent-integration.md)
+- WorkBuddy / CodeBuddy plugin: [`integrations/workbuddy/README.md`](../integrations/workbuddy/README.md)
 - Usage rules to inject: [`skills/compound-memory/SKILL.md`](../skills/compound-memory/SKILL.md)
 - Product overview: [`README.md`](../README.md)

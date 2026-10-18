@@ -1,0 +1,15 @@
+{
+  "name": "compound-memory",
+  "description": "WorkBuddy and CodeBuddy plugins for compound-memory",
+  "owner": { "name": "chinwe", "url": "https://github.com/chinwe" },
+  "plugins": [
+    {
+      "name": "compound-memory",
+      "source": "./integrations/workbuddy",
+      "description": "Local multi-agent shared memory MCP (5 tools) via uvx from PyPI",
+      "version": "0.1.0",
+      "category": "productivity",
+      "keywords": ["mcp", "memory", "local-first"]
+    }
+  ]
+}

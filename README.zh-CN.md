@@ -77,6 +77,17 @@ claude plugin install compound-memory@compound-memory
 
 安装的是 [`integrations/claude`](integrations/claude/README.md)：用 `uvx --from compound-memory compound-memory-server` 拉起，默认 `COMPOUND_MEMORY_AGENT_ID=agent-claude`（宿主可覆盖）。新会话的 SessionStart hook 会注入一条很短的使用提醒；如何确认、如何关闭见插件 README。这些市场与插件文件不进 PyPI sdist / wheel：`MANIFEST.in` 会 prune，`scripts/wheel_smoke.sh` 检查构建产物。
 
+#### WorkBuddy / CodeBuddy 插件
+
+需要已安装 WorkBuddy 或 CodeBuddy，且 `uv` / `uvx` 在 `PATH` 上。市场文件是仓库根 `.codebuddy-plugin/marketplace.json`。
+
+```text
+/plugin marketplace add chinwe/compound-memory
+/plugin install compound-memory@compound-memory
+```
+
+安装的是 [`integrations/workbuddy`](integrations/workbuddy/README.md)：同一条 `uvx` 命令，默认 `COMPOUND_MEMORY_AGENT_ID=agent-workbuddy`。新会话的 SessionStart hook 只打印几条硬规则，不读记忆库。Claude 的 `.claude-plugin/marketplace.json` 不动。
+
 #### 下一步
 
 把 `skills/compound-memory/SKILL.md` 的使用规范注入宿主（检索 → 反馈 → 沉淀的复利闭环），详见 `docs/agent-integration.md` §6。

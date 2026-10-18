@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- WorkBuddy / CodeBuddy marketplace plugin under `integrations/workbuddy` (`COMPOUND_MEMORY_AGENT_ID=agent-workbuddy`). Not shipped in the PyPI sdist or wheel.
 - Claude Code marketplace plugin under `integrations/claude` (not shipped in the PyPI sdist or wheel).
 - Claude Code plugin SessionStart hook (`startup`) injects a short hard-rule reminder. Still outside the PyPI sdist and wheel.
 
