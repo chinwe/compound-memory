@@ -41,6 +41,40 @@ def cli_argv(explicit: str | None) -> list[str]:
     return [uv, "run", "--project", str(REPO), "compound-memory"]
 
 
+def _sanitize_text(text: str) -> str:
+    """自由文本脱敏：仓库绝对前缀与用户 home 前缀换占位符。
+
+    先替换 REPO 再替换 home：REPO 在 home 之下，顺序反了会先把 REPO 前段
+    吃掉导致匹配不上。
+    """
+    text = text.replace(str(REPO), "<repo>")
+    home = str(Path.home())
+    if home and home != "/":
+        text = text.replace(home, "~")
+    return text
+
+
+def display_command(command: list[str]) -> list[str]:
+    """展示用命令：--root 值只留末段目录名，其余 token 过 _sanitize_text。
+
+    快照笔记会入库，隐私门禁拦本机绝对路径（/Users/<user> 等）；实际执行
+    仍用原命令，这里只管写进笔记的展示形态。
+    """
+    display: list[str] = []
+    redact_next = False
+    for token in command:
+        if redact_next:
+            display.append(Path(token).name)
+            redact_next = False
+            continue
+        if token == "--root":
+            redact_next = True
+            display.append(token)
+            continue
+        display.append(_sanitize_text(token))
+    return display
+
+
 def build_note(
     *,
     stamp: str,
@@ -50,8 +84,8 @@ def build_note(
     json_name: str,
     stats_ok: bool,
 ) -> str:
-    """给人看的旁注。数字以相邻 JSON 为准，这里不重算。"""
-    err = stderr.strip() or "(empty)"
+    """给人看的旁注。数字以相邻 JSON 为准，这里不重算。命令与 stderr 先脱敏。"""
+    err = _sanitize_text(stderr).strip() or "(empty)"
     payload = "raw stdout (not JSON)" if not stats_ok else f"`{json_name}`"
     lines = [
         f"# stats snapshot {stamp}",
@@ -61,7 +95,7 @@ def build_note(
         "They do not show that memory changed task outcomes. "
         "Effectiveness is the A/B sheet in `docs/eval/results/TEMPLATE.md`.",
         "",
-        f"- Command: `{' '.join(command)}`",
+        f"- Command: `{' '.join(display_command(command))}`",
         f"- Exit: {exit_code}",
         f"- JSON: {payload}",
         "",
