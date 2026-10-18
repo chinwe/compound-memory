@@ -109,6 +109,46 @@ single-session-preference 0.570 vs 0.550（recall@5 0.867 vs 0.833，recall@20 1
   macOS 6,056s 的 ~3.6x——长会话 512-token padding 主导，短文本场景
   的 6x 差距在此收敛）。
 
+## 2026-10-18 回归（词面，当前 main）
+
+10-04 基线之后检索路径经过 `is_retrievable`（#67）、`active_neighbors` 收口、rank/explain 与 project scope。本轮只复测**检索层**（阶段 A，零 LLM）：问题原文能否召回 `answer_session_ids`。不把这些数字当成产品效果。向量路未跑。阶段 B 仍未跑。
+
+新产物都带 `-20261018` 后缀（`runs/retrieval-lex-50q-20261018.json`、`runs/retrieval-lex-500q-20261018.json` 及对应 mapping）。`retrieval-lex-500q.json`、`retrieval-lex-50q.json` 与 `-win` 变体未改。
+
+冒烟是前 50 题（全是 `single-session-user`），对照归档 `runs/retrieval-lex-50q.json`。recall@20 持平，MRR@20 下降 0.021，超过 0.01 门禁，因此继续跑了词面全量 500。
+
+| 指标 | 2026-10-04（50 题） | 2026-10-18 冒烟 | Δ |
+|---|---|---|---|
+| recall@5 | 1.000 | 1.000 | 0 |
+| recall@10 | 1.000 | 1.000 | 0 |
+| recall@20 | 1.000 | 1.000 | 0 |
+| MRR@20 | 0.914 | 0.893 | −0.021 |
+
+这 0.021 落在 BM25 饱和后的并列上：冒烟里挪动名次的题，top 命中都是 similarity=1.0、score=0.85（episode 的 τ=30 天，会话日期已把 recency 压到 0.5 底座；把 clock 钉在 2026-10-04 仍然是 0.893）。分数打到四位小数后完全相同，名次由候选路径序决定，路径里含随机 id。同一次代码再灌这 50 题，MRR 是 0.9057。50 题 MRR 单独不能当回归结论。
+
+全量 500（`runs/retrieval-lex-500q-20261018.json`；检索 29s，灌库 1690s）对照归档 `runs/retrieval-lex-500q.json`：
+
+| 指标 | 2026-10-04 | 2026-10-18 | Δ |
+|---|---|---|---|
+| recall@5 | 0.966 | 0.968 | +0.002 |
+| recall@10 | 0.980 | 0.982 | +0.002 |
+| recall@20 | 0.994 | 0.996 | +0.002 |
+| MRR@20 | 0.8886 | 0.8907 | +0.0021 |
+
+**检索层没有退步。** 四项相对 10-04 归档都没有下降；变化幅度约 0.002，小于 0.01 门禁。同日重跑基线提交 `33525c9`（同一数据集、同一脚本协议）得到的 recall@5/10/20 与归档逐位一致，MRR@20 为 0.8907，与本次全量相同。
+
+掉出 top-k 的题（对照这次 `33525c9` 重跑的逐题名次；归档 JSON 没有逐题 id）：
+
+| 门槛 | 掉出的 question_id |
+|---|---|
+| top-5 | （无） |
+| top-10 | （无） |
+| top-20 | （无） |
+
+映射层面多出来的一次 top-20 命中是 `982b5123_abs`（temporal-reasoning，本次第 1）。重跑里该文件正文已经是证据会话、排在第 1，但 mem id `20261018_9de66b` 同时写进了另一个 ns，mapping 留下了另一个 session id，评分脚本把它记成未命中。6 位 hex 的 id 碰撞是这条协议的既有噪声（归档 mapping 23843 个键 / 23867 个 session，本次 23854 个键）。其余 24 处名次变化都在 score=0.85 的并列组内部，分数不变。
+
+分题型相对归档 JSON 的 MRR 会摆动（temporal-reasoning 0.8897→0.8709）。同日重跑旧代码时该题型 MRR 已是 0.8659，本次 0.8709 高于这次重跑。preference 的 recall@20 在归档里是 0.9667，重跑与本次都是 1.000。
+
 ## 阶段 B（端到端 QA，未跑）
 
 标准 LongMemEval 报的是端到端 QA 准确率（LLM 生成 + LLM judge），需要 OpenAI 兼容
