@@ -304,6 +304,15 @@ uvx --from compound-memory compound-memory health-snapshot
                                       #   同日多次调用即多行，去重归 health-trend 读面。
                                       #   指标单一来源是 stats，不另算；health/ 不入 git（与 index/ 同型）。
                                       #   退出码恒 0（身份状态记录在行内 attestation，定时任务不误报）
+uvx --from compound-memory compound-memory maintain
+                                      #   一条日常维护（CLI-only，不是 MCP 工具）：
+                                      #   只读 dream（写 <root>/distill/last-plan.json，不带 --propose）
+                                      #   → 可选 decay → health-snapshot。
+                                      #   默认不 decay；--with-decay 或 RUN_DECAY=1（DECAY=1 同义）才衰减。
+                                      #   快照在衰减之后。任一步失败非 0，stderr 点名该步，后续不跑。
+                                      #   不调用 dream-apply / distill-apply。
+                                      #   distill-prepare.sh 仍只跑 dream。
+                                      #   薄包装 scripts/daily-maintain.sh 只 exec 本命令
 uvx --from compound-memory compound-memory health-trend --days 7
                                       #   读最近 N 天趋势（读面现算）：按 date 取每日最后一条，
                                       #   输出总量 / 归档率 / 平均置信度 / review 队列长度 / 蒸馏产出 /
@@ -380,7 +389,13 @@ uvx --from compound-memory compound-memory distill-apply "合并后的经验" in
 | 失败反馈 | 教训误导了你就 `memory_feedback`，`outcome: failure` |
 | 错教训作废 | 新写纠正正文 + 归档源，走既有 `memory_write` / `distill-apply`。负向段与矛盾对不放宽 `dream-apply` |
 
-launchd（macOS）/ systemd user timer（Linux）/ cron 每天 09:00 自动跑只读 `dream`，把报告写到 `<root>/distill/last-plan.json`（`distill` 段即候选清单，含负向段与矛盾对；安装物与命令见 README「定时蒸馏准备」）。定时脚本不调用 `dream-apply`。各宿主 Agent 任意会话中发现报告有新候选时按需处理即可。
+只刷新蒸馏报告时，launchd（macOS）/ systemd user timer（Linux）/ cron 每天 09:00 跑只读 `dream`（`scripts/distill-prepare.sh`），报告写到 `<root>/distill/last-plan.json`（`distill` 段即候选清单，含负向段与矛盾对；安装物见 README「定时蒸馏准备」）。一条定时任务覆盖 dream、可选衰减和健康快照时，改挂 `compound-memory maintain`（或薄包装 `scripts/daily-maintain.sh`）。默认 dream + health-snapshot，decay 仅在 `--with-decay` 或 `RUN_DECAY=1`（`DECAY=1`）时跑。`--propose` / `dream-apply` / `distill-apply` 不进定时任务（ADR-0001 / #72 / #97）。各宿主 Agent 任意会话中发现报告有新候选时按需处理即可。
+
+```bash
+# 默认不衰减。检出仓库后：
+0 9 * * * COMPOUND_MEMORY_ROOT=$HOME/.agents/memory $HOME/.local/bin/uv run --project <仓库> compound-memory maintain >> $HOME/.agents/memory/distill/daily-maintain.log 2>&1
+# 要衰减：同一行前加 RUN_DECAY=1
+```
 
 ## 8. 故障排查
 

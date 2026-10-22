@@ -57,6 +57,8 @@ PROPOSE_MIN_TOKEN_COVERAGE = 0.5
 
 # 候选包文件名。目录是 gitignore 的 distill/，与 last-plan.json 同级。
 DREAM_PROPOSALS_FILENAME = "dream-proposals.json"
+# 只读 dream 报告文件名。distill-prepare.sh 重定向 stdout 到这里；CLI maintain 写同一路径。
+LAST_PLAN_FILENAME = "last-plan.json"
 
 REASON_POSSIBLE_DUP = "possible_dup_of is report-only"
 REASON_PROMOTION_OPT_IN = "promotion_candidate requires explicit opt-in"
@@ -240,6 +242,15 @@ def dream(
 def dream_proposals_path(root: Path) -> Path:
     """候选包的唯一落点。CLI `--propose` 写这里；dream 报告不携带这份列表。"""
     return root / "distill" / DREAM_PROPOSALS_FILENAME
+
+
+def last_plan_path(root: Path) -> Path:
+    """只读 dream 报告的落点（`<root>/distill/last-plan.json`）。
+
+    distill-prepare.sh 把 `dream` 的 stdout 重定向到这里；CLI `maintain` 写同一文件。
+    目录在库 `.gitignore`，写出不产生 commit。
+    """
+    return root / "distill" / LAST_PLAN_FILENAME
 
 
 def _evidence_total(mem: Memory) -> int:

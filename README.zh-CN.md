@@ -269,7 +269,7 @@ Python ≥ 3.11，macOS / Linux / Windows。Windows 与 Linux 一样进 CI 矩�
 - 写锁：POSIX `flock` 一直等到获得锁；Windows 用 `msvcrt` 字节范围锁，最多等 30 秒，超时则写入失败（`WriteLockError`），不会无锁继续。锁文件本身创建失败时两端都告警并降级无锁（文件系统坏了，不是争锁）。
 - 原子写在 Windows 上跳过 POSIX 权限位对齐。
 - 向量 extra 不在 Windows CI 里安装；缺依赖就是词面检索，由 `stats.retrieval` 标明。
-- 定时蒸馏：macOS launchd、Linux systemd、cron。没有现成的 Windows 任务计划程序模板，需要自己把 `scripts/distill-prepare.sh` 挂上去。
+- 定时蒸馏：macOS launchd、Linux systemd、cron。没有现成的 Windows 任务计划程序模板，需要自己把 `scripts/distill-prepare.sh`（只跑 dream）或 `compound-memory maintain` 挂上去。
 - 自动 commit 需要 `PATH` 上有 git。
 
 ## CLI
@@ -287,6 +287,7 @@ uv run compound-memory decay          # cron 定时跑
 uv run compound-memory revive <id>    # 复活归档记忆（CLI 唯一入口）
 uv run compound-memory distill-plan   # 蒸馏候选清单：suggested_action 只有 merge / promote / review（同 key 簇带 source_ids；弱相似标 review）
 uv run compound-memory dream --ns _shared   # 只读编排报告：distill 段 + decay_signals + 相等的 stats 快照（不写盘、无 LLM）
+uv run compound-memory maintain            # 一条日常维护：只读 dream → 可选 decay → health-snapshot。默认不 decay；--with-decay 或 RUN_DECAY=1（DECAY=1）才衰减。不带 --propose，不调用 dream-apply
 uv run compound-memory dream --ns _shared --propose  # 系统提议，人工 dream-apply：合格簇写入 <root>/distill/dream-proposals.json（默认关；无合格簇写 []）
 uv run compound-memory dream-apply --proposals apply.json --source agent-workbuddy --dry-run  # 写盘门槛预览；去掉 --dry-run 才对入选项调用 distill-apply
 uv run compound-memory distill-apply "合并后的经验" insight agent-workbuddy --sources <id1>,<id2>  # 原子落库：产物(links 溯源, origin=distillation) + 源归档，一次 commit
@@ -336,6 +337,20 @@ systemctl --user list-timers | grep compound-memory   # 验证已加载
 ```
 
 失败要响亮：脚本 `set -eu`，任何一步失败以非 0 退出（`launchctl list` / `systemctl --user list-timers` / cron 邮件可见，日志落 distill/prepare.log）。`distill/` 是运行时产物目录（自动加入库 .gitignore），不产生 commit 噪声——只有 Agent 判断后跑 `distill-apply` 才落一次原子 commit。
+
+## 每日维护（一个定时任务）
+
+`compound-memory maintain` 把日常收成一条命令，顺序固定：只读 `dream`（写入 `<root>/distill/last-plan.json`，与 `dream` 同一份报告，**不带 `--propose`**）→ 可选 `decay` → `health-snapshot`。快照在衰减之后，所以开了衰减时记下的是衰减后的库。**默认是 dream + health-snapshot，decay 关闭**；只有 `--with-decay`，或环境变量 `RUN_DECAY=1`（`DECAY=1` 同义）才跑衰减。任一步失败以非 0 退出，并在 stderr 点名失败步骤，后面的步骤不跑。
+
+`scripts/distill-prepare.sh` 仍是纯 dream 准备路径，默认行为不变。定时任务不跑 `--propose`、`dream-apply`、`distill-apply`（ADR-0001 / #72 / #97）：提议和合并留在人/Agent 的显式步骤。`scripts/daily-maintain.sh` 只解析 `uv` 的 PATH 然后 exec `compound-memory maintain`，步骤编排不在 shell 里。
+
+检出仓库后，一条 cron 即可（默认不衰减）：
+
+```bash
+0 9 * * * COMPOUND_MEMORY_ROOT=$HOME/.agents/memory $HOME/.local/bin/uv run --project <仓库> compound-memory maintain >> $HOME/.agents/memory/distill/daily-maintain.log 2>&1
+```
+
+要衰减就在同一行前面加 `RUN_DECAY=1`。launchd 的 `ProgramArguments` 可以是同一串 `uv run --project <仓库> compound-memory maintain`（`EnvironmentVariables` 里设 `COMPOUND_MEMORY_ROOT`；只有要衰减时才设 `RUN_DECAY`）。PATH 里没有 uv 时改挂薄包装：`/bin/sh <仓库>/scripts/daily-maintain.sh`，并设置 `UV_BIN`。定时任务只刷新 dream 报告时继续用 `distill-prepare.sh`。
 
 ## 开发
 

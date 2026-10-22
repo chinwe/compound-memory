@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- CLI `maintain` runs one daily pass: read-only `dream` (writes `<root>/distill/last-plan.json`, no `--propose`), then optional `decay`, then `health-snapshot`. Decay stays off unless `--with-decay` or `RUN_DECAY=1` (`DECAY=1` alias). A failing step exits non-zero and names that step. `scripts/daily-maintain.sh` only resolves uv/PATH and execs this command. `scripts/distill-prepare.sh` stays dream-only. `--propose`, `dream-apply`, and `distill-apply` stay out of timers (ADR-0001 / #72 / #97). No new MCP tool.
+
 ## 0.5.9 - 2026-10-18
 
 - CLI `dream --propose` writes `<root>/distill/dream-proposals.json` in the existing `dream-apply` JSON-list shape (`content`, `type`, `source_ids`, `key`). Plain `dream` stays read-only with the same stdout and no proposals file. The gate is ADR-0011: same type and key, at least 3 memories, pairwise content token coverage at least 0.5, evidence total at least 3, and no pending contradiction. When nothing qualifies, the report still prints and the file is `[]`. Schedulers keep calling `dream` without `--propose`. No new MCP tool (#98 / #97).

@@ -1,6 +1,6 @@
 # dream --propose：显式写出可 dream-apply 的候选合并包，默认关闭
 
-（#97，母议题 #96 只取 P0-2 这一刀。）`dream` 默认仍是 ADR-0001 的只读报告。加上 **`--propose`** 时，另外写出一份已经是 `dream-apply` 输入形状的合并提议；人读过、可改、再跑 `dream-apply`。系统提议，人工批准。没有 `--auto`（那个名字像自动落库）。没有 `--apply`。不调用 `dream_apply`，不新增 MCP tool，定时脚本 `scripts/distill-prepare.sh` 继续只跑不带该 flag 的 `dream`。
+（#97，母议题 #96 只取 P0-2 这一刀。）`dream` 默认仍是 ADR-0001 的只读报告。加上 **`--propose`** 时，另外写出一份已经是 `dream-apply` 输入形状的合并提议；人读过、可改、再跑 `dream-apply`。系统提议，人工批准。没有 `--auto`（那个名字像自动落库）。没有 `--apply`。不调用 `dream_apply`，不新增 MCP tool，定时脚本 `scripts/distill-prepare.sh` 继续只跑不带该 flag 的 `dream`。CLI `maintain`（及薄包装 `scripts/daily-maintain.sh`）同样不带 `--propose`，也不调用 dream-apply。
 
 **唯一输出。** 包只写 `<root>/distill/dream-proposals.json`（与 `last-plan.json` 同级，`distill/` 已在库 `.gitignore`，这次写出不产生 commit）。文件内容就是 JSON 列表，没有外套对象。stdout 仍是原来的只读报告，形状不变，列表不进报告。不设第二条通道（不打到 stdout，也不另给一个「报告里的 proposals 字段」）。`--propose` 每次都覆盖该文件。不加 flag 时不创建、不覆盖、不删除它。
 

@@ -557,3 +557,7 @@ class TestTimersStayReadOnly:
         assert "dream-apply" not in code
         for path in scripts.glob("*distill-prepare*"):
             assert "dream-apply" not in _code(path.read_text(encoding="utf-8"))
+        daily = _code((scripts / "daily-maintain.sh").read_text(encoding="utf-8"))
+        assert "compound-memory maintain" in daily
+        assert "dream-apply" not in daily
+        assert "--propose" not in daily

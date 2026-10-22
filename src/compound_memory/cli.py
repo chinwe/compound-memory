@@ -17,7 +17,7 @@ from .extraction import extract, supported_hosts_summary_en
 from .health import append_snapshot, trend
 from .index import atomic_write_text
 from .storage import DISTILL_DUP_SIM_THRESHOLD, MEMORY_TYPES, MemoryStore, PROMOTION_USES_THRESHOLD, default_root
-from .storage.dream import dream_proposals_path
+from .storage.dream import dream_proposals_path, last_plan_path
 from .storage.distill import SUGGESTED_ACTIONS
 from .storage.gitlayer import probe_repo
 from .storage.locking import WriteLockError, probe_write_lock
@@ -366,6 +366,101 @@ def cmd_health_snapshot(args: argparse.Namespace) -> None:
     _emit(append_snapshot(Path(args.root), store.stats(), store.today()))
 
 
+def _decay_enabled(args: argparse.Namespace) -> bool:
+    """衰减默认关。--with-decay、RUN_DECAY=1、DECAY=1 任一即开，整次只跑一遍。"""
+    if args.with_decay:
+        return True
+    return os.environ.get("RUN_DECAY") == "1" or os.environ.get("DECAY") == "1"
+
+
+def _maintain_store(args: argparse.Namespace) -> MemoryStore:
+    """与 dream/decay 同开库；--now 钉住 clock，供衰减谓词与快照日期共用。"""
+    if args.now:
+        day = dt.date.fromisoformat(args.now)
+        return MemoryStore(
+            Path(args.root),
+            embedder=auto_encoder(),
+            agent_id=_agent_id_from_env(),
+            clock=lambda: day,
+        )
+    return _open_store(args)
+
+
+def _maintain_log(message: str) -> None:
+    stamp = dt.datetime.now().isoformat(timespec="seconds")
+    print(f"[{stamp}] maintain: {message}", file=sys.stderr)
+
+
+def _fail_step(step: str, exc: Exception) -> int:
+    """点名失败步骤后非 0 退出。调用方错误仍走 main 的 exit 2 翻译。"""
+    _maintain_log(f"FAILED step={step}: {exc}")
+    if isinstance(exc, (ValueError, PermissionError, WriteLockError)):
+        raise exc
+    return 1
+
+
+def cmd_maintain(args: argparse.Namespace) -> int:
+    """dream（只读报告落盘）→ 可选 decay → health-snapshot。任一步失败即停。"""
+    store = _maintain_store(args)
+    ran_decay = _decay_enabled(args)
+    plan_path = last_plan_path(store.root)
+    steps: list[str] = []
+
+    _maintain_log("step=dream")
+    try:
+        report = store.dream(
+            window_days=args.window,
+            min_uses=args.min_uses,
+            min_confidence=args.min_confidence,
+            ns=args.ns,
+            reader=args.reader,
+        )
+        # 摘要走 stderr，与 dream 命令同型；文件里是完整只读报告，不含 --propose 产物。
+        print(report["summary"], file=sys.stderr)
+        atomic_write_text(
+            plan_path,
+            json.dumps(report, ensure_ascii=False, indent=2, default=str) + "\n",
+        )
+    except Exception as exc:
+        return _fail_step("dream", exc)
+    steps.append("dream")
+    _maintain_log(f"step=dream ok plan={plan_path}")
+
+    archived: list[str] = []
+    if ran_decay:
+        _maintain_log("step=decay")
+        try:
+            archived = store.decay_sweep()
+        except Exception as exc:
+            return _fail_step("decay", exc)
+        steps.append("decay")
+        _maintain_log(f"step=decay ok archived={len(archived)}")
+    else:
+        _maintain_log("step=decay skipped")
+
+    _maintain_log("step=health-snapshot")
+    try:
+        # 快照在 decay 之后：衰减发生时，行内 stats 反映归档后的库。
+        snap = append_snapshot(store.root, store.stats(), store.today())
+    except Exception as exc:
+        return _fail_step("health-snapshot", exc)
+    steps.append("health-snapshot")
+    _maintain_log(f"step=health-snapshot ok path={snap['path']}")
+    _maintain_log("done")
+
+    payload: dict[str, Any] = {
+        "ok": True,
+        "steps": steps,
+        "decay": ran_decay,
+        "plan": str(plan_path),
+        "health": {"ok": True, "date": snap["date"], "path": snap["path"]},
+    }
+    if ran_decay:
+        payload["archived"] = archived
+    _emit(payload)
+    return 0
+
+
 def cmd_health_trend(args: argparse.Namespace) -> int:
     # 读面纯文件读：不开 store（无 git/锁/索引副作用）；空态是显式结果而非失败。
     # 锚定日因此与 snapshot 的 store.today() 是两源——不开 store 是读面的设计决策，
@@ -675,6 +770,28 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--days", type=int, default=7, help="window in days ending today (inclusive)")
     p.add_argument("--now", default=None, help="ISO date override (testing)")
     p.set_defaults(func=cmd_health_trend)
+    p = sub.add_parser(
+        "maintain",
+        help="daily ops: read-only dream, optional decay, then health-snapshot",
+        description="One operator pass for a launchd/cron job. Order is fixed: "
+        "read-only dream (writes <root>/distill/last-plan.json; same report as "
+        "`dream`, never --propose) → decay only when --with-decay or RUN_DECAY=1 "
+        "(DECAY=1 is an alias) → health-snapshot, so the snapshot sees post-decay "
+        "stats when decay ran. Default is dream + health-snapshot; decay stays off. "
+        "Does not call dream-apply or distill-apply. A failing step exits non-zero "
+        "and names that step; later steps do not run. "
+        "scripts/distill-prepare.sh remains the dream-only prep path. "
+        "scripts/daily-maintain.sh is a thin uv/PATH wrapper around this command. "
+        "Not an MCP tool. --propose and apply stay out of timers (ADR-0001 / #72 / #97).",
+    )
+    p.add_argument("--with-decay", action="store_true", help="run decay before health-snapshot (default off)")
+    p.add_argument("--now", default=None, help="ISO date override for the store clock (testing)")
+    p.add_argument("--window", type=int, default=30, help="recency window in days, passed through to dream")
+    p.add_argument("--min-uses", type=int, default=1, help="activity gate passed through to dream")
+    p.add_argument("--min-confidence", type=float, default=0.5, help="activity gate passed through to dream")
+    p.add_argument("--ns", default="_shared")
+    p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
+    p.set_defaults(func=cmd_maintain)
     return parser
 
 
