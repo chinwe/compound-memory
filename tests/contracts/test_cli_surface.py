@@ -1,10 +1,11 @@
 """CLI 层契约（#25 决议第三优先级）：只钉命令面存在性，行为不重测。
 
-CLI 是薄 adapter：23 个子命令名 + 关键 flags（含 D1/D2 的 link --agent 与
+CLI 是薄 adapter：24 个子命令名 + 关键 flags（含 D1/D2 的 link --agent 与
 review-resolve --reader、ADR-0009 的 forget --agent/--reason、#44 的
 explain --reader 与 search --explain、#69 的 dream --ns/--reader、#72 的
-dream-apply --proposals/--source/--dry-run、doctor 健康检查）不消失即契约；
-结构断言走 argparse 公开解析结果（flag 被消费 = 存在，落进 unknown = 不存在）。
+dream-apply --proposals/--source/--dry-run、doctor 健康检查、maintain 的
+--with-decay）不消失即契约；结构断言走 argparse 公开解析结果
+（flag 被消费 = 存在，落进 unknown = 不存在）。
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import pytest
 
 from compound_memory.cli import build_parser
 
-# 23 个子命令（#25 决议钉定的命令面；#48/ADR-0009 契约变更：16→17 加 forget；
+# 24 个子命令（#25 决议钉定的命令面；#48/ADR-0009 契约变更：16→17 加 forget；
 # #44/spec-52 Explain 载体裁决的契约变更：17→18 加 explain——按 id 证据视图；
 # #69 契约变更：18→19 加 dream——CLI-only 只读编排，MCP 仍为 5；
 # #72 契约变更：19→20 加 dream-apply——显式半自动落库，dream 仍只读，MCP 仍为 5；
@@ -23,11 +24,14 @@ from compound_memory.cli import build_parser
 # #97 契约变更：dream 增加 --propose（默认关，写候选包，不 apply）。
 # #100 契约变更：21→23 加 health-snapshot / health-trend——健康时序 CLI-only
 # 运维动词（stats 单一指标源），MCP 仍为 5。
+# 契约变更：23→24 加 maintain——CLI 日常维护编排（dream → 可选 decay →
+# health-snapshot）。不带 --propose，不调用 dream-apply，不新增 MCP tool。
 # 不加入 git-revert / dream --apply / dream --auto。
 EXPECTED_COMMANDS = {
     "init", "write", "search", "get", "explain", "link", "feedback", "decay", "revive", "forget",
     "distill-plan", "distill-apply", "dream", "dream-apply", "stats", "doctor", "rebuild-index",
     "review-queue", "review-resolve", "git-log", "extract", "health-snapshot", "health-trend",
+    "maintain",
 }
 
 
@@ -43,7 +47,7 @@ def _flag_consumed(parser: argparse.ArgumentParser, argv: list[str]) -> bool:
 
 
 class TestCommandSurface:
-    def test_exactly_twenty_three_subcommands(self):
+    def test_exactly_twenty_four_subcommands(self):
         assert set(_subcommands(build_parser())) == EXPECTED_COMMANDS
 
 
@@ -99,6 +103,9 @@ class TestKeyFlags:
             ("review-resolve-uphold", ["review-resolve", "--uphold"]),
             # 运维类
             ("decay-now", ["decay", "--now", "2026-10-01"]),
+            ("maintain-with-decay", ["maintain", "--with-decay"]),
+            ("maintain-now", ["maintain", "--now", "2026-10-01"]),
+            ("maintain-reader", ["maintain", "--ns", "agent-zcode", "--reader", "zcode"]),
             ("review-resolve-all", ["review-resolve", "--all"]),
             ("git-log-limit", ["git-log", "--limit", "10"]),
         ],
@@ -119,3 +126,6 @@ class TestKeyFlags:
             ["dream-apply", "--proposals", "p.json", "--source", "agent-a", "--include-forget"],
         )
         assert "git-revert" not in _subcommands(build_parser())
+        # maintain 编排只读 dream，不挂提议/落库开关
+        assert not _flag_consumed(build_parser(), ["maintain", "--propose"])
+        assert not _flag_consumed(build_parser(), ["maintain", "--apply"])
