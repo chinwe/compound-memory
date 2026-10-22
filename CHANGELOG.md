@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-- CLI `maintain` runs one daily pass: read-only `dream` (writes `<root>/distill/last-plan.json`, no `--propose`), then optional `decay`, then `health-snapshot`. Decay stays off unless `--with-decay` or `RUN_DECAY=1` (`DECAY=1` alias). A failing step exits non-zero and names that step. `scripts/daily-maintain.sh` only resolves uv/PATH and execs this command. `scripts/distill-prepare.sh` stays dream-only. `--propose`, `dream-apply`, and `distill-apply` stay out of timers (ADR-0001 / #72 / #97). No new MCP tool.
+## 0.5.10 - 2026-10-22
+
+- CLI `maintain` is one daily pass: read-only `dream` (writes `<root>/distill/last-plan.json`, no `--propose`), then optional `decay`, then `health-snapshot`. Decay stays off unless `--with-decay` or `RUN_DECAY=1` (`DECAY=1` alias). A failing step exits non-zero and names that step. `scripts/daily-maintain.sh` is a thin optional wrapper that only resolves uv/PATH and execs this command. `scripts/distill-prepare.sh` stays dream-only. `--propose`, `dream-apply`, and `distill-apply` stay out of maintain and out of timers (ADR-0001 / #72 / #97). No new MCP tool (#102).
 
 ## 0.5.9 - 2026-10-18
 
