@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- WorkBuddy/CodeBuddy and ZCode marketplace plugins bumped to 0.1.2 for compound-memory 0.5.10 alignment. Outside the PyPI sdist and wheel.
 - Claude Code marketplace plugin bumped to 0.1.3 so marketplace clients refresh against compound-memory 0.5.10 (CLI `maintain`). The bundled skill stays the thin wrapper, and deep rules stay at the canonical skill URL. Outside the PyPI sdist and wheel.
 
 ## 0.5.10 - 2026-10-22
