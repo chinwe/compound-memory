@@ -1,3 +1,3 @@
 """compound-memory: local multi-agent shared memory with compounding."""
 
-__version__ = "0.5.10"
+__version__ = "0.5.11"

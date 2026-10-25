@@ -2,13 +2,15 @@
 
 ## Unreleased
 
-- New memory ids are `YYYYMMDD_` plus the full uuid4 hex (32 characters). Allocation runs under the write lock and retries when that id already names a file in the active or archive tree, so a collision never overwrites and cannot alias `find` or the vector index. Existing `YYYYMMDD_` + 6 hex files still read (#109).
-- Writes reject a `confidence` that is a bool, a non-finite float, or outside `[0, 1]` with `ValueError` before creating a file. `0.0`, `1.0`, and ordinary floats still store. CLI `distill-apply` and internal writes share this check. A leading minus is not a new flag: `--confidence -inf` is parsed as a number (same as `--confidence=-inf`) and then rejected. MCP `memory_write` does not gain a confidence parameter (#110).
-- The same-host success-cap decision is ADR-0012 (`docs/adr/0012-same-host-success-cap.md`). ADR-0011 is only the dream `--propose` pack. Spec, README, and the feedback contract text now name `host_bumps` and the 0.3 same-host cap (#111).
-- Same `MemoryStore` write lock no longer treats another thread's reentry depth as its own. A process-local mutex is taken first, and lock/batch depth is thread-local, so concurrent feedback on one store cannot drop `uses` (#107).
-- Extraction drops password/account phrases from fact candidates and redacts password/token/key-shaped text before writing `extract/last-candidates.json`. Sentence splits use each punctuation mark, so one turn can yield multiple candidates (#107). Search and read paths are unchanged.
-- WorkBuddy/CodeBuddy and ZCode marketplace plugins bumped to 0.1.2 for compound-memory 0.5.10 alignment. Outside the PyPI sdist and wheel.
-- Claude Code marketplace plugin bumped to 0.1.3 so marketplace clients refresh against compound-memory 0.5.10 (CLI `maintain`). The bundled skill stays the thin wrapper, and deep rules stay at the canonical skill URL. Outside the PyPI sdist and wheel.
+## 0.5.11 - 2026-10-25
+
+- New memory ids are `YYYYMMDD_` plus the full uuid4 hex (32 characters). Allocation runs under the write lock and retries when that id already names a file in the active or archive tree, so a collision never overwrites and cannot alias `find` or the vector index. Existing `YYYYMMDD_` + 6 hex files still read (#109 / #113).
+- Writes reject a `confidence` that is a bool, a non-finite float, or outside `[0, 1]` with `ValueError` before creating a file. `0.0`, `1.0`, and ordinary floats still store. CLI `distill-apply` and internal writes share this check. A leading minus is not a new flag: `--confidence -inf` is parsed as a number (same as `--confidence=-inf`) and then rejected. MCP `memory_write` does not gain a confidence parameter (#110 / #113).
+- The same-host success-cap decision is ADR-0012 (`docs/adr/0012-same-host-success-cap.md`). ADR-0011 is only the dream `--propose` pack. Spec, README, and the feedback contract text now name `host_bumps` and the 0.3 same-host cap (#111 / #113).
+- Same `MemoryStore` write lock no longer treats another thread's reentry depth as its own. A process-local mutex is taken first, and lock/batch depth is thread-local, so concurrent feedback on one store cannot drop `uses` (#107 / #108).
+- Extraction drops password/account phrases from fact candidates and redacts password/token/key-shaped text before writing `extract/last-candidates.json`. Sentence splits use each punctuation mark, so one turn can yield multiple candidates (#107 / #108). Search and read paths are unchanged.
+- WorkBuddy/CodeBuddy and ZCode marketplace plugins bumped to 0.1.3 for compound-memory 0.5.11 alignment. Outside the PyPI sdist and wheel.
+- Claude Code marketplace plugin bumped to 0.1.4 so marketplace clients refresh against compound-memory 0.5.11. The bundled skill stays the thin wrapper, and deep rules stay at the canonical skill URL. Outside the PyPI sdist and wheel.
 
 ## 0.5.10 - 2026-10-22
 
