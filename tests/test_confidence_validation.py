@@ -67,24 +67,27 @@ class TestConfidenceRejectedBeforeDisk:
         root = tmp_path / "cli-conf"
         assert cli_main(["--root", str(root), "write", "source body", "episode", "agent-a"]) == 0
         mem_id = json.loads(capsys.readouterr().out)["id"]
-        for raw in ("nan", "inf", "-inf", "-0.1", "1.5"):
-            code = cli_main(
-                [
-                    "--root",
-                    str(root),
-                    "distill-apply",
-                    "should not land",
-                    "insight",
-                    "agent-a",
-                    "--sources",
-                    mem_id,
-                    "--confidence",
-                    raw,
-                ]
-            )
-            assert code == 2
+        # 空格分隔：`--confidence -inf` 会被 argparse 当成新旗标。CLI 先拼成
+        # `--confidence=-inf`，再由 write_new 拒绝（退出码 2，JSON 校验错误）。
+        for raw in ("nan", "inf", "-inf", "-0.1", "1.5", "--confidence=-inf"):
+            args = [
+                "--root",
+                str(root),
+                "distill-apply",
+                "should not land",
+                "insight",
+                "agent-a",
+                "--sources",
+                mem_id,
+            ]
+            if raw.startswith("--"):
+                args.append(raw)
+            else:
+                args.extend(["--confidence", raw])
+            code = cli_main(args)
+            assert code == 2, raw
             err = json.loads(capsys.readouterr().err)
-            assert "confidence" in err["error"]
+            assert "finite number" in err["error"]
         files = list((root / "namespaces").rglob("*.md"))
         assert len(files) == 1
         assert mem_id in files[0].name

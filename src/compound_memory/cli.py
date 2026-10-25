@@ -795,8 +795,53 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# type=float 的选项。argparse 把下一个以 `-` 开头的 token 当成新旗标，
+# `--confidence -inf` / `--confidence -0.1` 会在校验前变成
+# "expected one argument"（#110）。能 float() 的值先拼成 `--opt=value`。
+_FLOAT_OPTIONS = frozenset({"--confidence", "--min-confidence"})
+
+
+def _is_float_token(token: str) -> bool:
+    """下一个 argv 是否是 float() 能读的数（含 nan / inf / 负数）。
+
+    长选项（`--ns`）不是数值，留给原来的旗标解析。
+    """
+    if token.startswith("--"):
+        return False
+    try:
+        float(token)
+    except ValueError:
+        return False
+    return True
+
+
+def _bind_float_options(argv: list[str]) -> list[str]:
+    """把 `--confidence -inf` 收成 `--confidence=-inf`，再交给 argparse。
+
+    已经是 `--confidence=nan` 的形式不动。拼不上的下一个 token（不是数）
+    留给 argparse 报 invalid float。校验仍在 write_new，这里只保证数值进得了参数。
+    """
+    bound: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if (
+            token in _FLOAT_OPTIONS
+            and index + 1 < len(argv)
+            and _is_float_token(argv[index + 1])
+        ):
+            bound.append(f"{token}={argv[index + 1]}")
+            index += 2
+            continue
+        bound.append(token)
+        index += 1
+    return bound
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    if argv is None:
+        argv = sys.argv[1:]
+    args = build_parser().parse_args(_bind_float_options(list(argv)))
     if args.root is None:
         args.root = default_root()
     try:
