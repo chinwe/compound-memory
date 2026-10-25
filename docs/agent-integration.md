@@ -338,6 +338,7 @@ uvx --from compound-memory compound-memory review-resolve <废置id> [--reader <
 uvx --from compound-memory compound-memory rebuild-index  # 手编已有文件内容后重建检索缓存
 uvx --from compound-memory compound-memory extract <transcript|dir>  # 会话抽取清单（P0）：确定性扫描 →
                                       #   extract/last-candidates.json；Agent 逐条确认后 memory_write 落库
+                                      #   密码/账号句式不进候选；落盘前脱敏密码、token、密钥形态（#107）
                                       #   transcript 按内容自动判别四种形态（WorkBuddy session log /
                                       #   ZCode 会话库 sqlite / Claude Code session log / dsh zstd session）；
                                       #   传目录批量扫：extract ~/.workbuddy/projects 或 ~/.claude/projects

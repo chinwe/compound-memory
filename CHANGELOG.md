@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Same `MemoryStore` write lock no longer treats another thread's reentry depth as its own. A process-local mutex is taken first, and lock/batch depth is thread-local, so concurrent feedback on one store cannot drop `uses` (#107).
+- Extraction drops password/account phrases from fact candidates and redacts password/token/key-shaped text before writing `extract/last-candidates.json`. Sentence splits use each punctuation mark, so one turn can yield multiple candidates (#107). Search and read paths are unchanged.
 - WorkBuddy/CodeBuddy and ZCode marketplace plugins bumped to 0.1.2 for compound-memory 0.5.10 alignment. Outside the PyPI sdist and wheel.
 - Claude Code marketplace plugin bumped to 0.1.3 so marketplace clients refresh against compound-memory 0.5.10 (CLI `maintain`). The bundled skill stays the thin wrapper, and deep rules stay at the canonical skill URL. Outside the PyPI sdist and wheel.
 

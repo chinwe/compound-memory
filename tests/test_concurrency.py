@@ -169,6 +169,109 @@ class TestConcurrentWriters:
         assert mem is not None
         assert mem.uses == 2 * rounds, f"lost updates under concurrent feedback: uses={mem.uses}"
 
+    def test_same_store_parallel_feedback_no_lost_update(self, tmp_path: Path) -> None:
+        """同一 MemoryStore 上的双线程 feedback：重入深度不得当成跨线程直通。
+
+        上面的用例给每个线程新建 store，flock 仍能串行化。MCP 持有的是单例
+        store：实例级 lock_depth>0 时另一线程会走重入快路径、跳过 flock，
+        两轮 feedback 读到同一快照并互相覆盖（#107）。
+
+        start barrier 让两线程一起进入循环。第一次落盘再等一次 in-section
+        barrier：误重入时对端也在临界区内，两边一起放行、写出同一快照；
+        锁正确时对端进不了 _save，本线程超时后单独继续。最终 uses 必须等于
+        两边轮数之和。纯靠调度去撞 lock_depth 窗口会漏报（临界区一短就串行成功）。
+        """
+        root = tmp_path / "memroot"
+        store = _make_store(root)
+        mem_id = store.write("hot memory", type="fact", source="agent-a")["id"]
+        rounds = 8
+        start = threading.Barrier(2)
+        in_section = threading.Barrier(2)
+        errors: list[str] = []
+        real_save = store._save
+        state = {"n": 0}
+        state_lock = threading.Lock()
+
+        def overlapped_save(mem: object) -> None:
+            participate = False
+            with state_lock:
+                if state["n"] < 2:
+                    state["n"] += 1
+                    participate = True
+            if participate:
+                try:
+                    # 对端若能在本线程仍持锁时进入落盘，会立刻凑齐；否则超时。
+                    in_section.wait(timeout=2.0)
+                except threading.BrokenBarrierError:
+                    pass
+            real_save(mem)  # type: ignore[arg-type]
+
+        store._save = overlapped_save  # type: ignore[method-assign]
+
+        def bump(agent: str) -> None:
+            buf = io.StringIO()
+            try:
+                start.wait()
+                with redirect_stderr(buf):
+                    for _ in range(rounds):
+                        store.feedback(mem_id, agent=agent)
+            except Exception as exc:  # noqa: BLE001 - 并发故障形态收集进断言
+                import traceback
+
+                errors.append(f"{agent}: {exc!r}\n{traceback.format_exc()}")
+            stderr = buf.getvalue()
+            if "git add failed" in stderr or "git commit failed" in stderr:
+                errors.append(f"{agent}: git failure surfaced on stderr:\n{stderr}")
+
+        threads = [threading.Thread(target=bump, args=(f"agent-{n}",)) for n in "bc"]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(60)
+        assert not any(t.is_alive() for t in threads), "feedback thread hung: deadlock?"
+        assert errors == []
+        mem = store.find(mem_id)
+        assert mem is not None
+        assert mem.uses == 2 * rounds, f"lost updates under same-store concurrent feedback: uses={mem.uses}"
+
+    def test_batch_reentry_stays_on_held_lock(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """同线程 batch 重入仍直通已持有的锁，不再 open .lock，也不降级成无锁写。
+
+        重入若退化成第二次加锁，POSIX 上另一 fd 的 flock 会自锁（本测试挂死）；
+        若退化成锁文件失败的无锁路径，会打出 write lock unavailable。
+        """
+        store = _make_store(tmp_path / "memroot")
+        real_open = os.open
+        opens = {"n": 0}
+
+        def counting_open(path: object, *args: object, **kwargs: object) -> int:
+            if str(path).endswith(".lock"):
+                opens["n"] += 1
+            return real_open(path, *args, **kwargs)  # type: ignore[arg-type]
+
+        depths: list[int] = []
+        real_commit = store._commit
+
+        def probing_commit(message: str) -> None:
+            depths.append(store._write_lock_depth)
+            real_commit(message)
+
+        store._commit = probing_commit  # type: ignore[method-assign]
+        monkeypatch.setattr(os, "open", counting_open)
+        with caplog.at_level(logging.WARNING, logger="compound_memory.storage"):
+            with store.batch("bulk write") as batch_ctx:
+                for i in range(3):
+                    store.write(f"batched {i}", type="fact", source="agent-a")
+                batch_ctx.message = "bulk write test"
+        assert store.stats()["active"] == 3
+        # 外层 batch 打开一次 .lock；批内三次 write 重入，不再打开。
+        assert opens["n"] == 1, f"inner writes re-opened the lock file: opens={opens['n']}"
+        assert any(d > 1 for d in depths), f"inner write did not reenter: depths={depths}"
+        assert all(d > 0 for d in depths)
+        assert not any("write lock unavailable" in r.getMessage() for r in caplog.records)
+
 
 def _mp_worker(root_str: str, name: str, n: int, q: "Queue[tuple]") -> None:
     """真跨进程写入者（#21 验收）：独立进程、独立 store，写 n 条并回报。"""

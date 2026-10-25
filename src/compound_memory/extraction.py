@@ -56,7 +56,8 @@ from .storage import MemoryStore
 STATEMENT_PATTERNS = (
     "我用", "我用的是", "默认用", "以后都", "记住", "偏好",
     "换成", "部署在", "装了", "升级了", "安装了", "部署了", "迁移到",
-    "地址是", "密码是", "账号是", "版本是", "端口是",
+    # 密码/账号不进候选（#107）：命中后原句会落进 last-candidates.json。
+    "地址是", "版本是", "端口是",
 )
 PITFALL_PATTERNS = (
     # 否定指令优先于泛坑描述：「不要用 X」比「有坑」信号更明确
@@ -96,7 +97,26 @@ QUOTE_CHARS = 200  # 候选摘录截断
 # 去重标注阈值：查询 token 被库内条目覆盖率（containment）。不用 normalized BM25——
 # 长句查询的分母惩罚使复述句也只有 ~0.12，结构性偏低；覆盖率对「复述检测」语义正确
 EXTRACT_DUP_COVERAGE = 0.5
-SENTENCE_SPLIT = "。！？!?；;\n"
+# 分句用字符类交给 re.split。str.split 会把整串标点当成一个分隔符（#107）。
+SENTENCE_SPLIT = r"[。！？!?；;\n]+"
+# 抽取候选阶段的脱敏占位。不进记忆检索/读取路径。
+_REDACTED = "[REDACTED]"
+# 值停在空白或句读，避免把同一句后面的普通事实一起吞掉。
+_SECRET_VALUE = r"[^\s。！？!?；;，,]+"
+_CREDENTIAL_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"(?i)(?:password|passwd|pwd|secret|api[\s_-]?key|access[\s_-]?key|"
+        rf"private[\s_-]?key|token|bearer)\s*(?:=|:|：|is\b)\s*{_SECRET_VALUE}"
+    ),
+    re.compile(rf"(?:密码|口令|密钥|令牌)\s*(?:是|为|=|:|：)\s*{_SECRET_VALUE}"),
+    re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{8,}"),
+    re.compile(r"(?<![A-Za-z0-9])(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{8,}"),
+    re.compile(r"(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{8,}"),
+    re.compile(r"(?<![A-Za-z0-9])xox[baprs]-[A-Za-z0-9-]{8,}"),
+    re.compile(r"(?<![A-Za-z0-9])AKIA[0-9A-Z]{16}"),
+    re.compile(r"(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"),
+)
 
 
 def collect_user_texts(raw_texts: Any) -> list[str]:
@@ -284,11 +304,34 @@ def _iter_json_lines(path: Path) -> list[Any]:
 
 def _sentences(text: str) -> list[str]:
     buf: list[str] = []
-    for piece in text.split(SENTENCE_SPLIT):
+    for piece in re.split(SENTENCE_SPLIT, text):
         piece = piece.strip()
         if piece:
             buf.append(piece)
     return buf
+
+
+def _redact_credentials(text: str) -> str:
+    """候选摘录里的密码 / token / 密钥形态换成占位符。
+
+    只给抽取候选用。记忆正文的搜索和读取不走这里。
+    """
+    for pattern in _CREDENTIAL_RES:
+        text = pattern.sub(_REDACTED, text)
+    return text
+
+
+def _redact_candidate_quotes(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """落盘前再过一遍摘录。scan_texts 已经脱敏；这里是写文件的边界。"""
+    redacted: list[dict[str, Any]] = []
+    for cand in candidates:
+        quote = cand.get("quote")
+        if isinstance(quote, str):
+            cleaned = _redact_credentials(quote)
+            if cleaned != quote:
+                cand = {**cand, "quote": cleaned}
+        redacted.append(cand)
+    return redacted
 
 
 def _match_pattern(sentence: str) -> tuple[str, str] | None:
@@ -338,7 +381,9 @@ def scan_texts(
             if matched is None:
                 continue
             suggested_type, signal = matched
-            quote = sentence[:QUOTE_CHARS] + ("…" if len(sentence) > QUOTE_CHARS else "")
+            # 先脱敏再截断：截断切在密钥中间会让形态匹配失败，残段仍会落盘。
+            redacted = _redact_credentials(sentence)
+            quote = redacted[:QUOTE_CHARS] + ("…" if len(redacted) > QUOTE_CHARS else "")
             candidates.append(
                 {
                     "quote": quote,
@@ -550,6 +595,7 @@ def _write_manifest(
     }
     if extra:
         manifest.update(extra)
+    manifest["candidates"] = _redact_candidate_quotes(candidates)
     out_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return {
         "candidates": len(candidates),
