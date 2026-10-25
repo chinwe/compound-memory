@@ -9,6 +9,11 @@ WriteLocker 对象，facade 持有并委托。
 LOCK_ACQUIRE_TIMEOUT_S 抛 OSError。两种「加锁系统调用失败」都 fail-closed：
 WriteLockError，拒绝无锁写入。只有锁文件本身创建失败（文件系统不让放
 .lock）才降级无锁并 warning——那是锁机制不可用，不是争锁超时。
+
+同进程互斥（#107）：先拿进程内 RLock，再谈 flock。lock_depth / batch_depth /
+batch_ops 是线程本地的——只加一把共享 RLock、深度仍放在实例上时，等待线程
+会把别人的 lock_depth>0 当成自己的重入，跳过 flock。同线程的 batch 重入仍
+走深度直通，避免对同一把锁再 open 一次（新 fd 的 flock 会自锁）。
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -153,19 +159,54 @@ class _DeferTarget(Protocol):
     def flush_pending(self) -> None: ...
 
 
+class _LockLocal(threading.local):
+    """本线程的重入与批深。别的线程读到的是自己的 0，不能借此跳过 flock。"""
+
+    def __init__(self) -> None:
+        self.lock_depth = 0  # 写锁重入深度：batch 持锁期间批内动词直通
+        self.batch_depth = 0  # batch() 嵌套深度（恒 0 或 1：嵌套 batch 是调用方错误）
+        self.batch_ops = 0  # 本批延迟的提交计数（批尾消息与"零操作不提交"判据）
+
+
 class WriteLocker:
     """写锁 + batch 协调状态单点（挂在 root 的 .lock 上跨进程互斥，机制见模块 docstring 平台语义）。
 
-    深度状态：lock_depth 写锁重入（batch 持锁期间批内动词直通）、
+    深度状态在线程本地：lock_depth 写锁重入（batch 持锁期间批内动词直通）、
     batch_depth 嵌套深度（恒 0 或 1：嵌套 batch 是调用方错误）、
     batch_ops 本批延迟的提交计数（批尾消息与「零操作不提交」判据）。
+    进入临界区前先拿进程内 RLock（#107），整段临界区持有它。
     """
 
     def __init__(self, root: Path) -> None:
         self._root = root
-        self.lock_depth = 0  # 写锁重入深度：batch 持锁期间批内动词直通
-        self.batch_depth = 0  # batch() 嵌套深度（恒 0 或 1：嵌套 batch 是调用方错误）
-        self.batch_ops = 0  # 本批延迟的提交计数（批尾消息与"零操作不提交"判据）
+        self._local = _LockLocal()
+        # 进程内互斥。深度不放在这把锁旁边的共享 int 上（#107）。
+        self._mutex = threading.RLock()
+
+    @property
+    def lock_depth(self) -> int:
+        # 测试缝：当前线程的重入深度（git_durability 的 TOCTOU 探针读它）
+        return self._local.lock_depth
+
+    @lock_depth.setter
+    def lock_depth(self, value: int) -> None:
+        self._local.lock_depth = value
+
+    @property
+    def batch_depth(self) -> int:
+        return self._local.batch_depth
+
+    @batch_depth.setter
+    def batch_depth(self, value: int) -> None:
+        self._local.batch_depth = value
+
+    @property
+    def batch_ops(self) -> int:
+        return self._local.batch_ops
+
+    @batch_ops.setter
+    def batch_ops(self, value: int) -> None:
+        self._local.batch_ops = value
 
     @contextmanager
     def write_lock(self) -> Iterator[None]:
@@ -174,43 +215,50 @@ class WriteLocker:
         多宿主并发写同一 root 时，git add -A 会扫进他人刚落盘的变更、commit 撞
         index.lock 报错（2026-10-02 实测）；flock 串行化写者后两者皆消。flock 关联
         open file description，同进程重复加锁会自锁——batch 持锁期间批内动词经
-        depth 重入直通。锁文件创建失败（机制不可用）降级无锁并 warning；加锁
-        本身失败或超时则 WriteLockError，拒绝无锁写入（#58）。读路径与检索不持锁
-        （索引缓存自身并发安全，见 Index._save 的唯一临时名）。
+        本线程的 depth 重入直通。另一线程先堵在 RLock 上，看到的 depth 是自己的
+        0，必须再走 flock（#107）。锁文件创建失败（机制不可用）降级无锁并
+        warning；加锁本身失败或超时则 WriteLockError，拒绝无锁写入（#58）。
+        读路径与检索不持锁（索引缓存自身并发安全，见 Index._save 的唯一临时名）。
         """
-        if self.lock_depth > 0:
-            self.lock_depth += 1
+        # 整段临界区持有 RLock：释放后再去 flock，等待者会拿着 RLock 堵在
+        # flock 上，持锁线程回来解锁时反过来堵在 RLock 上，互相死锁。
+        self._mutex.acquire()
+        try:
+            if self._local.lock_depth > 0:
+                self._local.lock_depth += 1
+                try:
+                    yield
+                finally:
+                    self._local.lock_depth -= 1
+                return
+            fd: int | None = None
+            acquired = False
+            try:
+                fd = os.open(self._root / ".lock", os.O_CREAT | os.O_RDWR, 0o644)
+            except OSError as exc:
+                # 锁文件都放不下：没有可等待的锁，维持降级（宁降级勿让单机完全不可写）。
+                logger.warning("write lock unavailable: %s; proceeding unlocked", exc)
+            else:
+                try:
+                    _lock_exclusive(fd)
+                    acquired = True
+                except OSError as exc:
+                    os.close(fd)
+                    raise WriteLockError(
+                        f"write lock not acquired ({exc}); refusing unlocked write"
+                    ) from exc
+            self._local.lock_depth += 1
             try:
                 yield
             finally:
-                self.lock_depth -= 1
-            return
-        fd: int | None = None
-        acquired = False
-        try:
-            fd = os.open(self._root / ".lock", os.O_CREAT | os.O_RDWR, 0o644)
-        except OSError as exc:
-            # 锁文件都放不下：没有可等待的锁，维持降级（宁降级勿让单机完全不可写）。
-            logger.warning("write lock unavailable: %s; proceeding unlocked", exc)
-        else:
-            try:
-                _lock_exclusive(fd)
-                acquired = True
-            except OSError as exc:
-                os.close(fd)
-                raise WriteLockError(
-                    f"write lock not acquired ({exc}); refusing unlocked write"
-                ) from exc
-        self.lock_depth += 1
-        try:
-            yield
+                self._local.lock_depth -= 1
+                if acquired and fd is not None:
+                    try:
+                        _unlock_fd(fd)
+                    finally:
+                        os.close(fd)
         finally:
-            self.lock_depth -= 1
-            if acquired and fd is not None:
-                try:
-                    _unlock_fd(fd)
-                finally:
-                    os.close(fd)
+            self._mutex.release()
 
     def defer_commit(self) -> bool:
         # 批内延迟：commit 收拢到 batch() 退出时一次性执行（单点拦截，各动词无需批式特化）
@@ -234,6 +282,7 @@ class WriteLocker:
           （消息注明 partial）后原样上抛——不存在静默半提交；
         - 嵌套 batch 是调用方错误（ValueError）。
         """
+        # 批深是线程本地的：别的线程正在 batch 不是本线程的嵌套。
         if self.batch_depth > 0:
             raise ValueError("nested batch() is not supported")
         with self.write_lock():  # 全程持锁：批内写穿与批尾 flush+commit 同在临界区

@@ -281,6 +281,89 @@ def test_scan_matches_statement_and_pitfall_skips_noise() -> None:
     assert "天气" not in "".join(c["quote"] for c in cands)
 
 
+def test_credential_phrases_are_not_fact_candidates() -> None:
+    """密码/账号句式不再生成 fact 候选；普通事实「我用的是 macOS」仍在。
+
+    fixture 只用明显的假值，不写真实密钥。
+    """
+    assert "密码是" not in STATEMENT_PATTERNS
+    assert "账号是" not in STATEMENT_PATTERNS
+    cands = scan_texts(
+        [
+            "密码是 demo-not-real",
+            "账号是 demo-user",
+            "我用的是 macOS",
+        ]
+    )
+    assert [c["quote"] for c in cands] == ["我用的是 macOS"]
+    assert cands[0]["suggested_type"] == "fact"
+    blob = json.dumps(cands, ensure_ascii=False)
+    assert "demo-not-real" not in blob
+    assert "demo-user" not in blob
+    # 「token issue」不是赋值形态，普通陈述要留原文。
+    untouched = scan_texts(["记住 token issue 先观察，我用的是 macOS"])
+    untouched_blob = json.dumps(untouched, ensure_ascii=False)
+    assert "token issue" in untouched_blob
+    assert "[REDACTED]" not in untouched_blob
+
+
+def test_secret_shaped_quotes_are_redacted_before_manifest(store: MemoryStore, tmp_path: Path) -> None:
+    """声明句里夹带的密码/token/密钥形态，在候选阶段就脱敏，清单文件不含原文。
+
+    检索/读取不走这条路径；这里只钉抽取清单。假值不是真实密钥。
+    """
+    password = "demo-not-real"
+    token = "demo-token-value"
+    prefixed = "sk-demoPlaceholderKey"
+    text = (
+        f"部署在杭州，密码是 {password}。"
+        "我用的是 macOS。"
+        f"记住 token={token}。"
+        f"默认用编辑器，密钥是 {prefixed}"
+    )
+    cands = scan_texts([text])
+    quotes = [c["quote"] for c in cands]
+    blob = json.dumps(cands, ensure_ascii=False)
+    assert password not in blob
+    assert token not in blob
+    assert prefixed not in blob
+    assert "我用的是 macOS" in quotes
+    assert any("部署在杭州" in q and "[REDACTED]" in q for q in quotes)
+    assert any(q.startswith("记住") and "[REDACTED]" in q for q in quotes)
+
+    db = _zcode_db(tmp_path / "db.sqlite", [("user", [{"type": "text", "text": text}])])
+    extract(db, store)
+    raw = (store.root / "extract" / "last-candidates.json").read_text(encoding="utf-8")
+    assert password not in raw
+    assert token not in raw
+    assert prefixed not in raw
+    assert "[REDACTED]" in raw
+    assert "我用的是 macOS" in raw
+
+
+def test_scan_splits_each_sentence_punctuation() -> None:
+    """分句按每个标点切开，而不是把整串标点当成一个分隔符。"""
+    cn = scan_texts(["我用的是 macOS。默认用 uv。部署在杭州。"])
+    assert [c["quote"] for c in cn] == ["我用的是 macOS", "默认用 uv", "部署在杭州"]
+
+    mixed = scan_texts(
+        ["我用 vim!默认用 uv?部署在杭州;版本是 1\n端口是 22！记住备份？装了 git；升级了 python"]
+    )
+    assert [c["quote"] for c in mixed] == [
+        "我用 vim",
+        "默认用 uv",
+        "部署在杭州",
+        "版本是 1",
+        "端口是 22",
+        "记住备份",
+        "装了 git",
+        "升级了 python",
+    ]
+
+    doubled = scan_texts(["我用 uv。。默认用 pip。"])
+    assert [c["quote"] for c in doubled] == ["我用 uv", "默认用 pip"]
+
+
 def test_scan_caps_candidates() -> None:
     """上限截断：喋喋不休的会话不产生无限清单。"""
     texts = [f"我用工具 {i} 完成部署" for i in range(MAX_CANDIDATES + 10)]
