@@ -55,7 +55,9 @@
 
 ## 按动词的语义意图（store 层，Tier 1 全五要素）
 
-- **write**：落库正门。id 形如 `YYYYMMDD_hex6`；缺省 confidence 0.5、ns `_shared`、
+- **write**：落库正门。id 形如 `YYYYMMDD_` + uuid4 hex（32）（契约变更 #109：
+  原 `YYYYMMDD_hex6` 同日可碰撞覆盖；分配在写锁内重试，同 id 已存在不覆盖。
+  存量 6 hex 文件仍可读）；缺省 confidence 0.5、ns `_shared`、
   ttl 取自类型规格（episode 90 / fact、skill 与 decision 永不 / insight 180）。key 校验
   （小写字母数字段+短横线）与 validity 校验（ISO 日期、from ≤ until）在 write 单点（P6）。
   冲突判定（P3，#46 起类型维表驱动）：同 ns ∧ 同 type（`TypeSpec.key_conflicts` 标记类型：
@@ -83,13 +85,14 @@
   links 输出与邻居对跨 ns 遗留链脱敏。**不产生提交**。
 - **feedback**：复利闭环，证据驱动（ADR-0007/0008，#53 契约变更——原单调公式
   「每次 +0.1、新验证者 +0.15」被取代，success 缺省路径行为不变）。折算表：
-  success +0.1（跨宿主首验 +0.15，`validated_by` 记忆×宿主去重；验证分只属于
+  success +0.1（同宿主 base 经证据块 `host_bumps` 累计封顶 0.3，单宿主天花板
+  0.8，ADR-0012；跨宿主首验 +0.15 不占配额，`validated_by` 记忆×宿主去重；验证分只属于
   success）；failure −0.2 重复累计（地板 0.05，保持可检索可复活）；contradiction
   数值冻结并登记 review 队列独立行型（裁决经 review_resolve：维持 ⇒ 解冻并折算
   failure −0.2；确错 ⇒ 归档）；obsolete 无条件立即归档（复活走 feedback 自动
   复活通道）；unknown 仅记事件。未知 outcome 值 ValueError（调用方错误）。
   证据块（frontmatter `evidence`：success/failure/contradiction 计数 +
-  last_verified + recent 明细 cap 10）是运行时数值的唯一数据源；无块旧记忆
+  last_verified + recent 明细 cap 10 + `host_bumps` 同宿主配额）是运行时数值的唯一数据源；无块旧记忆
   惰性迁移（读为 success_count=uses），首次 feedback 落盘写块。side effects
   （P2）：uses+1、last_used=today、**归档记忆自动复活**（回活动区 + 索引同步；
   obsolete 除外——原位归档）、单次 commit（每次 feedback 一 commit，#31 裁决）。

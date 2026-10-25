@@ -18,7 +18,14 @@ from typing import Any, Protocol, overload
 
 from ..model import MEMORY_TYPES, TTL_DAYS, TYPE_SPEC, Memory
 from ..review_queue import ReviewQueue
-from .validation import check_content_size, check_key, check_lesson_role, check_project, check_validity
+from .validation import (
+    check_confidence,
+    check_content_size,
+    check_key,
+    check_lesson_role,
+    check_project,
+    check_validity,
+)
 
 
 class WritingDeps(Protocol):
@@ -136,6 +143,7 @@ def write_new(
     check_key(key)
     check_project(project)  # ADR 0010：project slug 校验与 key 同点（write/batch/tests 共用）
     check_lesson_role(lesson_role)  # #78：lesson / avoid，或缺省；write/batch/tests 共用
+    check_confidence(confidence)  # #110：bool / 非有限 / 越界在落盘前拒绝；None 仍缺省 0.5
     store._check_ns(ns)
     if ns.startswith("agent-") and source not in (ns, ns[len("agent-"):]):
         raise PermissionError(f"namespace {ns!r} is private to its owner; writer is {source!r}")
@@ -144,7 +152,7 @@ def write_new(
     if key and TYPE_SPEC[type].key_conflicts:
         conflict_with = store._find_by_key(ns, type, key, exclude_content=content)
     mem = Memory(
-        id=store._new_id(),
+        id=store._new_id(),  # 写锁内分配；同 id 已存在则重试，绝不覆盖（#109）
         ns=ns,
         type=type,
         source=source,

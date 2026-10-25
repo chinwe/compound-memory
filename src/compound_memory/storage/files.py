@@ -120,6 +120,21 @@ def scan_parsed(base: Path) -> Iterator[tuple[Memory, Path]]:
         logger.warning("scan skipped %d unparseable memory file(s)", skipped)
 
 
+def id_exists(mem_id: str, root: Path) -> bool:
+    """活动区或归档区是否已有该 id 的文件（只看文件名，不解析正文）。
+
+    分配路径用它做碰撞检测（#109）：同名不同目录也算占用——find 按文件名
+    取第一条，向量索引以 mem_id 为主键，跨目录同名会歧义或覆盖行。
+    非法 id（白名单外）视为不可分配，避免把 glob 元字符送进 rglob。
+    """
+    if not _PATH_COMPONENT_RE.match(mem_id):
+        return True
+    for base in (paths.ns_root(root), paths.archive_root(root)):
+        if any(base.rglob(f"{mem_id}.md")):
+            return True
+    return False
+
+
 def find(mem_id: str, root: Path) -> Memory | None:
     # mem_id 拼 rglob 模式：非法字符（glob 元字符/路径分隔）不得进入——
     # '*' 曾命中库内任意第一条且绕过属主检查直泄私有正文（审计 P2-3）。

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 import re
 
 from ..model import LESSON_ROLES
@@ -16,7 +17,8 @@ from ..model import LESSON_ROLES
 # ns / mem_id 的路径组件白名单：两者都被直接拼进存储路径或 rglob 模式，
 # 来自 LLM/宿主输出，格式不设防时 ns='agent-../../x' 可写出存储根、
 # mem_id='*' 可经 rglob 命中库内任意记忆（2026-10-05 审计 P1-1/P2-3）。
-# 合法 id（YYYYMMDD_hex6）与现有全部 ns 取值均落在 [A-Za-z0-9_-] 内。
+# 合法 id（新写 YYYYMMDD_ + uuid4 hex32，存量 YYYYMMDD_hex6 仍可读）
+# 与现有全部 ns 取值均落在 [A-Za-z0-9_-] 内。读取不收紧到 32 hex。
 _PATH_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # key 是 fact/insight/decision 同 key 更新的稳定锚点，格式约束在落库单点（_write_new，
@@ -36,6 +38,23 @@ ATTESTATION_WARNING = (
     "Set a stable agent id in the host MCP env before sharing _shared across agents. "
     "CLI stats and doctor exit 1 until it is set; MCP tools keep running."
 )
+
+
+def check_confidence(confidence: object) -> None:
+    """confidence 落库门（write_new 单点，write / batch / distill_apply 共用，#110）。
+
+    None = 未携带，放行（调用方缺省 0.5）。bool 是 int 的子类，True/False
+    会混过 1/0，必须先拒绝。非 int/float、非有限值（nan/inf）以及 [0, 1]
+    之外都是调用方错误：ValueError，且必须发生在落盘之前。MCP memory_write
+    不接收该参数；CLI distill-apply 与库内写入都落到这一处。
+    """
+    if confidence is None:
+        return
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        raise ValueError(f"confidence must be a finite number in [0, 1], got: {confidence!r}")
+    # bool 已排除；此处 confidence 是 int | float，isfinite 与区间比较才有类型。
+    if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+        raise ValueError(f"confidence must be a finite number in [0, 1], got: {confidence!r}")
 
 
 def check_content_size(content: str) -> None:
