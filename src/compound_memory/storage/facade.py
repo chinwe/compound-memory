@@ -31,6 +31,9 @@ from .files import _unlink_file
 from .gitlayer import _git_available
 from .locking import _Batch
 
+# 同 id 已存在时的重试上限（#109）。正常 uuid4 一次就过；注入序列或极端碰撞才继续。
+_ID_ATTEMPTS = 8
+
 
 class MemoryStore:
     def __init__(
@@ -76,7 +79,21 @@ class MemoryStore:
         return self._clock().isoformat()
 
     def _new_id(self) -> str:
-        return f"{self._clock().strftime('%Y%m%d')}_{uuid.uuid4().hex[:6]}"
+        """分配未占用的记忆 id。须在写锁内调用（唯一调用点 write_new 已持锁）。
+
+        形状是 ``YYYYMMDD_`` + 完整 uuid4 hex（32）。同日 6 hex 只有 24 bit，
+        生日碰撞会覆盖已有文件，跨目录同名还会让 find 与向量索引（mem_id 主键）
+        歧义（#109）。已占用则换下一个；尝试耗尽抛 ValueError，绝不覆盖。
+        存量 ``YYYYMMDD_`` + 6 hex 不经这里生成，find 仍按文件名读取。
+        """
+        prefix = self._clock().strftime("%Y%m%d")
+        for _ in range(_ID_ATTEMPTS):
+            candidate = f"{prefix}_{uuid.uuid4().hex}"
+            if not files.id_exists(candidate, self.root):
+                return candidate
+        raise ValueError(
+            f"memory id collision: no unused id after {_ID_ATTEMPTS} attempts"
+        )
 
     # ---------- 批式落库通道（协调体归机制件 locking） ----------
 

@@ -1,7 +1,7 @@
 """feedback 动词契约（store 层五要素 characterization）。
 
 契约出处：#26 P1（置信度精确公式）/ P2（side effects 含归档自动复活）；
-#31（feedback 每次一 commit，消息模板）；#99/ADR-0011（同宿主 success base
+#31（feedback 每次一 commit，消息模板）；#99/ADR-0012（同宿主 success base
 增益累计封顶 0.3）。复利闭环是一等公民——公式漂移在此必红。
 """
 
@@ -55,7 +55,7 @@ class TestConfidenceFormula:
         assert out["validated_by"] == ["agent-b", "agent-a"]
 
     def test_confidence_capped_at_one(self, store: MemoryStore):
-        """契约变更（ADR-0011/#99，显式调整）：同宿主累计封顶后不再无条件奔 1.0——
+        """契约变更（ADR-0012/#99，显式调整）：同宿主累计封顶后不再无条件奔 1.0——
         单宿主 10 次停在 0.8；1.0 仍可达，但只能靠跨宿主首验补足。"""
         mem = _shared_mem(store, source="agent-a")
         for _ in range(10):
@@ -74,7 +74,7 @@ class TestConfidenceFormula:
 
 
 class TestSameHostCap:
-    """ADR-0011（#99）：同宿主 success base 增益按「宿主×记忆」累计封顶 0.3——
+    """ADR-0012（#99）：同宿主 success base 增益按「宿主×记忆」累计封顶 0.3——
     单宿主天花板 0.8，以上只能靠跨宿主验证；gross 口径（failure 不归还配额）；
     跨宿主首验 +0.15 不占配额；冻结期不折算故不耗配额；存量块无 host_bumps
     键读空配额（惰性，与证据块自身迁移同型）。"""
@@ -85,7 +85,7 @@ class TestSameHostCap:
             out = store.feedback(mem["id"], "agent-a")
         assert out["confidence"] == 0.8  # 3× +0.1 到配额，后 2 次只记账
         assert out["uses"] == 5
-        assert out["evidence"]["success_count"] == 5  # 记账照走（ADR-0011：到顶只停数值）
+        assert out["evidence"]["success_count"] == 5  # 记账照走（ADR-0012：到顶只停数值）
         assert out["evidence"]["host_bumps"] == {"agent-a": 0.3}
 
     def test_post_cap_success_still_records_without_bump(self, store: MemoryStore):

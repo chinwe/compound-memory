@@ -43,7 +43,7 @@ from ..scoring import recency_age
 # （ADR-0007 折算表：success +0.1，跨宿主首验 +0.15，validated_by 记忆×宿主去重）；
 # CONF_FAILURE_PENALTY 负面不对称折算（failure −0.2，重复累计）、
 # CONF_FLOOR 数值地板（保持可检索、可复活）；封顶 1.0 沿用。
-# CONF_HOST_BUMP_CAP 同宿主 success base 累计封顶（ADR-0011）：单宿主天花板
+# CONF_HOST_BUMP_CAP 同宿主 success base 累计封顶（ADR-0012）：单宿主天花板
 # 0.5→0.8，以上只能靠跨宿主验证；gross 口径（failure 不归还配额），跨宿主
 # 首验 +0.15 不占配额；配额持久化在证据块 host_bumps。
 ARCHIVE_USES_THRESHOLD = 3
@@ -148,7 +148,7 @@ def _record_event(store: LifecycleDeps, mem: Memory, agent: str, outcome: str) -
 
 
 def fold_success(mem: Memory, bump: float) -> None:
-    """success 折算单点（ADR-0007 折算表 success 行 + ADR-0011 封顶，与
+    """success 折算单点（ADR-0007 折算表 success 行 + ADR-0012 封顶，与
     fold_failure 对偶）：conf +bump 封顶 1.0。bump 由调用方合成（配额内的
     USE_BUMP + 跨宿主首验加成，同宿主累计封顶判定在调用方）——验证事实
     （success_count/last_verified/validated_by）只属于 success，留在
@@ -163,7 +163,7 @@ def _feedback_commit_msg(mem: Memory, agent: str, outcome: str) -> str:
 
 
 def feedback(store: LifecycleDeps, mem_id: str, agent: str, outcome: str = "success") -> dict[str, Any]:
-    """证据驱动置信度写侧（ADR-0007/0008/0011）：outcome 折算表——success +0.1
+    """证据驱动置信度写侧（ADR-0007/0008/0012）：outcome 折算表——success +0.1
     （跨宿主首验 +0.15，validated_by 记忆×宿主去重；同宿主 base 累计封顶 0.3，
     到顶只记账不再抬数值，gross 口径 failure 不归还）、failure −0.2 重复累计
     （地板 0.05 封顶 1.0）、contradiction 数值冻结并登记队列独立行型、obsolete
@@ -216,7 +216,7 @@ def feedback(store: LifecycleDeps, mem_id: str, agent: str, outcome: str = "succ
             # obsolete/unknown 块内无计数槽位：仅明细 + 提交消息承载（全史走 git）
             if not frozen:
                 if outcome == "success":
-                    # 同宿主累计封顶（ADR-0011）：base 配额内才发放 +0.1，配额外
+                    # 同宿主累计封顶（ADR-0012）：base 配额内才发放 +0.1，配额外
                     # 只记账（上方事件段已记）；跨宿主首验 +0.15 不占配额（独立性
                     # 奖励，天然受宿主数约束）。配额读写以 3 位小数舍入防浮点尾差。
                     bumps = ev.setdefault(EVIDENCE_HOST_BUMPS, {})

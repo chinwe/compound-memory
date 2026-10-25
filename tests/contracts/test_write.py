@@ -28,10 +28,14 @@ class TestInputEquivalence:
     """输入等价类：合法落库的缺省形状 + 各非法参数类的错误类型（不穷举非法值）。"""
 
     def test_defaults_pinned_on_success(self, store: MemoryStore):
-        """合法写入的缺省值：id 形如 YYYYMMDD_hex6、confidence 0.5、
-        ns _shared、ttl 取自类型规格（episode=90）。"""
+        """合法写入的缺省值：id 形如 YYYYMMDD_ + uuid4 hex32、confidence 0.5、
+        ns _shared、ttl 取自类型规格（episode=90）。
+
+        【契约变更 #109】id 从 YYYYMMDD_hex6（24 bit，同日可碰撞覆盖）扩为
+        完整 uuid4 hex。存量 6 hex 文件仍按文件名可读，本断言只钉新写形状。
+        """
         mem = store.write("contract write default marker", type="episode", source="agent-a")
-        assert re.fullmatch(r"\d{8}_[0-9a-f]{6}", mem["id"])
+        assert re.fullmatch(r"\d{8}_[0-9a-f]{32}", mem["id"])
         assert mem["ns"] == "_shared"
         assert mem["confidence"] == 0.5
         assert mem["ttl"] == 90

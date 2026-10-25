@@ -225,7 +225,7 @@ Current `stats` also includes `retrieval` (`mode`: `vector` or `lexical`, plus `
 
 Three things to notice:
 
-- New memories start at `confidence` 0.5 and move on **evidence** — feedback carries an outcome: `success` raises it, `failure` lowers it (floor 0.05), `contradiction` freezes it into the review queue, `obsolete` archives immediately.
+- New memories start at `confidence` 0.5 and move on **evidence** — feedback carries an outcome: `success` raises it, `failure` lowers it (floor 0.05), `contradiction` freezes it into the review queue, `obsolete` archives immediately. Same-host `success` base bumps are recorded in `evidence.host_bumps` and cap at 0.3 for that host (a single host tops out at 0.8; ADR-0012).
 - First validation from a different host earns an independent bonus (once per host per memory), with `validated_by` / `evidence` trails — confidence is evidence of correctness, not popularity.
 - Hits embed one-hop neighbors automatically (empty here — no links yet; `memory_link` creates bidirectional links that get recalled for free).
 
@@ -233,10 +233,10 @@ Three things to notice:
 
 | Interest source | Mechanism |
 |---|---|
-| ① Usage reinforcement | Every `memory_feedback` advances `uses` and `last_used`. Confidence moves by outcome. Default `success`: +0.1. `failure`: −0.2 (floor 0.05, repeats stack). `contradiction`: confidence frozen, a review-queue row is filed. `obsolete`: archived immediately. `unknown`: the event is recorded and confidence does not move |
+| ① Usage reinforcement | Every `memory_feedback` advances `uses` and `last_used`. Confidence moves by outcome. Default `success`: +0.1, with that host's base bumps stored in `evidence.host_bumps` and capped at 0.3 (a single host tops out at 0.8; ADR-0012). `failure`: −0.2 (floor 0.05, repeats stack). `contradiction`: confidence frozen, a review-queue row is filed. `obsolete`: archived immediately. `unknown`: the event is recorded and confidence does not move |
 | ② Link value | `memory_link` creates bidirectional links; `memory_get` pulls one-hop neighbors; `search` hits embed up to 3 compact neighbors (active memories only, `--no-neighbors` to disable) |
 | ③ Distillation | `distill-plan` (CLI, deterministic candidates + `suggested_action`: merge / promote / review) → agent writes the product → `distill-apply` atomic commit (product links back to sources; sources archived but revivable) |
-| ④ Cross-agent validation | On `success` only, the first feedback from a host other than `source` adds +0.15 (once per host per memory; recorded in `validated_by`) |
+| ④ Cross-agent validation | On `success` only, the first feedback from a host other than `source` adds +0.15 (once per host per memory; recorded in `validated_by`; does not consume the same-host `host_bumps` cap) |
 
 Scoring (weights are the `W_*` constants in `src/compound_memory/scoring.py`): `0.70·similarity + 0.15·confidence + 0.10·recency(0.5+0.5·e^(−Δt/τ)) + 0.05·type weight`. With the vector channel enabled, ranking switches to RRF fusion with an ε=0.04 prior tie-break (see the spec, "index as cache").
 
@@ -248,7 +248,7 @@ Scoring (weights are the `W_*` constants in `src/compound_memory/scoring.py`): `
 | `memory_search` | Retrieve | Returns `{"hits": [...], "count", "retrieval"}` ranked by score (default `top_k=5`); embeds up to 3 trimmed one-hop neighbors; dual-channel by default (`_shared` + caller's own private ns); optional `project` (fail-closed) and `explain`. CLI `search` stays a bare array |
 | `memory_get` | Fetch by id | Always contains a `found` key; pulls one-hop neighbors with no count cap and keeps archived neighbors (search caps at 3, trims content to 80 characters, and drops archived neighbors). Expired neighbors are omitted on both paths. Private-ns targets require `reader` |
 | `memory_link` | Link two memories | Bidirectional; both sides must be in the same ns; private-ns links require owner identity |
-| `memory_feedback` | Report how a memory actually behaved | Every outcome advances `uses` and `last_used`. Default `outcome=success`: conf+0.1; first cross-host validation +0.15. `failure` −0.2 (floor 0.05); `contradiction` freezes confidence into the review queue; `obsolete` archives now; `unknown` records the event and leaves confidence unchanged. **Mandatory after adopting a hit** — that's the loop that makes the store compound |
+| `memory_feedback` | Report how a memory actually behaved | Every outcome advances `uses` and `last_used`. Default `outcome=success`: conf+0.1, same-host base capped at 0.3 via `host_bumps` (single host tops out at 0.8; ADR-0012); first cross-host validation +0.15 (exempt from the cap). `failure` −0.2 (floor 0.05); `contradiction` freezes confidence into the review queue; `obsolete` archives now; `unknown` records the event and leaves confidence unchanged. **Mandatory after adopting a hit** — that's the loop that makes the store compound |
 
 Tool descriptions embed the protocol rules themselves, so agents keep the loop intact even without host-side rules injected. Short English loop: [`docs/agent-integration.en.md`](docs/agent-integration.en.md). Full parameter reference: `docs/agent-integration.md`.
 
