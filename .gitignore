@@ -20,3 +20,7 @@ __pycache__/
 
 # LongMemEval experiment dataset & ephemeral stores (download-only, not committed)
 experiments/longmemeval/data/
+
+# TLC jar + metadir for verification/feedback-write-lock (downloaded by check.py)
+verification/feedback-write-lock/.cache/
+verification/feedback-write-lock/states/
