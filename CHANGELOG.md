@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Docs: ADR-0013 records extracting an in-store `type=skill` during maintenance. The server only annotates an existing `promotion_candidate` (`PROMOTION_USES_THRESHOLD = 5`, inside the distill activity window). `content`, `key`, and `type=skill` stay on `dream-apply` / `distill-apply`. `maintain` stays dream (no `--propose`) → optional decay → health-snapshot. No runtime change, no `TYPE_SPEC` edit, no new MCP tool (`docs/adr/0013-maintain-extract-skill.md`).
+
 ## 0.5.11 - 2026-10-25
 
 - New memory ids are `YYYYMMDD_` plus the full uuid4 hex (32 characters). Allocation runs under the write lock and retries when that id already names a file in the active or archive tree, so a collision never overwrites and cannot alias `find` or the vector index. Existing `YYYYMMDD_` + 6 hex files still read (#109 / #113).
