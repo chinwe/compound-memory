@@ -67,11 +67,11 @@ _Avoid_: Q 值、因果显著性
 _Avoid_: 因果图、反事实
 
 **Promotion（晋升）**：
-记忆的洞见价值经蒸馏确认的形态：蒸馏产物（更高密度的新记忆）即晋升结果；源记忆类型终身不变，强化状态由 uses/confidence 表达。
+记忆的洞见价值经蒸馏确认的形态：蒸馏产物（更高密度的新记忆）即晋升结果；源记忆类型终身不变，强化状态由 uses/confidence 表达。`suggested_action` 为 promote 的报告行带 `target_type=skill`（ADR-0013）；同 ns 已有活动 skill 且 key 相同则改为 review。正文与 key 由调用方在 apply 时给出。
 _Avoid_: 升级、类型迁移（type 原地变更已禁）
 
 **Review queue（冲突队列）**：
-同 key 同类型的 fact/insight/decision 内容冲突、或显式 contradiction 反馈登记时，等待人工复核的队列。
+同 key 同类型的 fact/insight/skill/decision 内容冲突、或显式 contradiction 反馈登记时，等待人工复核的队列。
 _Avoid_: conflict list
 
 ### 生命周期

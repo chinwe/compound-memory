@@ -13,6 +13,10 @@ possible_dup_of 只标 review。落库仍只走 distill_apply。
 negative_salience / contradiction_pairs 只标注。借用教训语义，不搬因果引擎。
 dream-apply 的入选门槛不因这两段放宽。
 
+晋升行的 target_type（ADR-0013）也在本模块：只有 suggested_action 为 promote
+的行带 target_type=skill。同 ns 活动区已有同 key 的 skill 时，该行改为
+review 且不带 target_type。不新造聚类，不代写正文。
+
 distill_apply 的锁语义逐位保持：源读取在写锁内（batch 持锁）、检查失败
 零操作、批尾溯源消息经 batch 句柄覆写；batch 与 write 一律走 store 的
 实例属性查找（测试的 racing_patch 打桩缝，#36 沉淀约束）。
@@ -36,6 +40,9 @@ PROMOTION_USES_THRESHOLD = 5
 
 # 建议动作词汇 v1（#75 单一定义点）。没有 synthesize / supersede，也没有 avoid（#78）。
 SUGGESTED_ACTIONS = ("merge", "promote", "review")
+
+# promote 行指向的产物类型（ADR-0013）。只标注，不代写 content / key。
+TARGET_TYPE_SKILL = "skill"
 
 # 教训链接前缀（#78 单一定义点）。扫描器只认这三种；其余 links 仍是自由字符串。
 LESSON_LINK_PREFIXES = ("avoid", "fixes", "contradicts")
@@ -115,6 +122,35 @@ def _candidate_suggested_action(
     if in_weak_dup:
         return "review"
     return None
+
+
+class PopulationDeps(Protocol):
+    """key_duplicates 人口所需的窄面。DistillDeps 与 dream-apply 的 store 都满足。"""
+
+    ns_root: Path
+    _clock: Callable[[], dt.date]
+
+    def _scan_parsed(self, base: Path) -> Iterator[tuple[Memory, Path]]: ...
+
+
+def key_duplicate_population(store: PopulationDeps, ns: str) -> list[Memory]:
+    """与 key_duplicates 同一人口：该 ns 活动区，跳过 valid_until 已过与坏日期。
+
+    归档区不在 ns_root 下，不算。ADR-0013 的活动 skill 去重复用这份人口，
+    不受 window_days / min_uses / min_confidence 限制。
+    """
+    now = store._clock()
+    population: list[Memory] = []
+    for mem, _path in store._scan_parsed(store.ns_root / ns):
+        if is_expired(mem, now) or recency_age(mem, now) is None:
+            continue
+        population.append(mem)
+    return population
+
+
+def blocking_skill_keys(population: list[Memory]) -> set[str]:
+    """人口里 type=skill 且 key 非空的集合。空 key 在报告阶段对不上提议 key。"""
+    return {mem.key for mem in population if mem.type == "skill" and mem.key}
 
 
 def _shared_value(values: list[Any]) -> Any:
@@ -228,15 +264,16 @@ def _suggested_actions(
         (row for row in candidates if row["suggested_action"] == "promote"),
         key=lambda row: row["id"],
     ):
-        actions.append(
-            _action_record(
-                "promote",
-                [cand["id"]],
-                "promotion_candidate",
-                cand["type"],
-                cand["key"],
-            )
+        record = _action_record(
+            "promote",
+            [cand["id"]],
+            "promotion_candidate",
+            cand["type"],
+            cand["key"],
         )
+        # 能进这个簇的行已经是 promote：去重改判的 review 不会走到这里。
+        record["target_type"] = TARGET_TYPE_SKILL
+        actions.append(record)
     for component in _review_components(candidates):
         comp = set(component)
         if any(comp <= group for group in merge_sets):
@@ -412,6 +449,11 @@ def distill_plan(
     （BM25 normalized_similarity ≥ DISTILL_DUP_SIM_THRESHOLD，弱信号）、
     promotion_candidate（episode 高活性，晋升建议——判断后置，#6）。
     每条主候选另有 suggested_action（merge / promote / review / None，#75）。
+    suggested_action 为 promote、且同 ns 活动区没有 skill 使用该 episode 的
+    key 时，候选与 promote 簇带 target_type=skill（ADR-0013）。已有活动 skill
+    同 key 则该候选改为 review、不带 target_type、不进 promote 簇。episode
+    没有 key 时报告阶段对不上，仍保持 promote。merge / review 不带该字段。
+    归档、valid_until 已过、坏日期的 skill 不算。
     另有 key_duplicates 专项段：同 ns 同 type 同 key 组员 ≥2 的多版本组，
     不受窗口/活性门限制（废置旧版 uses=0 进不了主候选，运维实测盲区），
     组上 suggested_action 恒为 merge，并带 source_ids。
@@ -449,15 +491,10 @@ def distill_plan(
     # 同 key 多版本专项（2026-10-05 运维盲区）：清行未归档的废置旧版 uses=0，
     # 会被主候选的 uses≥1 活性门滤出人审视野——专项段不受窗口/活性门限制，
     # 只按「同 ns 同 type 同 key 组员 ≥2」圈出全组成员，判断段据此做归档取舍。
-    # 第二遍与 key_duplicates 同人口，教训段复用这份扫描（不再单开第三遍）。
-    scanned: list[Memory] = []
+    # 第二遍与 key_duplicates 同人口，教训段与 skill 去重复用这份扫描（不再单开第三遍）。
+    scanned = key_duplicate_population(store, ns)
     key_groups: dict[tuple[str, str], list[Memory]] = {}
-    for mem, _path in store._scan_parsed(store.ns_root / ns):
-        if is_expired(mem, now):
-            continue
-        if recency_age(mem, now) is None:
-            continue  # 坏日期跳过，与主扫描同规（宁缺勿滥）
-        scanned.append(mem)
+    for mem in scanned:
         if mem.key:
             key_groups.setdefault((mem.type, mem.key), []).append(mem)
     key_duplicates: list[dict[str, Any]] = []
@@ -510,12 +547,20 @@ def distill_plan(
         for other in cand["possible_dup_of"]:
             if other in incoming:
                 incoming[other] = True
+    skill_keys = blocking_skill_keys(scanned)
     for cand in candidates:
-        cand["suggested_action"] = _candidate_suggested_action(
+        action = _candidate_suggested_action(
             merge_with=cand["merge_with"],
             promotion_candidate=cand["promotion_candidate"],
             in_weak_dup=bool(cand["possible_dup_of"]) or incoming[cand["id"]],
         )
+        # merge 优先已在 _candidate_suggested_action 里压过晋升。这里只改判
+        # 原本会是 promote 的行：同 key 活动 skill 已在，不再静默堆一条 skill 提议。
+        if action == "promote" and cand["key"] and cand["key"] in skill_keys:
+            action = "review"
+        cand["suggested_action"] = action
+        if action == "promote":
+            cand["target_type"] = TARGET_TYPE_SKILL
     negative_salience, contradiction_pairs = _lesson_sections(scanned)
     return {
         "window_days": window_days,
@@ -542,7 +587,9 @@ def distill_apply(
 ) -> dict[str, Any]:
     """蒸馏落库（原子）：产物写入（links 溯源到全部源、origin=distillation）+
     源批量归档，收进一次 commit。源任一不存在 ⇒ 整体不落库（found: False）。
-    产物与现存 fact/insight/decision 的 key 冲突走既有 review 队列机制，不特殊对待。
+    产物与现存 key_conflicts 类型（fact/insight/skill/decision）的 key 冲突走既有
+    review 队列机制，不特殊对待。晋升路径「已有活动 skill 则跳过」在 dream_apply，
+    不在本函数。
     """
     source = store._resolve_identity(source, "source")
     source_ids = list(dict.fromkeys(source_ids))  # 去重保序：重复源只归档一次

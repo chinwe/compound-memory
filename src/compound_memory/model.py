@@ -23,7 +23,11 @@ TYPE_SPEC: dict[str, TypeSpec] = {
     "episode": TypeSpec(ttl_days=90, weight=0.5, tau_days=30.0),
     "fact": TypeSpec(ttl_days=None, weight=0.9, tau_days=365.0, key_conflicts=True),
     "insight": TypeSpec(ttl_days=180, weight=0.7, tau_days=90.0, key_conflicts=True),
-    "skill": TypeSpec(ttl_days=None, weight=1.0, tau_days=365.0),
+    # skill（ADR-0013）：ttl/τ 保持长寿（None / 365，与 fact 同值）；权重从 1.0
+    # 收到与 fact 同档 0.9。key_conflicts 打开同 key 更新通道（第二条 skill 进
+    # review 队列）。晋升路径「已有活动 skill 则不再堆提议」是 distill/dream
+    # 的另一道检查，不是本旗标的副作用。
+    "skill": TypeSpec(ttl_days=None, weight=0.9, tau_days=365.0, key_conflicts=True),
     # decision（#46）：长寿如 fact（ttl=None / τ=365）但描述一个已做的选择；
     # 权重与 fact 同档（权威的确定性知识，非可推翻的软性经验）。被新决策取代
     # 走同 key 冲突 → review 裁决（key_conflicts=True），而非衰减归档。

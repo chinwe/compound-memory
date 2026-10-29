@@ -32,6 +32,19 @@ def test_decision_spec_is_long_lived_and_conflictable():
 
 
 def test_conflict_flag_only_on_key_update_channel_types():
-    """同 key 冲突标记只出现在走 key 更新通道的类型上（#46 表驱动化后的类型面）。"""
+    """同 key 冲突标记只出现在走 key 更新通道的类型上。
+
+    【契约变更 ADR-0013】skill 加入 key 更新通道。episode 仍是 append-only。
+    """
     conflictable = {t for t, s in TYPE_SPEC.items() if s.key_conflicts}
-    assert conflictable == {"fact", "insight", "decision"}
+    assert conflictable == {"fact", "insight", "skill", "decision"}
+
+
+def test_skill_spec_matches_fact_longevity_and_weight():
+    """ADR-0013：skill 的 ttl 仍为 None、τ 仍为 365，权重改为与 fact 同档 0.9。"""
+    skill = TYPE_SPEC["skill"]
+    fact = TYPE_SPEC["fact"]
+    assert skill.ttl_days is None
+    assert skill.tau_days == 365.0 == fact.tau_days
+    assert skill.weight == fact.weight == 0.9
+    assert skill.key_conflicts is True

@@ -65,12 +65,26 @@ class TestTableDrivenConflicts:
         assert store.review_queue() == []
 
     def test_types_without_conflict_flag_never_enqueue(self, store: MemoryStore):
-        """表驱动缺省：未标记冲突的类型（skill）同 key 不同内容不判冲突——
-        新类型默认 append-only 安全，标记显式加入才走 key 更新通道。"""
-        store.write("deploy via make target", type="skill", source="agent-a", key="deploy-steps")
-        again = store.write("deploy via script", type="skill", source="agent-b", key="deploy-steps")
+        """表驱动缺省：未标记冲突的类型（episode）同 key 不同内容不判冲突。
+
+        【契约变更 ADR-0013】skill 已加入 key 更新通道，不再当这条负例。
+        """
+        store.write("deploy log day one", type="episode", source="agent-a", key="deploy-steps")
+        again = store.write("deploy log day two", type="episode", source="agent-b", key="deploy-steps")
         assert again["conflict"] is False
         assert store.review_queue() == []
+
+    def test_skill_same_key_conflict_enters_review_queue(self, store: MemoryStore):
+        """ADR-0013：skill.key_conflicts 为真后，同 key 不同内容进 review 队列。
+
+        新文件仍写出。这是 key 更新通道，挡不住「晋升路径再写一条 skill」——
+        那道检查在 distill_plan / dream_apply。
+        """
+        first = store.write("deploy via make target", type="skill", source="agent-a", key="deploy-steps")
+        second = store.write("deploy via script", type="skill", source="agent-b", key="deploy-steps")
+        assert second["conflict"] is True
+        assert second["conflicts_with"] == first["id"]
+        assert len(store.review_queue()) == 1
 
 
 class TestDocstringSingleSourced:
