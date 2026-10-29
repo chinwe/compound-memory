@@ -312,7 +312,25 @@ uvx --from compound-memory compound-memory maintain
                                       #   快照在衰减之后。任一步失败非 0，stderr 点名该步，后续不跑。
                                       #   不调用 dream-apply / distill-apply。
                                       #   distill-prepare.sh 仍只跑 dream。
-                                      #   薄包装 scripts/daily-maintain.sh 只 exec 本命令
+                                      #   薄包装 scripts/daily-maintain.sh 只 exec 本命令。
+                                      #   不调用 skill-export / skill-export-apply
+uvx --from compound-memory compound-memory skill-export --ns _shared
+                                      #   只读列出该 ns 已落盘的 type=skill 导出候选（ADR-0014）。
+                                      #   stdout 是 {ns, candidates, skipped}。缺省 min-uses 0、
+                                      #   min-confidence 0.5（与蒸馏门槛无关）。
+                                      #   不传 --project 只收未标注 project 的 skill；传了只收该 slug，
+                                      #   不并上全局，也不读 COMPOUND_MEMORY_PROJECT。
+                                      #   私有 ns 加 --reader。不写宿主文件，不写 distill/，不进定时任务
+uvx --from compound-memory compound-memory skill-export-apply \
+  --items items.json --target cursor-project --workspace /absolute/workspace --dry-run
+                                      #   只写出 items 点名的条目。items 每项 id 或 key 二选一，外加单行
+                                      #   description（必填，≤1024；不要带 content，正文用库内 content）。
+                                      #   cursor-project：已存在的绝对 --workspace，写入
+                                      #   <workspace>/.cursor/skills/<key>/SKILL.md。
+                                      #   cursor-user：~/.cursor/skills（不是 skills-cursor）。
+                                      #   dir：绝对 --out。--dry-run 不建目录。
+                                      #   无溯源行的已有文件不覆盖，除非 --replace。
+                                      #   不进 maintain / dream / 定时脚本，不新增 MCP 工具
 uvx --from compound-memory compound-memory health-trend --days 7
                                       #   读最近 N 天趋势（读面现算）：按 date 取每日最后一条，
                                       #   输出总量 / 归档率 / 平均置信度 / review 队列长度 / 蒸馏产出 /
@@ -390,7 +408,7 @@ uvx --from compound-memory compound-memory distill-apply "合并后的经验" in
 | 失败反馈 | 教训误导了你就 `memory_feedback`，`outcome: failure` |
 | 错教训作废 | 新写纠正正文 + 归档源，走既有 `memory_write` / `distill-apply`。负向段与矛盾对不放宽 `dream-apply` |
 
-只刷新蒸馏报告时，launchd（macOS）/ systemd user timer（Linux）/ cron 每天 09:00 跑只读 `dream`（`scripts/distill-prepare.sh`），报告写到 `<root>/distill/last-plan.json`（`distill` 段即候选清单，含负向段与矛盾对；安装物见 README「定时蒸馏准备」）。一条定时任务覆盖 dream、可选衰减和健康快照时，改挂 `compound-memory maintain`（或薄包装 `scripts/daily-maintain.sh`）。默认 dream + health-snapshot，decay 仅在 `--with-decay` 或 `RUN_DECAY=1`（`DECAY=1`）时跑。`--propose` / `dream-apply` / `distill-apply` 不进定时任务（ADR-0001 / #72 / #97）。各宿主 Agent 任意会话中发现报告有新候选时按需处理即可。
+只刷新蒸馏报告时，launchd（macOS）/ systemd user timer（Linux）/ cron 每天 09:00 跑只读 `dream`（`scripts/distill-prepare.sh`），报告写到 `<root>/distill/last-plan.json`（`distill` 段即候选清单，含负向段与矛盾对；安装物见 README「定时蒸馏准备」）。一条定时任务覆盖 dream、可选衰减和健康快照时，改挂 `compound-memory maintain`（或薄包装 `scripts/daily-maintain.sh`）。默认 dream + health-snapshot，decay 仅在 `--with-decay` 或 `RUN_DECAY=1`（`DECAY=1`）时跑。`--propose` / `dream-apply` / `distill-apply` 不进定时任务（ADR-0001 / #72 / #97）。`skill-export` 与 `skill-export-apply` 也不进定时任务（ADR-0014）：清单含记忆正文，写出必须人点名。各宿主 Agent 任意会话中发现报告有新候选时按需处理即可。
 
 ```bash
 # 默认不衰减。检出仓库后：

@@ -1,11 +1,11 @@
 """CLI 层契约（#25 决议第三优先级）：只钉命令面存在性，行为不重测。
 
-CLI 是薄 adapter：24 个子命令名 + 关键 flags（含 D1/D2 的 link --agent 与
+CLI 是薄 adapter：26 个子命令名 + 关键 flags（含 D1/D2 的 link --agent 与
 review-resolve --reader、ADR-0009 的 forget --agent/--reason、#44 的
 explain --reader 与 search --explain、#69 的 dream --ns/--reader、#72 的
 dream-apply --proposals/--source/--dry-run、doctor 健康检查、maintain 的
---with-decay）不消失即契约；结构断言走 argparse 公开解析结果
-（flag 被消费 = 存在，落进 unknown = 不存在）。
+--with-decay、ADR-0014 的 skill-export / skill-export-apply）不消失即契约；
+结构断言走 argparse 公开解析结果（flag 被消费 = 存在，落进 unknown = 不存在）。
 """
 
 from __future__ import annotations
@@ -27,11 +27,13 @@ from compound_memory.cli import build_parser
 # 契约变更：23→24 加 maintain——CLI 日常维护编排（dream → 可选 decay →
 # health-snapshot）。不带 --propose，不调用 dream-apply，不新增 MCP tool。
 # 不加入 git-revert / dream --apply / dream --auto。
+# 契约变更：24→26 加 skill-export / skill-export-apply（ADR-0014）。
+# CLI-only，不进 maintain / dream / 定时脚本，不新增 MCP tool。
 EXPECTED_COMMANDS = {
     "init", "write", "search", "get", "explain", "link", "feedback", "decay", "revive", "forget",
     "distill-plan", "distill-apply", "dream", "dream-apply", "stats", "doctor", "rebuild-index",
     "review-queue", "review-resolve", "git-log", "extract", "health-snapshot", "health-trend",
-    "maintain",
+    "maintain", "skill-export", "skill-export-apply",
 }
 
 
@@ -47,7 +49,7 @@ def _flag_consumed(parser: argparse.ArgumentParser, argv: list[str]) -> bool:
 
 
 class TestCommandSurface:
-    def test_exactly_twenty_four_subcommands(self):
+    def test_exactly_twenty_six_subcommands(self):
         assert set(_subcommands(build_parser())) == EXPECTED_COMMANDS
 
 
@@ -106,6 +108,26 @@ class TestKeyFlags:
             ("maintain-with-decay", ["maintain", "--with-decay"]),
             ("maintain-now", ["maintain", "--now", "2026-10-01"]),
             ("maintain-reader", ["maintain", "--ns", "agent-zcode", "--reader", "zcode"]),
+            # ADR-0014：导出是独立 CLI。project 精确匹配，apply 必须点名 target 与 items。
+            (
+                "skill-export-reader",
+                ["skill-export", "--ns", "agent-zcode", "--reader", "zcode", "--project", "agenthub",
+                 "--min-uses", "0", "--min-confidence", "0.5"],
+            ),
+            (
+                "skill-export-apply-dry-run",
+                ["skill-export-apply", "--items", "items.json", "--target", "cursor-project",
+                 "--workspace", "/tmp/ws", "--dry-run"],
+            ),
+            (
+                "skill-export-apply-dir",
+                ["skill-export-apply", "--items", "items.json", "--target", "dir", "--out", "/tmp/out",
+                 "--replace"],
+            ),
+            (
+                "skill-export-apply-user",
+                ["skill-export-apply", "--items", "items.json", "--target", "cursor-user"],
+            ),
             ("review-resolve-all", ["review-resolve", "--all"]),
             ("git-log-limit", ["git-log", "--limit", "10"]),
         ],
@@ -129,3 +151,6 @@ class TestKeyFlags:
         # maintain 编排只读 dream，不挂提议/落库开关
         assert not _flag_consumed(build_parser(), ["maintain", "--propose"])
         assert not _flag_consumed(build_parser(), ["maintain", "--apply"])
+        assert not _flag_consumed(build_parser(), ["maintain", "--export"])
+        assert not _flag_consumed(build_parser(), ["dream", "--export"])
+        assert not _flag_consumed(build_parser(), ["skill-export", "--propose"])
