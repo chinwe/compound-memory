@@ -16,6 +16,13 @@ from .embedding import auto_encoder
 from .extraction import extract, supported_hosts_summary_en
 from .health import append_snapshot, trend
 from .index import atomic_write_text
+from .skill_export import (
+    DEFAULT_MIN_CONFIDENCE,
+    DEFAULT_MIN_USES,
+    MAX_DESCRIPTION_CHARS,
+    apply_export,
+    list_candidates,
+)
 from .storage import DISTILL_DUP_SIM_THRESHOLD, MEMORY_TYPES, MemoryStore, PROMOTION_USES_THRESHOLD, default_root
 from .storage.dream import dream_proposals_path, last_plan_path
 from .storage.distill import SUGGESTED_ACTIONS
@@ -461,6 +468,43 @@ def cmd_maintain(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_skill_export(args: argparse.Namespace) -> None:
+    """只读候选清单。不写宿主文件，不写 distill/。"""
+    # project 只认显式 --project。不回退 COMPOUND_MEMORY_PROJECT：导出不是检索并集。
+    _emit(
+        list_candidates(
+            _open_store(args),
+            ns=args.ns,
+            reader=args.reader,
+            project=args.project,
+            min_uses=args.min_uses,
+            min_confidence=args.min_confidence,
+        )
+    )
+
+
+def cmd_skill_export_apply(args: argparse.Namespace) -> int:
+    """按 items 点名写宿主 SKILL.md。调用方错误在写出前抛出，由 main 译成退出码 2。"""
+    report = apply_export(
+        _open_store(args),
+        Path(args.items),
+        target=args.target,
+        workspace=args.workspace,
+        out=args.out,
+        ns=args.ns,
+        reader=args.reader,
+        project=args.project,
+        min_uses=args.min_uses,
+        min_confidence=args.min_confidence,
+        replace=args.replace,
+        dry_run=args.dry_run,
+    )
+    _emit(report)
+    if report.get("failed"):
+        return 1
+    return 0
+
+
 def cmd_health_trend(args: argparse.Namespace) -> int:
     # 读面纯文件读：不开 store（无 git/锁/索引副作用）；空态是显式结果而非失败。
     # 锚定日因此与 snapshot 的 store.today() 是两源——不开 store 是读面的设计决策，
@@ -798,6 +842,104 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ns", default="_shared")
     p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
     p.set_defaults(func=cmd_maintain)
+
+    p = sub.add_parser(
+        "skill-export",
+        help="list in-store type=skill memories that can be exported to a host SKILL.md (read-only)",
+        description="Read-only candidate list for one namespace (ADR-0014). Stdout is a JSON object "
+        "with ns, candidates, and skipped — not a bare array. A memory is a candidate only when it is "
+        "an active type=skill in this --ns, the recency date parses, valid_until is absent or an ISO "
+        "date that has not passed, content is non-empty, key matches the key pattern, project matches "
+        "exactly, uses and confidence meet this command's own defaults, the id is not in a pending "
+        "contradiction, and that key is unique among memories that passed those checks. "
+        f"Defaults are --min-uses {DEFAULT_MIN_USES} and --min-confidence {DEFAULT_MIN_CONFIDENCE}; "
+        "they are not the distill-plan gates and do not read PROMOTION_USES_THRESHOLD. "
+        "Omit --project and only skills with an empty project are listed. Pass --project and only "
+        "that slug is listed (global skills are not unioned in). This is not memory_search. "
+        "Private agent-* namespaces require --reader (owner check, same identity resolution as get). "
+        "_shared does not. Does not create host directories, does not write distill/, and does not "
+        "generate a description. Not an MCP tool. Not called by maintain or timers.",
+    )
+    p.add_argument("--ns", default="_shared")
+    p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
+    p.add_argument(
+        "--project",
+        default=None,
+        help="exact project slug. Omit to list only skills with an empty project; "
+        "pass a slug to list only that project (no global union). "
+        "Does not fall back to COMPOUND_MEMORY_PROJECT.",
+    )
+    p.add_argument(
+        "--min-uses",
+        type=int,
+        default=DEFAULT_MIN_USES,
+        help=f"export gate: uses >= this (default {DEFAULT_MIN_USES}; not the distill-plan default)",
+    )
+    p.add_argument(
+        "--min-confidence",
+        type=float,
+        default=DEFAULT_MIN_CONFIDENCE,
+        help=f"export gate: confidence >= this (default {DEFAULT_MIN_CONFIDENCE})",
+    )
+    p.set_defaults(func=cmd_skill_export)
+
+    p = sub.add_parser(
+        "skill-export-apply",
+        help="write host SKILL.md files for caller-named skill memories",
+        description="Write host SKILL.md files only for entries named in --items (ADR-0014). "
+        "There is no default that writes every candidate. --target is required "
+        "(cursor-project, cursor-user, or dir); omitting it is a caller error (exit 2) and writes "
+        "nothing. cursor-project requires an existing absolute --workspace and writes "
+        "<workspace>/.cursor/skills/<key>/SKILL.md (the workspace itself is not created). "
+        "cursor-user writes ~/.cursor/skills/<key>/SKILL.md, not ~/.cursor/skills-cursor. "
+        "dir requires an absolute --out. Relative --workspace or --out is rejected. "
+        "Each items element is an object with exactly one of id or key, plus a single-line "
+        f"description (required, stripped, at most {MAX_DESCRIPTION_CHARS} characters — Cursor's "
+        "skill docs publish no tighter cap; the Agent Skills spec caps description at 1024). "
+        "content and any other extra key reject the whole list before any write. Two entries that "
+        "resolve to the same path reject the whole list before any write. "
+        "The file body is the stored memory content under a fixed name/description frontmatter and "
+        "one provenance comment. No LLM and no description generated from content. "
+        "Each entry is re-read and re-checked against the candidate predicate before write; "
+        "a memory that no longer qualifies is skipped with reason not_candidate. "
+        "An existing file without this provenance line, or with a different id, is left untouched "
+        "unless --replace. --replace does not bypass path refusals (memory root, an integrations "
+        "path component, canonical skills/compound-memory/SKILL.md whose previous component is not "
+        ".cursor, or a resolved path outside the target root). "
+        "--dry-run classifies create/update/unchanged/skip and prints sha256 for files that would "
+        "be written, but does not create directories or files. "
+        "Does not commit the memory store or the workspace. Not an MCP tool. "
+        "maintain, dream, and timers do not call this.",
+    )
+    p.add_argument("--items", required=True, help="JSON list of {id|key, description} objects")
+    p.add_argument("--target", required=True, choices=["cursor-project", "cursor-user", "dir"])
+    p.add_argument("--workspace", default=None, help="existing absolute workspace for cursor-project")
+    p.add_argument("--out", default=None, help="absolute directory for target=dir")
+    p.add_argument("--ns", default="_shared")
+    p.add_argument("--reader", default=None, help="caller identity, required for private agent-* namespaces")
+    p.add_argument(
+        "--project",
+        default=None,
+        help="exact project slug, same axis as skill-export. Does not fall back to COMPOUND_MEMORY_PROJECT.",
+    )
+    p.add_argument("--min-uses", type=int, default=DEFAULT_MIN_USES, help="export gate passed through")
+    p.add_argument(
+        "--min-confidence",
+        type=float,
+        default=DEFAULT_MIN_CONFIDENCE,
+        help="export gate passed through",
+    )
+    p.add_argument(
+        "--replace",
+        action="store_true",
+        help="overwrite a host file that has no matching provenance id (does not bypass path refusals)",
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="classify paths and print sha256 without creating directories or files",
+    )
+    p.set_defaults(func=cmd_skill_export_apply)
     return parser
 
 
