@@ -392,14 +392,19 @@ def _refusal(dest: Path, target_root: Path, memory_root: Path) -> str | None:
 
 
 def _provenance_id(data: bytes) -> str | None:
-    """只认紧挨 frontmatter 结束的那一行。正文里相同字样不算。"""
+    """只认紧挨 frontmatter 结束的那一行。正文里相同字样不算。
+
+    定位这一行时把 CRLF / 裸 CR 收成 LF。字节是否相同仍用原文比较：
+    同一 id 但换行不同是 updated，不是 foreign_file。
+    """
     try:
         text = data.decode("utf-8")
     except UnicodeError:
         return None
-    if not text.startswith("---\n"):
+    logical = text.replace("\r\n", "\n").replace("\r", "\n")
+    if not logical.startswith("---\n"):
         return None
-    parts = text.split("---\n", 2)
+    parts = logical.split("---\n", 2)
     if len(parts) < 3:
         return None
     line = parts[2].split("\n", 1)[0]
@@ -528,7 +533,9 @@ def apply_export(
             continue
         if action in {"create", "update"} and not dry_run:
             try:
-                atomic_write_text(dest, rendered.decode("utf-8"))
+                # newline="\n"：Windows 文本模式会把 \n 写成 \r\n，文件字节就不再是
+                # 上面哈希的那一份，下一轮也会认不出溯源行。
+                atomic_write_text(dest, rendered.decode("utf-8"), newline="\n")
             except OSError as exc:
                 failed = {
                     "id": mem.id,

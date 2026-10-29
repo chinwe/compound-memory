@@ -34,7 +34,7 @@ from .scoring import tokenize, doc_text
 CACHE_VERSION = 3
 
 
-def atomic_write_text(path: Path, text: str) -> None:
+def atomic_write_text(path: Path, text: str, *, newline: str | None = None) -> None:
     """同目录唯一临时文件 + os.replace 原子替换（#18/#21 共享单点）。
 
     - 中断/失败时目标要么旧完整要么新完整，不留半写文件；
@@ -45,11 +45,14 @@ def atomic_write_text(path: Path, text: str) -> None:
       （Windows）跳过对齐——没有 POSIX 权限模型，跳过即正确（#55）；
     - 失败清理临时文件（非 .md 后缀不进扫描视野；单文件 unlink 不受沙箱
       批量删除守卫影响）。
+    - newline 缺省 None：沿用文本模式的平台换行（记忆文件 / 索引 / 队列的既有行为）。
+      传换行字符 LF 则不再把 LF 译成 os.linesep。宿主 SKILL.md 要和渲染字节一致
+      （ADR-0014），Windows 默认翻译会把文件写成 CRLF，sha256 和溯源行都对不上。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as fh:
             mask = os.umask(0)  # 探测 umask 需 set 两步；写者已串行化，实际 umask 进程内不变
             os.umask(mask)
             if hasattr(os, "fchmod"):

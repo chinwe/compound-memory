@@ -264,7 +264,9 @@ def test_apply_file_shape_and_store_untouched(store: MemoryStore, tmp_path: Path
     assert parts[2].startswith(provenance + "\n")
     assert parts[2].split("\n", 1)[1] == content + "\n"
     assert report["results"][0]["action"] == "create"
-    assert report["results"][0]["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    file_bytes = path.read_bytes()
+    assert b"\r" not in file_bytes
+    assert report["results"][0]["sha256"] == hashlib.sha256(file_bytes).hexdigest()
     assert report["dry_run"] is False
     assert _tree_bytes(store.root) == before_md
     assert _git_head(store.root) == head
@@ -273,6 +275,26 @@ def test_apply_file_shape_and_store_untouched(store: MemoryStore, tmp_path: Path
         ["git", "-C", str(store.root), "status", "--porcelain"],
         check=True, capture_output=True, text=True,
     ).stdout == ""
+
+
+def test_crlf_copy_is_updated_back_to_lf(store: MemoryStore, tmp_path: Path):
+    """Windows 文本模式留下的 CRLF 仍能认出溯源行，并按字节差覆盖回 LF。"""
+    written = _write_skill(store, "lf body", key="lf-skill")
+    items = _items(tmp_path, [{"id": written["id"], "description": "when lines differ"}])
+    out = tmp_path / "out"
+    created = skill_export.apply_export(store, items, target="dir", out=str(out))
+    path = out / "lf-skill" / "SKILL.md"
+    original = path.read_bytes()
+    assert b"\r" not in original
+    assert created["results"][0]["sha256"] == hashlib.sha256(original).hexdigest()
+    path.write_bytes(original.replace(b"\n", b"\r\n"))
+    updated = skill_export.apply_export(store, items, target="dir", out=str(out))
+    assert updated["results"][0]["action"] == "updated"
+    rewritten = path.read_bytes()
+    assert rewritten == original
+    assert b"\r" not in rewritten
+    again = skill_export.apply_export(store, items, target="dir", out=str(out))
+    assert again["results"][0]["action"] == "unchanged"
 
 
 def test_idempotent_update_and_foreign_file(store: MemoryStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -287,9 +309,9 @@ def test_idempotent_update_and_foreign_file(store: MemoryStore, tmp_path: Path, 
     calls: list[Path] = []
     real = skill_export.atomic_write_text
 
-    def spy(path: Path, text: str) -> None:
+    def spy(path: Path, text: str, newline: str | None = None) -> None:
         calls.append(path)
-        real(path, text)
+        real(path, text, newline=newline)
 
     monkeypatch.setattr(skill_export, "atomic_write_text", spy)
     first = skill_export.apply_export(store, items, target="dir", out=str(out))
@@ -530,11 +552,11 @@ def test_io_error_keeps_completed_file(store: MemoryStore, tmp_path: Path, monke
     real = skill_export.atomic_write_text
     seen = {"n": 0}
 
-    def flaky(path: Path, text: str) -> None:
+    def flaky(path: Path, text: str, newline: str | None = None) -> None:
         seen["n"] += 1
         if seen["n"] == 2:
             raise OSError("disk full")
-        real(path, text)
+        real(path, text, newline=newline)
 
     monkeypatch.setattr(skill_export, "atomic_write_text", flaky)
     report = skill_export.apply_export(store, items, target="dir", out=str(out))
