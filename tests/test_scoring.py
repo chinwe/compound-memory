@@ -117,8 +117,12 @@ class TestCompositeOrdering:
         assert [h["id"] for h in hits] == [fresh.id, stale.id]
 
     def test_type_weight_breaks_full_ties(self):
-        """同日期同置信度同相似度：skill(1.0) 压过 episode(0.5)。
-        两条 created 都是今天 ⇒ 新近度同为 1.0，差异只能来自类型权重。"""
+        """同日期同置信度同相似度：skill(0.9) 压过 episode(0.5)。
+
+        【契约变更 ADR-0013】skill 权重从 1.0 调到与 fact 同档 0.9。
+        两条 created 都是今天 ⇒ 新近度同为 1.0，差异只能来自类型权重。
+        """
+        assert TYPE_WEIGHT["skill"] == TYPE_WEIGHT["fact"] == 0.9
         skill = make_mem(1, "docker prune", type="skill")
         episode = make_mem(2, "docker prune", type="episode")
         hits = rank("docker", [episode, skill], now=NOW)

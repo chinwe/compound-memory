@@ -15,9 +15,14 @@ promotion_candidate 还须该条动作显式 promote。possible_dup_of 永远不
 apply 包。valid_until 已过与低活性只出现在 dream 的 decay_signals 里。
 
 建议动作 suggested_action（merge / promote / review，#75）写在 distill_plan
-上，dream 的 distill 段原样带出，本模块不重算、不放宽门槛。
+上，dream 的 distill 段原样带出，本模块不重算、不放宽门槛。promote 行上的
+target_type=skill 同样原样带出（ADR-0013）。本模块不生成步骤散文。
 negative_salience / contradiction_pairs（#78）同样原样带出：只报告，
 不参与 dream_apply 入选。错教训更新仍是新写正文 + 归档源。
+
+dream_apply 的 promotion_candidate 若 type=skill 且调用方提交的 key 在该 ns
+已有活动 skill，则不调用 distill_apply，动作进 skipped。同 type 的
+merge_with / key_duplicates 不受这道检查影响。
 
 衰减计数复用 lifecycle.is_decay_candidate（与 decay_sweep 同一谓词）。
 valid_until 已过走 scoring.is_expired，与 stats.expired_active 同一日期规则，
@@ -40,6 +45,7 @@ from ..model import (
 )
 from ..review_queue import ReviewQueue
 from ..scoring import is_expired, recency_age, tokenize
+from .distill import blocking_skill_keys, key_duplicate_population
 from .lifecycle import is_decay_candidate
 from .validation import check_content_size, check_key
 
@@ -64,6 +70,8 @@ REASON_POSSIBLE_DUP = "possible_dup_of is report-only"
 REASON_PROMOTION_OPT_IN = "promotion_candidate requires explicit opt-in"
 REASON_BELOW_PROMOTION = "below promotion threshold"
 REASON_NO_STRONG_SIGNAL = "no strong signal"
+# ADR-0013：晋升成 skill 时，该 key 的活动 skill 已经在，不落第二条。
+REASON_ACTIVE_SKILL = "active skill already exists for this key"
 
 _ACTION_FIELDS = frozenset({"content", "type", "source_ids", "key", "confidence", "promote"})
 
@@ -126,8 +134,14 @@ class DreamApplyDeps(Protocol):
 
     唯一写动词是 distill_apply（经实例属性查找，测试可打桩）。没有
     write / archive / forget / batch——本函数不平行落库。
+    ns_root / _clock / _scan_parsed 只用于 ADR-0013 的活动 skill 去重扫描
+    （与 key_duplicates 同一人口），不另开写路径。
     """
 
+    ns_root: Path
+    _clock: Callable[[], dt.date]
+
+    def _scan_parsed(self, base: Path) -> Iterator[tuple[Memory, Path]]: ...
     def _check_ns(self, ns: str) -> None: ...
     def _check_ns_owner(self, ns: str, identity: str | None, role: str = "reader") -> None: ...
     def stats(self) -> dict[str, Any]: ...
@@ -510,6 +524,32 @@ def _classify(
     return admitted, skipped
 
 
+def _blocked_by_active_skill(action: dict[str, Any], signal: str, skill_keys: set[str]) -> bool:
+    """晋升成 skill 且该 key 已有活动 skill 时不落库。
+
+    只挡 signal 为 promotion_candidate 且 type=skill 的动作。同 type 的
+    merge_with / key_duplicates 仍走 distill_apply。key 省略时对不上，不挡。
+    """
+    key = action["key"]
+    return (
+        signal == "promotion_candidate"
+        and action["type"] == "skill"
+        and isinstance(key, str)
+        and bool(key)
+        and key in skill_keys
+    )
+
+
+def _note_planned_skill(action: dict[str, Any], signal: str, skill_keys: set[str]) -> None:
+    """同一包里靠前的 skill 晋升占住 key，后面的同类晋升不再堆第二条。
+
+    dry-run 没有落盘，仍占位，使计划与真 apply 的跳过集合一致。
+    """
+    key = action["key"]
+    if signal == "promotion_candidate" and action["type"] == "skill" and isinstance(key, str) and key:
+        skill_keys.add(key)
+
+
 def _reject_overlapping(admitted: list[tuple[dict[str, Any], str]]) -> None:
     """同一包里两笔入选动作共用源 id 会落出两份产物。整包拒绝，零写盘。"""
     seen: set[str] = set()
@@ -552,6 +592,11 @@ def dream_apply(
     distill_apply（每条自己的原子提交，不套第二层 batch）。未过门槛的进
     skipped 并写原因。dry_run 只把入选动作放进 planned，不调用 distill_apply。
 
+    promotion_candidate 且 type=skill 时，若该 key 在本 ns 已有活动 skill
+    （人口与 key_duplicates 相同：跳过过期与坏日期，归档不算），不调用
+    distill_apply，原因是 REASON_ACTIVE_SKILL。比较的是调用方提交的 key。
+    同包内先成功（或 dry-run 已列入 planned）的 skill 晋升也占住该 key。
+
     不接受 forget，不把 possible_dup_of 放进包，不发明正文，不改 origin。
     私有 ns：reader 与 source 都须是属主（与读扫描 / 写落库同一谓词）。
     """
@@ -573,24 +618,31 @@ def dream_apply(
     )
     admitted, skipped = _classify(plan, prepared)
     _reject_overlapping(admitted)
+    skill_keys = blocking_skill_keys(key_duplicate_population(store, ns))
     planned: list[dict[str, Any]] = []
     applied: list[dict[str, Any]] = []
-    if dry_run:
-        planned = [_record(action, signal=signal) for action, signal in admitted]
-    else:
-        for action, signal in admitted:
-            result = store.distill_apply(
-                content=action["content"],
-                type=action["type"],
-                source=resolved_source,
-                source_ids=list(action["source_ids"]),
-                ns=ns,
-                key=action["key"],
-                confidence=action["confidence"],
-            )
-            row = _record(action, signal=signal)
-            row["result"] = result
-            applied.append(row)
+    for action, signal in admitted:
+        if _blocked_by_active_skill(action, signal, skill_keys):
+            skipped.append(_record(action, reason=REASON_ACTIVE_SKILL))
+            continue
+        if dry_run:
+            planned.append(_record(action, signal=signal))
+            _note_planned_skill(action, signal, skill_keys)
+            continue
+        result = store.distill_apply(
+            content=action["content"],
+            type=action["type"],
+            source=resolved_source,
+            source_ids=list(action["source_ids"]),
+            ns=ns,
+            key=action["key"],
+            confidence=action["confidence"],
+        )
+        row = _record(action, signal=signal)
+        row["result"] = result
+        applied.append(row)
+        if result.get("found"):
+            _note_planned_skill(action, signal, skill_keys)
     stats_after = store.stats()
     return {
         "ns": ns,

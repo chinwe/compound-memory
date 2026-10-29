@@ -113,11 +113,13 @@ class TestSideEffects:
 
 class TestConflictEnqueue:
     """P3 冲突判定完整谓词：同 ns ∧ 同 type（key_conflicts 标记类型：
-    fact/insight/decision，#46 表驱动化）∧ 同 key ∧ content.strip() 不等
-    ⇒ 入队；episode/skill append-only 不判；跨 ns 不判。
+    fact/insight/skill/decision）∧ 同 key ∧ content.strip() 不等
+    ⇒ 入队；episode append-only 不判；跨 ns 不判。
     【契约变更 #46】冲突类型面从硬编码 (fact, insight) 扩为 TYPE_SPEC 表驱动，
     decision 加入 key 更新通道（同 key 冲突照 fact/insight 入队）——类型面
-    扩展属显式契约变更，判定谓词其余各维（ns/key/content）一条未动。"""
+    扩展属显式契约变更，判定谓词其余各维（ns/key/content）一条未动。
+    【契约变更 ADR-0013】skill 加入同一通道：权重与 ttl/τ 的规格变更不在本谓词，
+    入队条件仍是同 ns、同 type、同 key、正文 strip 后不等。"""
 
     def test_same_key_fact_conflict_enqueues(self, store: MemoryStore):
         first = store.write("vercel timeout is 10s", type="fact", source="agent-a", key="vt")
@@ -140,9 +142,17 @@ class TestConflictEnqueue:
         assert again["conflict"] is False
         assert store.review_queue() == []
 
+    def test_same_key_skill_conflict_enqueues(self, store: MemoryStore):
+        """【契约变更 ADR-0013】skill 走同 key 冲突通道，与 fact 同一谓词。"""
+        first = store.write("deploy via make target", type="skill", source="agent-a", key="deploy-steps")
+        second = store.write("deploy via script", type="skill", source="agent-b", key="deploy-steps")
+        assert second["conflict"] is True
+        assert second["conflicts_with"] == first["id"]
+        assert len(store.review_queue()) == 1
+
     def test_episode_same_key_never_conflicts(self, store: MemoryStore):
         """episode append-only：同 key 不同内容不判冲突（key 更新通道仅限
-        key_conflicts 标记类型：fact/insight/decision）。"""
+        key_conflicts 标记类型：fact/insight/skill/decision）。"""
         store.write("deploy log day one", type="episode", source="agent-a", key="deploy")
         second = store.write("deploy log day two", type="episode", source="agent-a", key="deploy")
         assert second["conflict"] is False

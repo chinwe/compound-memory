@@ -1,6 +1,7 @@
 """Review queue（冲突队列）：review-queue.md 的生成、解析与清除——行格式单一定义点。
 
-行型两种（append 生成，机器写入）：①同 key fact/insight/decision 内容冲突行，
+行型两种（append 生成，机器写入）：①同 key 且 key_conflicts 的类型
+（fact/insight/skill/decision）内容冲突行，
 由 MemoryStore._write_new 登记；②contradiction 争议行（ADR-0007），由
 feedback outcome=contradiction 登记，待裁决期间该记忆数值冻结（冻结判定
 经 pending_contradictions 派生，行清掉即解冻）。裁决（取舍/维持）归调用方，

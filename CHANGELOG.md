@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- Docs: ADR-0013 records extracting an in-store `type=skill` during maintenance. The server only annotates an existing `promotion_candidate` (`PROMOTION_USES_THRESHOLD = 5`, inside the distill activity window). `content`, `key`, and `type=skill` stay on `dream-apply` / `distill-apply`. `maintain` stays dream (no `--propose`) → optional decay → health-snapshot. No runtime change, no `TYPE_SPEC` edit, no new MCP tool (`docs/adr/0013-maintain-extract-skill.md`).
+- `distill-plan` and `dream` attach `target_type: skill` only on rows whose `suggested_action` is `promote` (an episode with `uses >= 5` inside the existing activity window). If an active skill in the same namespace already uses that episode's key, the row becomes `review` and omits `target_type`. `dream-apply` skips a `promotion_candidate` action with `type=skill` when that submitted key already names an active skill, and does not call `distill-apply`. `dream --propose` still writes merge packs only and does not fill in skill step text. `TYPE_SPEC.skill` weight is now `0.9` (same band as fact) and `key_conflicts` is true; `ttl_days` stays unset and `tau_days` stays 365. No new MCP tool, no `maintain --propose`, and no PyPI release (ADR-0013, `docs/adr/0013-maintain-extract-skill.md`).
+- Docs: ADR-0013 records extracting an in-store `type=skill` during maintenance. The server only annotates an existing `promotion_candidate` (`PROMOTION_USES_THRESHOLD = 5`, inside the distill activity window). `content`, `key`, and `type=skill` stay on `dream-apply` / `distill-apply`. `maintain` stays dream (no `--propose`) → optional decay → health-snapshot (`docs/adr/0013-maintain-extract-skill.md`).
 
 ## 0.5.11 - 2026-10-25
 

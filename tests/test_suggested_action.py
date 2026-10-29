@@ -137,8 +137,12 @@ class TestPromoteExample:
         assert cand["id"] == hot["id"]
         assert cand["promotion_candidate"] is True
         assert cand["suggested_action"] == "promote"
+        # 【契约变更 ADR-0013】无同 key 活动 skill 时，promote 行带 target_type。
+        # 本条 episode 没有 key，报告阶段对不上任何 skill。
+        assert cand["target_type"] == "skill"
         (promote,) = _actions(plan, "promote")
-        assert set(promote) == _ACTION_KEYS
+        assert set(promote) == _ACTION_KEYS | {"target_type"}
+        assert promote["target_type"] == "skill"
         assert promote["source_ids"] == [hot["id"]]
         assert promote["signal"] == "promotion_candidate"
         assert promote["type"] == "episode"

@@ -14,6 +14,7 @@ import pytest
 
 from compound_memory.cli import main as cli_main
 from compound_memory.storage import MemoryStore
+from compound_memory.storage.lifecycle import ARCHIVE_USES_THRESHOLD
 from compound_memory.storage.stats import _conf_bucket, _uses_bucket
 from conftest import CLOCK_DATE, sandbox_safe_remove
 
@@ -41,6 +42,32 @@ class TestDecayAndArchive:
     def test_fact_never_archived(self, store: MemoryStore):
         fact = store.write(content="长期事实", type="fact", source="agent-a", key="env", created=_days_ago(400))
         assert store.decay_sweep() == []
+
+    def test_skill_never_archived(self, store: MemoryStore):
+        """ADR-0013：正常写入的 skill（ttl=None）陈旧且 uses < 3 时不进衰减归档。
+
+        对照一条过了 episode TTL 的经历，证明 sweep 本身在跑。豁免钉的是写路径
+        落下的 ttl=None，不是手改 frontmatter 之后的整数 ttl。
+        """
+        skill = store.write(
+            content="长期部署步骤",
+            type="skill",
+            source="agent-a",
+            key="long-skill",
+            created=_days_ago(400),
+        )
+        episode = store.write(content="很久以前的经历", type="episode", source="agent-a", created=_days_ago(120))
+        assert skill["uses"] < ARCHIVE_USES_THRESHOLD
+        assert skill["ttl"] is None
+        text = (store.ns_root / "_shared" / "skill" / f"{skill['id']}.md").read_text(encoding="utf-8")
+        assert "ttl:" not in text
+        archived = store.decay_sweep()
+        assert episode["id"] in archived
+        assert skill["id"] not in archived
+        got = store.get(skill["id"])
+        assert got["found"] is True
+        assert got["archived"] is False
+        assert got["ttl"] is None
 
     def test_archived_memory_still_gettable_but_not_searchable(self, store: MemoryStore):
         mem = store.write(content="Vercel 超时限制是 10 秒", type="episode", source="agent-a", created=_days_ago(120))

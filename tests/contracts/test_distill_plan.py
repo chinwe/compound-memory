@@ -8,6 +8,8 @@ plan 是只读扫描：不产生任何 git 提交（side effects 为零是契约
 （merge / promote / review）。只加标注，不改扫描门禁与写路径。
 契约变更 #78：顶层增加 negative_salience 与 contradiction_pairs。
 只报告，不扩 suggested_action，不放宽 dream-apply，不改主候选门禁。
+契约变更 ADR-0013：suggested_action 为 promote 的候选与 promote 簇多一个
+target_type。无信号候选的键集合不变（本文件钉的就是这条）。
 """
 
 from __future__ import annotations
