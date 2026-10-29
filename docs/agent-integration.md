@@ -54,7 +54,7 @@ uv run --directory <仓库绝对路径> compound-memory init
 
 | Tool | 用途 | 关键点 |
 |---|---|---|
-| `memory_write` | 写入记忆 | `type`: episode/fact/insight/skill/decision；`source`: 写入方 agent id；fact/insight/decision 建议带稳定 `key`；可选 `valid_from`/`valid_until`（ISO 日期）标注事实有效期——`valid_until` 已过的事实退出检索结果，但 `memory_get` 仍可读；可选 `project`（小写 slug）标注项目作用域——标注后仅同项目会话检索可见，缺省全局；可选 `lesson_role`（`lesson` 或 `avoid`，省略即普通记忆）。`content` 超过 262144 字符拒绝且不落盘 |
+| `memory_write` | 写入记忆 | `type`: episode/fact/insight/skill/decision；`source`: 写入方 agent id；fact/insight/skill/decision 建议带稳定 `key`；可选 `valid_from`/`valid_until`（ISO 日期）标注事实有效期——`valid_until` 已过的事实退出检索结果，但 `memory_get` 仍可读；可选 `project`（小写 slug）标注项目作用域——标注后仅同项目会话检索可见，缺省全局；可选 `lesson_role`（`lesson` 或 `avoid`，省略即普通记忆）。`content` 超过 262144 字符拒绝且不落盘 |
 | `memory_search` | 检索 | 返回 `{"hits": [...], "count", "retrieval"}` 按分数排序，缺省 `top_k=5`（要看覆盖面须显式放大）。`retrieval.mode` 为 `vector` 或 `lexical`（向量 extra/模型/引擎不可用或当次召回失败时为 lexical，并带 `reason`），词面降级因此可见。命中自动内嵌最多 3 条一度邻居（正文截到 80 字，不含归档邻居）；`include_neighbors=False` 可关。不传 `ns` 时双通道检索：`_shared` + 调用方自有私有 ns（身份已知时，私有条目自动带出）；显式传 `ns` 只搜该 ns，查 `agent-*` 时必带 `reader`（自己的 agent id），缺省即拒绝。可选 `project`（小写 slug）：**fail-closed**——不传只见全局记忆，传了见 全局 ∪ 该项目。可选 `explain: true`（排障面，#44）：每 hit 附加排序分量对象（词面/向量 rank、RRF 分、先验折算项、检索通道）与证据摘要行，缺省 hit 形状不变。CLI `search` 仍是裸数组，模式看 `stats.retrieval` |
 | `memory_get` | 按 id 取回 | 恒含 `found` 键；默认带一度邻居，不设条数上限、正文完整，并保留归档邻居（蒸馏溯源；与 search 的「最多 3 条、截断、排除归档」不同）。`valid_until` 已过的邻居两边都不展开正文。目标在私有 ns 时必带 `reader`，缺省即拒绝。按 id 恒可读（project 不限制 get 本体）；可选 `project` 只用于邻居带出的适用性过滤（邻居=全局 ∪ 该项目） |
 | `memory_link` | 双向关联两条记忆 | 复利来源②：关联带出；两条记忆必须同 ns，跨 ns 链被拒绝；私有 ns 记忆仅属主可连（`agent` 填自己的 agent id） |
@@ -270,7 +270,7 @@ dsh 通过 MCP client 插件 `@deepseek-ai/dsh-mcp-client` 接入，一个插件
 2. **任务结束**：会话中确认了稳定事实（新的用户偏好、项目约定、环境限制、踩坑结论），用 `memory_write` 沉淀。`type` 怎么选：
    - `fact`：客观事实（配置、账号、环境参数）——带稳定 `key`，同 key 新版本会触发冲突复核；
    - `insight`：经验教训（怎么绕坑、什么方案有效）——带 `key`；稳态 lesson 通常用这个 type，并标 `lesson_role: lesson`；
-   - `skill`：可复用的操作方法；
+   - `skill`：可复用的操作方法——带稳定 `key`，同 key 新版本会触发冲突复核；
    - `decision`：已做的选择（选型、方案拍板）——带 `key`，同 key 新决策触发冲突复核；avoid 用这个 type，并标 `lesson_role: avoid`；
    - `episode`：事件经历（部署了什么、发生了什么）。
 3. **不写**：一次性、会话内临时信息；记忆内容用中文，与库内既有条目保持一致；更新既有事实优先复用同 `key` 而非新开一条。
@@ -330,7 +330,7 @@ uvx --from compound-memory compound-memory forget <id> --agent <agent id> [--rea
                                       #   私有 agent-* ns 仅属主可遗忘（--agent 与 feedback 同规）；幂等（不存在/已遗忘
                                       #   返回 found: false）；--reason 是动机短语（单行限 80 字符），不贴记忆正文；
                                       #   隐私边界：解决「活动库不再携带」，不解决「历史不再包含」
-uvx --from compound-memory compound-memory review-queue   # fact/insight/decision 同 key 冲突队列（人工复核，CLI 唯一入口；展示全量）
+uvx --from compound-memory compound-memory review-queue   # fact/insight/skill/decision 同 key 冲突队列（人工复核，CLI 唯一入口；展示全量）
 uvx --from compound-memory compound-memory review-resolve <废置id> [--reader <agent id>]  # 清行并自动归档废置方；
                                       #   私有 agent-* ns 的行仅属主可清（--reader）；--all 只清行不归档，
                                       #   且对非属主的私有行静默保留；contradiction 争议行加 --uphold

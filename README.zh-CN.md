@@ -225,7 +225,7 @@ Agent (MCP 客户端 / CLI)
             ├─ archive/...                                                     衰减归档（可复活）
             ├─ index/tokens.json                                               可重建的词法缓存
             ├─ index/vectors.db                                                可重建的向量缓存（可选）
-            ├─ review-queue.md                                                 fact/insight/decision 冲突队列
+            ├─ review-queue.md                                                 fact/insight/skill/decision 冲突队列
             └─ .git/                                                           每次写入自动 commit
 ```
 

@@ -63,7 +63,7 @@ These five tools are the only read-write boundary. Do not add a sixth.
 |---|---|
 | `memory_search` | Ranked hits: `{"hits", "count", "retrieval"}`. Default `top_k` is 5. Default scope is `_shared` plus your own private namespace. Omit `project` and only global memories are returned. |
 | `memory_get` | Fetch one memory by id. The result always has `found`. Private namespaces require `reader`. |
-| `memory_write` | Store a memory. `type` is `episode`, `fact`, `insight`, `skill`, or `decision`. `source` is your agent id. Give fact / insight / decision a stable `key`. `content` over 262144 characters is rejected and nothing is written. |
+| `memory_write` | Store a memory. `type` is `episode`, `fact`, `insight`, `skill`, or `decision`. `source` is your agent id. Give fact / insight / skill / decision a stable `key`. `content` over 262144 characters is rejected and nothing is written. |
 | `memory_link` | Bidirectional link. Both memories must be in the same namespace. Private namespaces accept links only from the owner. |
 | `memory_feedback` | Report what happened after you actually used a hit. This is what makes the store compound. |
 
