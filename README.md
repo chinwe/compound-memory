@@ -244,7 +244,7 @@ Scoring (weights are the `W_*` constants in `src/compound_memory/scoring.py`): `
 
 | Tool | Purpose | Key points |
 |---|---|---|
-| `memory_write` | Write a memory | `type`: episode/fact/insight/skill/decision; `source`: your agent id; give fact/insight/decision a stable `key`; optional `valid_from`/`valid_until` (ISO dates), `project` scope, and `lesson_role` (`lesson` or `avoid`; omit for an ordinary memory). `content` over 262144 characters is rejected and nothing is written |
+| `memory_write` | Write a memory | `type`: episode/fact/insight/skill/decision; `source`: your agent id; give fact/insight/skill/decision a stable `key`; optional `valid_from`/`valid_until` (ISO dates), `project` scope, and `lesson_role` (`lesson` or `avoid`; omit for an ordinary memory). `content` over 262144 characters is rejected and nothing is written |
 | `memory_search` | Retrieve | Returns `{"hits": [...], "count", "retrieval"}` ranked by score (default `top_k=5`); embeds up to 3 trimmed one-hop neighbors; dual-channel by default (`_shared` + caller's own private ns); optional `project` (fail-closed) and `explain`. CLI `search` stays a bare array |
 | `memory_get` | Fetch by id | Always contains a `found` key; pulls one-hop neighbors with no count cap and keeps archived neighbors (search caps at 3, trims content to 80 characters, and drops archived neighbors). Expired neighbors are omitted on both paths. Private-ns targets require `reader` |
 | `memory_link` | Link two memories | Bidirectional; both sides must be in the same ns; private-ns links require owner identity |
@@ -291,7 +291,7 @@ Agent (MCP client / CLI)
             ├─ archive/...                                                     decayed archive (revivable)
             ├─ index/tokens.json                                               rebuildable lexical cache
             ├─ index/vectors.db                                                rebuildable vector cache (optional)
-            ├─ review-queue.md                                                 fact/insight/decision conflict queue
+            ├─ review-queue.md                                                 fact/insight/skill/decision conflict queue
             └─ .git/                                                           auto-commit on every write
 ```
 
